@@ -1,0 +1,14 @@
+[Unit]
+Description=STT Push-to-Talk (Copilot-Taste -> Whisper -> Text)
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=@ROOT@/.venv/bin/stt-button run
+Restart=on-failure
+RestartSec=3
+Environment=HF_HOME=%h/.cache/huggingface
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,38 @@
+# STT-Button Konfiguration
+# Kopiere in ~/.config/stt-button/config.toml und passe an.
+
+# --- Ausloeser ---------------------------------------------------------
+# Das Device, auf dem die Copilot-Taste erscheint.
+# Auf ThinkPads mit keyd: "keyd virtual keyboard" (Taste -> F24)
+input_device_name = "keyd virtual keyboard"
+# Die Linux-Keycodes, die Push-to-Talk ausloesen.
+key_codes = ["KEY_F24"]
+
+# --- Audio -------------------------------------------------------------
+# PipeWire-Quellenname (aus: pactl list short sources) oder "auto".
+# Die Standardquelle "deepfilter_source" (Rauschunterdrueckung) ist auf
+# diesem ThinkPad stumm, wenn das Digital Microphone stumm geschaltet ist.
+# Daher hier explizit die SOF-Quelle. "auto" nimmt deepfilter_source.
+audio_source = "alsa_input.pci-0000_00_1f.3-platform-sof_sdw.HiFi__hw_sofsoundwire_10__source"
+
+# --- ASR ---------------------------------------------------------------
+backend = "parakeet"           # "parakeet" (NVIDIA TDT, schnell) oder "whisper"
+model = "nvidia/parakeet-tdt-0.6b-v3"   # bei backend=whisper: "large-v3-turbo"
+language = "auto"             # Parakeet erkennt DE/EN automatisch
+compute_type = "float32"     # parakeet: float32 (CPU); whisper: int8
+cpu_threads = 8
+
+# --- Ausgabe -----------------------------------------------------------
+typer = "dotool"               # "dotool" (GNOME/Wayland), "wtype", "clipboard"
+xkb_layout = "de"               # Tastaturlayout fuer dotool
+xkb_variant = "nodeadkeys"      # ohne tote Tasten (fuer Akzente)
+append_space = true            # Leerzeichen nach dem Diktat
+max_revision_chars = 60
+
+# --- Streaming ---------------------------------------------------------
+streaming_mode = "windowed"    # "windowed" (Timestamp-Commit) oder "whole_buffer"
+min_audio_s = 3.0              # erst transkribieren, wenn 3s Audio da sind
+asr_interval_s = 1.0           # Re-Transkription alle X Sekunden Audio
+max_record_s = 60.0            # Auto-Finalisierung nach X Sekunden
+commit_agreements = 2          # Praefix-Bestaetigungen vor dem Commit
+sample_rate = 16000
