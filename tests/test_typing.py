@@ -9,6 +9,9 @@ endgueltige) Praefix wird nie angefasst.
 """
 from __future__ import annotations
 
+import subprocess
+import threading
+
 import pytest
 
 from stt_button.typing import (
@@ -708,5 +711,203 @@ class TestCapslockReset:
         payloads = self._capture_payloads(monkeypatch)
         DotoolTyper(capslock_autocorrect=True, capslock_led_inverted=True).type_text("Das")
         assert not any("key capslock" in p for p in payloads)
+
+
+
+class TestSubprocessHaertung:
+    """Haertung gegen den Daemon-Pipe-Hang (final_paste-Freeze).
+
+    Root Cause: ``wl-copy`` forked einen residenten Daemon-Prozess und
+    vererbt diestdout/stderr-Pipe-FDs an ENKEL-Prozesse. ``subprocess.run``
+    mit ``capture_output=True`` (implizit ohne Timeout) wartet in
+    ``communicate()`` auf EOF dieser Pipes - das kommt nie, also haengt
+    der Finalizer-Thread fuer immer und der Dienst friert ein.
+
+    Fix: ``_run()`` nutzt DEVNULL fuer alle drei FDs und ein Timeout;
+    ``DotoolTyper._send_raw`` behaelt capture_output (dotool forked
+    nicht), bekommt aber ein payload-abhaengiges Timeout.
+    """
+
+    def _make_paster_with_blocking_copy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[ClipboardPaster, FakeTyper]:
+        """Erzeugt einen Paster, dessen wl-copy wie ein Daemon haengt.
+
+        Der Fake simuliert ``wl-copy`` VOR der Haertung: ein subprocess.run
+        OHNE ``timeout``-Kwarg blockiert fuer immer (Event wird nie gesetzt).
+        Ein Aufruf MIT ``timeout`` blockiert nur kurz und wirft
+        ``TimeoutExpired`` - dann greift der Timeout-Fallback.
+        """
+        entered = threading.Event()
+        never = threading.Event()  # wird nie gesetzt -> unendliches Blocken
+
+        def fake_run(cmd, *args, **kwargs):
+            entered.set()
+            if "timeout" in kwargs and kwargs["timeout"] is not None:
+                # Haertung aktiv: kurz warten, dann wie subprocess werfen.
+                raise subprocess.TimeoutExpired(cmd, timeout=kwargs["timeout"])
+            # Vor der Haertung: fuer immer blocken (kein Timeout-Kwarg).
+            never.wait(10.0)
+            raise AssertionError("unreachable")  # nur zur Sicherheit
+
+        monkeypatch.setattr("stt_button.typing.subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "stt_button.typing.shutil.which", lambda b: "/usr/bin/wl-copy"
+        )
+        t = FakeTyper()
+        p = ClipboardPaster(t, copy_binary="wl-copy", paste_key="ctrl+v")
+        p._test_copy_entered = entered  # type: ignore[attr-defined]
+        return p, t
+
+    def test_blocking_copy_does_not_freeze_paste(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Freeze-Repro: haengendes wl-copy darf paste() nicht blockieren.
+
+        Reproduziert den final_paste-Freeze: Ohne Timeout in ``_run()``
+        wuerde der Daemon-Pipe-Hang paste() fuer immer blockieren. Nach der
+        Haertung wirft das Timeout einen TyperError und der Fallback tippt
+        das Delta zeichenweise via type_text.
+        """
+        p, t = self._make_paster_with_blocking_copy(monkeypatch)
+
+        worker = threading.Thread(target=p.paste, args=("Delta",))
+        worker.start()
+        worker.join(timeout=0.15)
+        # Kern-Assertion: paste() muss zurueckkehren (kein Daemon-Hang).
+        assert not worker.is_alive(), (
+            "paste() haengt am blockierenden wl-copy - "
+            "_run() braucht DEVNULL+Timeout"
+        )
+        # Fallback: das Delta wurde zeichenweise getippt.
+        assert t.calls == [("type", "Delta")]
+
+    def test_run_uses_devnull_and_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_run() nutzt DEVNULL-FDs und ein Timeout, kein capture_output.
+
+        DEVNULL ist der eigentliche Fix gegen den Daemon-Pipe-Hang: ohne
+        geoeffnete Pipe-FDs kann communicate() nie auf ein nie kommendes
+        EOF warten. Das Timeout ist die zweite Verteidigungslinie.
+        """
+        captured: dict[str, object] = {}
+
+        def fake_run(cmd, *args, **kwargs):
+            captured.update(kwargs)
+            return subprocess_result()
+
+        monkeypatch.setattr("stt_button.typing.subprocess.run", fake_run)
+        from stt_button.typing import _run
+
+        _run(["wtype", "-k", "space"])
+
+        assert captured["stdin"] is subprocess.DEVNULL
+        assert captured["stdout"] is subprocess.DEVNULL
+        assert captured["stderr"] is subprocess.DEVNULL
+        assert "capture_output" not in captured
+        assert "timeout" in captured
+        assert isinstance(captured["timeout"], (int, float))
+        assert captured["timeout"] > 0
+        assert captured.get("check") is False
+
+    def test_run_timeout_raises_typer_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """subprocess.TimeoutExpired wird in TyperError uebersetzt."""
+
+        def fake_run(cmd, *args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, timeout=kwargs.get("timeout"))
+
+        monkeypatch.setattr("stt_button.typing.subprocess.run", fake_run)
+        from stt_button.typing import _run
+
+        with pytest.raises(TyperError, match="Timeout"):
+            _run(["wtype", "-k", "space"])
+
+    def test_send_raw_timeout_scales_with_payload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_send_raw: Timeout wächst mit der Payload-Groesse (type-Zeilen).
+
+        Budget: max(5.0, chars*(typedelay+typehold)/1000 + 5.0) - damit
+        lange Diktate nicht am Fixed-Timeout scheitern.
+        """
+        timeouts: list[float | None] = []
+
+        def fake_run(cmd, *args, **kwargs):
+            timeouts.append(kwargs.get("timeout"))
+            return subprocess_result()
+
+        monkeypatch.setattr("stt_button.typing.subprocess.run", fake_run)
+        monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "aus")
+        monkeypatch.setattr(
+            "stt_button.typing.shutil.which", lambda b: "/usr/bin/dotool"
+        )
+
+        # kurzer Payload: kleinines Budget (5 s + 0 + 5 s Puffer = 10 s)
+        DotoolTyper(typedelay_ms=20, typehold_ms=15).type_text("Hi")
+        short = timeouts[-1]
+        assert short is not None and short >= 5.0
+
+        # langer Payload (500 Zeichen): Budget muss deutlich groesser sein.
+        DotoolTyper(typedelay_ms=20, typehold_ms=15).type_text("x" * 500)
+        long = timeouts[-1]
+        assert long is not None
+        assert long > short
+        # Erwartung: 500*(20+15)/1000 + 5.0 = 22.5 s
+        assert long == pytest.approx(22.5, rel=0.01)
+
+    def test_send_raw_timeout_expired_raises_typer_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Auch dotool haengt ggf. -> TimeoutExpired wird zu TyperError."""
+
+        def fake_run(cmd, *args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, timeout=kwargs.get("timeout"))
+
+        monkeypatch.setattr("stt_button.typing.subprocess.run", fake_run)
+        monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "aus")
+        monkeypatch.setattr(
+            "stt_button.typing.shutil.which", lambda b: "/usr/bin/dotool"
+        )
+        with pytest.raises(TyperError, match="Timeout"):
+            DotoolTyper().type_text("Hallo")
+
+
+class TestPasteDebugLogs:
+    """Debug-Logs im Paste-Pfad (Root-Cause-Diagnose final_paste-Freeze).
+
+    Die Logs duerfen den Diktatinhalt NICHT enthalten (Dataminimierung im
+    Log), aber Laenge und Phasen (copy start/done, chord) fuer die
+    Nachvollziehbarkeit eines Freezes.
+    """
+
+    def test_paste_logs_phases_without_text(
+        self, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        import logging as _l
+
+        t = FakeTyper()
+        monkeypatch.setattr(
+            "stt_button.typing.shutil.which", lambda b: "/usr/bin/wl-copy"
+        )
+        monkeypatch.setattr(
+            "stt_button.typing.subprocess.run",
+            lambda cmd, *a, **k: subprocess_result(),
+        )
+        p = ClipboardPaster(t, copy_binary="wl-copy", paste_key="ctrl+v")
+        with caplog.at_level(_l.DEBUG, logger="stt_button.typing"):
+            p.paste("Streng geheim")
+        messages = [r.message for r in caplog.records]
+        joined = "\n".join(messages)
+        # Phasen sichtbar:
+        assert "copy start" in joined
+        assert "copy done" in joined
+        assert "chord" in joined
+        # Laenge wird geloggt:
+        assert "13 Zeichen" in joined
+        # Diktatinhalt darf NICHT im Log landen:
+        assert "Streng geheim" not in joined
 
 

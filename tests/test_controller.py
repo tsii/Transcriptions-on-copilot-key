@@ -409,3 +409,93 @@ class TestCaptureThread:
         # waehrend der Thread laeuft, egal ob die Engine blockiert).
         assert ctrl._audio_queue.qsize() == 50
         ctrl.stop_recording()
+
+class TestFinalizePasteLockHierarchy:
+    """Charakterisierung: FinalPaster-Hang blockiert den Key-Thread NICHT.
+
+    Die Lock-Hierarchie im Controller ist bewusst so gebaut:
+
+    * ``finalize``/``paste`` laufen IM FINALIZER-THREAD und greifen NICHT
+      auf das Controller-Lock zu (controller.py: _finish setzt nur den
+      kurzen Zustandswechsel unter Lock).
+    * ``start_recording``/``stop_recording`` holen das Lock nur kurz und
+      kehren auch dann sofort zurueck, wenn der Finalizer (noch) im
+      final_paste haengt.
+
+    Dieser Test charakterisiert dieses Verhalten: selbst wenn der
+    FinalPaster fuer immer blockiert, bleibt der Key-Thread ansprechbar
+    und die Key-Edges werden korrekt verarbeitet.
+    """
+
+    def test_blocking_final_paster_does_not_block_key_thread(self) -> None:
+        """Haengendes final_paste: start/stop kehren ohne Blockade zurueck."""
+        unblock_paste = threading.Event()
+        paste_entered = threading.Event()
+
+        class BlockingFinalPaster:
+            """FinalPaster-Fake, der auf ein nie (sofort) gesetztes Event wartet."""
+
+            def paste(self, text: str) -> None:
+                paste_entered.set()
+                unblock_paste.wait(10.0)
+
+        source = FakeAudioSource([b"\x00" * 16000] * 6)
+        typer = FakeTyper()
+        delta = DeltaTyper(typer, append_space=True, final_paster=BlockingFinalPaster())
+        ctrl = PushToTalkController(
+            config=None,
+            source_factory=lambda: source,
+            engine=FakeEngine(),
+            delta_typer=delta,
+            transcriber_factory=lambda *a, **kw: InstantTranscriber(),
+        )
+
+        ctrl.start_recording()
+        for _ in range(3):
+            ctrl.run_once()
+        # Loslassen: Finalizer startet im Hintergrund und haengt im Paste.
+        ctrl.stop_recording()
+        assert ctrl.state == ControllerState.FINALIZING
+        assert paste_entered.wait(timeout=2.0)
+
+        # Kern-Charakterisierung: Der Key-Thread (dieser Thread simuliert
+        # ihn) kehrt trotz haengendem Paste sofort zurueck - start/stop
+        # nehmen nur kurz das Lock, paste() laeuft lock-frei im Finalizer.
+        t0 = time.monotonic()
+        ctrl.start_recording()  # press waehrend FINALIZING
+        assert ctrl._key_down is True
+        ctrl.stop_recording()  # release
+        assert ctrl._key_down is False
+        assert time.monotonic() - t0 < 0.5, (
+            "start/stop_recording blockieren am haengenden final_paste - "
+            "Lock-Hierarchie verletzt"
+        )
+        assert ctrl.state == ControllerState.FINALIZING
+
+        # Jetzt das Paste freigeben: Finalizer laeuft zu Ende.
+        unblock_paste.set()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if ctrl.state == ControllerState.IDLE:
+                break
+            time.sleep(0.005)
+        assert ctrl.state == ControllerState.IDLE
+        # KEINE Geisteraufnahme: die Taste wurde losgelassen.
+        assert ctrl._key_down is False
+
+
+class InstantTranscriber:
+    """StreamTranscriber-Fake mit sofortiger, deterministischer Finalisierung."""
+
+    def __init__(self) -> None:
+        self._buffer = b"\x00" * 16000
+        self.sample_rate = 16000
+
+    def feed(self, data: bytes) -> None:
+        pass
+
+    def maybe_transcribe(self):
+        return None
+
+    def finalize(self):
+        return TranscriptionResult(text="fertig")

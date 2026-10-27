@@ -22,6 +22,13 @@ log = logging.getLogger(__name__)
 #: Maximale Anzahl Backspaces pro wtype-Aufruf (haelt die Kommandozeile kurz).
 BACKSPACE_BATCH = 20
 
+#: Standard-Timeout fuer _run()-Befehle in Sekunden. Schutz gegen
+#: Daemon-Pipe-Hangs: ``wl-copy`` forked einen residenten Daemon-Prozess,
+#: der die (bei capture_output geoeffneten) Pipe-FDs erbt. subprocess.run
+#: wartet dann in communicate() auf ein nie kommendes EOF. DEVNULL-FDs +
+#: Timeout schliessen beide Angriffspfade.
+COMMAND_TIMEOUT_S = 2.0
+
 
 def _capslock_leds() -> dict[str, str]:
     """Liest den CapsLock-LED-Zustand pro Device (Diagnose).
@@ -109,19 +116,33 @@ class FinalPaster(Protocol):
         """Fuegt ``text`` an der Cursor-Position ein."""
 
 
-def _run(cmd: list[str]) -> None:
-    """Fuehrt einen Befehl aus und wandelt Fehler in :class:`TyperError` um."""
+def _run(cmd: list[str], *, timeout_s: float = COMMAND_TIMEOUT_S) -> None:
+    """Fuehrt einen Befehl aus und wandelt Fehler in :class:`TyperError` um.
+
+    Haertung gegen Daemon-Pipe-Hangs (final_paste-Freeze): alle drei
+    Standard-FDs zeigen auf DEVNULL statt auf Pipes. ``wl-copy`` forked
+    naemlich einen residenten Daemon und vererbt offene Pipe-FDs an
+    Enkel-Prozesse - communicate() wuerde sonst auf ein nie kommendes EOF
+    warten. Das Timeout ist die zweite Verteidigungslinie.
+    """
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TyperError(f"{cmd[0]}: Timeout nach {timeout_s:.1f}s") from exc
     except FileNotFoundError as exc:
         raise TyperError(f"{cmd[0]} ist nicht installiert") from exc
     except OSError as exc:
         raise TyperError(f"{cmd[0]} konnte nicht gestartet werden: {exc}") from exc
     if proc.returncode != 0:
-        raise TyperError(
-            f"{' '.join(cmd[:3])} fehlgeschlagen (rc={proc.returncode}): "
-            f"{(proc.stderr or '').strip()}"
-        )
+        raise TyperError(f"{cmd[0]} fehlgeschlagen (rc={proc.returncode})")
 
 
 class DotoolTyper:
@@ -262,16 +283,39 @@ class DotoolTyper:
 
         Wird auch von :meth:`_ensure_capslock_normal` genutzt, daher bewusst
         ohne erneute CapsLock-Pruefung (kein Rekursionsrisiko).
+
+        Im Gegensatz zu :func:`_run` bleibt ``capture_output`` aktiv: dotool
+        forked keinen Daemon-Prozess, Pipes schliessen also sauber. Aber
+        auch dotool kann haengen - deshalb ein payload-abhaengiges
+        Timeout-Budget: pro zu tippendem Zeichen fallen typedelay+typehold
+        Millisekunden an, plus 5 s Puffer fuer Prozessstart und Layout-
+        Aufbau.
         """
         import os
 
         env = os.environ.copy()
         env["DOTOOL_XKB_LAYOUT"] = self._xkb_layout
         env["DOTOOL_XKB_VARIANT"] = self._xkb_variant
+        # Nur 'type '-Zeilen kosten Zeit: key/typedelay/typehold sind fix.
+        typed_chars = sum(
+            len(line) for line in payload.split("\n") if line.startswith("type ")
+        )
+        type_s = typed_chars * (self._typedelay_ms + self._typehold_ms) / 1000
+        timeout_s = max(5.0, type_s + 5.0)
         try:
             proc = subprocess.run(
-                [self.binary], input=payload, capture_output=True, text=True, env=env
+                [self.binary],
+                input=payload,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=timeout_s,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise TyperError(
+                f"{self.binary}: Timeout nach {timeout_s:.1f}s "
+                f"({typed_chars} Zeichen)"
+            ) from exc
         except FileNotFoundError as exc:
             raise TyperError(f"{self.binary} ist nicht installiert") from exc
         except OSError as exc:
@@ -428,7 +472,9 @@ class ClipboardPaster:
             self._typer.type_text(text)
             return
         try:
+            log.debug("final paste: copy start (%d Zeichen)", len(text))
             _run([self.copy_binary, text])
+            log.debug("final paste: copy done")
         except TyperError as exc:
             log.warning(
                 "Copy nach %s fehlgeschlagen (%s) - tippe das Delta zeichenweise",
@@ -437,6 +483,7 @@ class ClipboardPaster:
             self._typer.type_text(text)
             return
         try:
+            log.debug("final paste: chord %s", self.paste_key)
             self._typer.key(self.paste_key)
         except TyperError as exc:
             # Bewusst KEIN Retry mit type_text: der Chord kann teilweise
