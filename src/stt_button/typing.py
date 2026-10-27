@@ -14,6 +14,7 @@ import glob
 import logging
 import shutil
 import subprocess
+import time
 from typing import Protocol, runtime_checkable
 
 log = logging.getLogger(__name__)
@@ -117,9 +118,32 @@ class DotoolTyper:
         self._typedelay_ms = typedelay_ms
         self._typehold_ms = typehold_ms
 
+    def _ensure_capslock_off(self) -> None:
+        """Schaltet CapsLock aus, falls es aktiv ist (mit Verifikation).
+
+        Ein aktiver CapsLock invertiert jeden getippten Buchstaben
+        ("Das" -> "dAS") - zeichengenau, inkl. unveraenderter Satzzeichen.
+        Das passiert NICHT im ASR, sondern rein bei der Tastatur-Emulation.
+
+        Wir erkennen den Zustand an der Kernel-LED (verlaesslich, im
+        Gegensatz zu ``xset q``/XWayland, das bei Wayland-Compositor-
+        Zustand abweichen kann) und schalten ihn per ``key capslock``
+        zurueck - danach wird der Erfolg verifiziert.
+        """
+        if _capslock_state() != "an":
+            return
+        log.warning("CapsLock war aktiv -> wird fuer das Diktat ausgeschaltet")
+        self._send_raw("key capslock\n")
+        # Kurz warten, damit der State durchgeschrieben ist.
+        time.sleep(0.05)
+        if _capslock_state() == "an":
+            log.error("CapsLock liess sich nicht ausschalten - Text kann invertiert sein")
+
     def type_text(self, text: str) -> None:
         if not text:
             return
+        # CapsLock darf das Diktat nicht invertieren.
+        self._ensure_capslock_off()
         # Antipp-Verzoegerung setzen, damit Shift nicht nachhaengt ("So"
         # statt "SO").
         pre = f"typedelay {self._typedelay_ms}\ntypehold {self._typehold_ms}\n"
@@ -152,18 +176,17 @@ class DotoolTyper:
             chord = "+".join(keys)
             self._send(f"key {chord}\n")
 
-    def _send(self, payload: str) -> None:
+    def _send_raw(self, payload: str) -> None:
+        """Schickt einen Payload an dotool - ohne CapsLock-Behandlung.
+
+        Wird auch von :meth:`_ensure_capslock_off` genutzt, daher bewusst
+        ohne erneute CapsLock-Pruefung (kein Rekursionsrisiko).
+        """
         import os
 
         env = os.environ.copy()
         env["DOTOOL_XKB_LAYOUT"] = self._xkb_layout
         env["DOTOOL_XKB_VARIANT"] = self._xkb_variant
-
-        # Diagnose: Lock-Zustand vor dem Tippen erfassen. Der sichtbare Text
-        # wird naemlich von einer invertierten CapsLock-Ebene verfaelscht
-        # ("Das" -> "dAS") - das passiert NICHT im ASR, sondern durch den
-        # Modifier-/Lock-Zustand der Input-Pipeline.
-        led_before = _capslock_state()
         try:
             proc = subprocess.run(
                 [self.binary], input=payload, capture_output=True, text=True, env=env
@@ -172,21 +195,28 @@ class DotoolTyper:
             raise TyperError(f"{self.binary} ist nicht installiert") from exc
         except OSError as exc:
             raise TyperError(f"{self.binary} konnte nicht starten: {exc}") from exc
+        if proc.returncode != 0:
+            raise TyperError(
+                f"{self.binary} fehlgeschlagen (rc={proc.returncode}): "
+                f"{(proc.stderr or '').strip()}"
+            )
+
+    def _send(self, payload: str) -> None:
+        # Diagnose: Lock-Zustand vor dem Tippen erfassen. Der sichtbare Text
+        # wird naemlich von einer invertierten CapsLock-Ebene verfaelscht
+        # ("Das" -> "dAS") - das passiert NICHT im ASR, sondern durch den
+        # Modifier-/Lock-Zustand der Input-Pipeline.
+        led_before = _capslock_state()
+        self._send_raw(payload)
         led_after = _capslock_state()
 
-        if led_before or led_after or led_before != led_after:
+        if led_before != "aus" or led_after != "aus":
             log.warning(
                 "CAPSLOCK-Diagnose: vor=%s nach=%s payload=%r",
                 led_before, led_after, payload[:80],
             )
         else:
             log.debug("capslock ok (aus) payload=%r", payload[:60])
-
-        if proc.returncode != 0:
-            raise TyperError(
-                f"{self.binary} fehlgeschlagen (rc={proc.returncode}): "
-                f"{(proc.stderr or '').strip()}"
-            )
 
 
 class WtypeTyper:

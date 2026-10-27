@@ -285,8 +285,44 @@ zeichengenau, ist es **kein ASR-Fehler**, sondern der Lock-Zustand der Ausgabe-P
   Zu klein → unter CPU-Last gehen Key-Events verloren → Modifier hängen.
 * **Lock-Status loggen** (vor/nach jedem Tippvorgang) — sonst ist die Quelle nicht
   zuordenbar.
+* **Aktiven CapsLock vor dem Tippen ausschalten** (empfohlener Fix, siehe unten).
 * **Korrektes Tastaturlayout** setzen (Desktop: `DOTOOL_XKB_LAYOUT=de`,
   `DOTOOL_XKB_VARIANT=nodeadkeys`). Ohne das: `z`↔`y` vertauscht, `?`→`_`.
+
+#### CapsLock zuverlässig erkennen und zurücksetzen
+
+**Wichtig — die Zustandsquelle:** Die Kernel-LED ist die **verlässliche** Quelle,
+`xset q` (XWayland) **nicht**: Bei Wayland-Compositor-Zustand meldet `xset`
+„off“, während die LED korrekt „an“ zeigt (selbst gemessen).
+
+```python
+def _capslock_state() -> str:
+    """Kernel-LED lesen - 'an', 'aus' oder '?'."""
+    leds = glob.glob("/sys/class/leds/*capslock*/brightness")
+    if not leds:
+        return "?"
+    # Bei mehreren Devices (z.B. physische Tastatur + keyd-Device):
+    # 'an', wenn IRGENDEINE LED leuchtet.
+    return "an" if any(open(p).read().strip() == "1" for p in leds) else "aus"
+
+def _ensure_capslock_off(self):
+    if _capslock_state() != "an":
+        return
+    self._send_raw("key capslock\n")   # NICHT _send() -> Rekursionsgefahr!
+    time.sleep(0.05)                   # State-Writethrough abwarten
+    if _capslock_state() == "an":
+        log.error("CapsLock liess sich nicht ausschalten")
+```
+
+Und vor **jedem** `type_text()` aufrufen. Wichtig: einen `_send_raw()` ohne
+CapsLock-Prüfung verwenden, sonst ruft sich die Prüfung selbst auf.
+
+#### Umlaute sind ein guter Lackmustest
+
+Bei CapsLock werden **auch Umlaute invertiert**: `ä`→`Ä`, `ö`→`Ö`, `ü`→`Ü`,
+`ß`→`ẞ`. Ein Test-String wie
+`"Prüfe die Umlaute: ä ö ü ß groß"` deckt das sofort auf — und prüft gleichzeitig,
+ob das Tastaturlayout (`de`) korrekt gesetzt ist.
 
 > **Android:** Dieses Fehlerbild existiert dort **nicht** — Text wird über
 > `InputConnection.commitText()` / `AccessibilityService` eingefügt, nicht per

@@ -238,6 +238,8 @@ def _capture(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
         return subprocess_result()
 
     monkeypatch.setattr("stt_button.typing.subprocess.run", fake_run)
+    # CapsLock deterministisch "aus" (sonst Reset-Payload je nach Systemzustand).
+    monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "aus")
     return calls
 
 
@@ -250,6 +252,9 @@ def _capture_stdin(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         return subprocess_result()
 
     monkeypatch.setattr("stt_button.typing.subprocess.run", fake_run)
+    # CapsLock deterministisch "aus", damit der Test nicht vom echten
+    # Systemzustand abhaengt (sonst wird ein Reset-Payload eingefuegt).
+    monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "aus")
     return stdin
 
 
@@ -411,3 +416,33 @@ class TestCapslockDiagnostics:
         with caplog.at_level(_l.WARNING, logger="stt_button.typing"):
             DotoolTyper().type_text("Test")
         assert any("CAPSLOCK" in r.message for r in caplog.records)
+
+
+class TestCapslockReset:
+    def test_capslock_active_triggers_reset(self, monkeypatch) -> None:
+        """Bei aktivem CapsLock wird 'key capslock' gesendet."""
+        states = iter(["an", "aus"])          # vor Reset: an; nach Reset: aus
+        monkeypatch.setattr(
+            "stt_button.typing._capslock_state", lambda: next(states, "aus")
+        )
+        payloads: list[str] = []
+        monkeypatch.setattr(
+            "stt_button.typing.subprocess.run",
+            lambda cmd, **kw: payloads.append(kw.get("input", "")) or subprocess_result(),
+        )
+        DotoolTyper().type_text("Das")
+        assert any("key capslock" in p for p in payloads), payloads
+        # Der eigentliche Text muss danach auch getippt werden.
+        assert any("type Das" in p for p in payloads), payloads
+
+    def test_capslock_off_sends_no_reset(self, monkeypatch) -> None:
+        """Bei ausgeschaltetem CapsLock wird kein Reset gesendet."""
+        monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "aus")
+        payloads: list[str] = []
+        monkeypatch.setattr(
+            "stt_button.typing.subprocess.run",
+            lambda cmd, **kw: payloads.append(kw.get("input", "")) or subprocess_result(),
+        )
+        DotoolTyper().type_text("Das")
+        assert not any("key capslock" in p for p in payloads)
+        assert any("type Das" in p for p in payloads)
