@@ -292,10 +292,20 @@ zeichengenau, ist es **kein ASR-Fehler**, sondern der Lock-Zustand der Ausgabe-P
 
 #### CapsLock: erkennen und warnen — nicht eingreifen
 
-**Die Zuordnung ist auf diesem System empirisch belegt invertiert:**
+**Die Zuordnung war auf diesem System zeitweise empirisch belegt invertiert:**
 `LED aus = CapsLock aktiv = invertierter Text`; `LED an = normale Schreibung`
 (Klein/Groß wie getippt). Gemessen auf ThinkPad + keyd + GNOME/Wayland — das
-ist **invertiert** zur ueblichen Konvention.
+war **invertiert** zur ueblichen Konvention.
+
+**Ursache und Ende der Inversion (27.10., verifiziert):** keyd grabbte mit
+`[ids] *` auch dotools uinput-Tastatur (`4711:0815`) und führte dafür einen
+eigenen synthetischen Lock-State — dadurch entkoppelten LED und echter XKB-Lock.
+Nach dem Ausschluss `-4711:0815` in `/etc/keyd/default.conf` verhielt sich das
+System wieder **konventionell** (LED aus = CapsLock aus = normale Schreibung,
+per Diktat-Test bestätigt). Die Config-Option `capslock_led_inverted` erlaubt
+beide Semantiken; auf diesem System steht sie jetzt auf `false`. **Lehre:**
+Ein grabbender Remapping-Daemon zwischen Tipper und Compositor kann die
+LED↔State-Zuordnung kippen — erst die Pipeline säubern, dann Semantik messen.
 
 **Kernregel:** **Die App darf CapsLock niemals ungefragt togglen.** Der
 Lock-State ist nicht zuverlaessig lesbar (`LED != State`, `xset != State`):

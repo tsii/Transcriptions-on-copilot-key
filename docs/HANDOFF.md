@@ -33,13 +33,14 @@ gibt es **uncommittete** Änderungen im Working Tree.
 
 | | Status |
 |---|---|
-| Testsuite | **222 passed** (`.venv/bin/python -m pytest`) |
+| Testsuite | **232 passed** (`.venv/bin/python -m pytest`) |
 | Langdiktat-Fixes | ✅ behoben & committet (`e7d590e`) |
 | Zweites-Diktat-verschluckt | ✅ behoben & committet (`5826f26`) |
-| VAD-Gate im `whole_buffer`-Pfad | ✅ umgesetzt (uncommitted), von Reviewer als korrekt bewertet |
-| Trigger-Logging | ✅ umgesetzt (uncommitted) |
-| ASCII-Groß-/Kleinschreibung | ✅ korrekt (vom Nutzer bestätigt) |
-| **Dienst** | ⏸️ **gestoppt und disabled** — absichtlich! |
+| CapsLock K1–K8 + VAD-Gate + Trigger-Logging | ✅ committet (`2dbc79b`) |
+| Groß-/Kleinschreibung **und** Umlaute | ✅ korrekt (Live-Diktat bestätigt) |
+| keyd: dotool ausgeschlossen | ✅ `-4711:0815`, Journal verifiziert |
+| Phantom-F24 | ✅ nicht mehr reproduzierbar (§3.3) |
+| **Dienst** | ▶️ **läuft** (`systemctl --user start stt-button`) — Autostart (`enable`) bewusst noch nicht gesetzt |
 
 ### 2.2 Uncommittete Änderungen (Working Tree)
 
@@ -104,30 +105,44 @@ finalen Transkription (blockierte im Key-Thread, mehrere Sekunden) war der Zusta
 Tastendruck währenddessen wird **vorgemerkt** (`_pending_start`) und danach
 automatisch ausgeführt. Test: `test_start_during_finalizing_is_pending_not_dropped`.
 
-### 3.3 Phantom-Aufnahmen im Leerlauf (⚠️ teilweise offen)
+### 3.3 Phantom-Aufnahmen im Leerlauf ✅ GELÖST (27.10., verifiziert)
 
-**Beobachtung:** Der Dienst startete im Leerlauf Aufnahmen und schickte **14×
-`backspace`** in 30 s in das Terminal; 3× `f24 down` ohne Tastendruck.
+**Beobachtung (alt, 17:00):** Der Dienst startete im Leerlauf Aufnahmen und
+schickte **14× `backspace`** in 30 s in das Terminal; 3× `f24 down` ohne
+Tastendruck.
 
-**Teil-Ursache gefunden:** Im Default-Modus `whole_buffer` war das **VAD-Gate nicht
-verdrahtet** (nur im `windowed`-Modus). Dadurch wurden auch Stille/Rauschen
-transkribiert → ASR halluzinierte → DeltaTyper tippte und nahm per Backspace zurück.
+**Ursache 1 (Stille-Halluzination):** Im Default-Modus `whole_buffer` war das
+**VAD-Gate nicht verdrahtet** (nur im `windowed`-Modus). Stille/Rauschen wurde
+transkribiert → ASR halluzinierte → DeltaTyper tippte und nahm per Backspace
+zurück. **Fix:** `StreamTranscriber` hat jetzt ein optionales `vad`-Argument,
+`app.py` verdrahtet `SileroVadGate` für beide Modi (committet in `2dbc79b`).
 
-**Fix (uncommitted):** `StreamTranscriber` hat jetzt ein optionales `vad`-Argument;
-`app.py` verdrahtet `SileroVadGate` für beide Modi. Reviewer-Bewertung: technisch
-sauber, keine Regression (der Whole-Buffer wird beim nächsten Sprach-Tick
-nachtranskribiert, `finalize()` bleibt ungefiltert).
+**Ursache 2 (Phantom-`f24`):** keyd grabbte mit `[ids] *` auch **dotools
+uinput-Tastatur** (`4711:0815`). Die Rückkopplung dotool→keyd→virtual keyboard
+erzeugte Geister-Events. **Fix:** `-4711:0815` in `/etc/keyd/default.conf`
+(Nutzer, `sudo keyd reload`). Verifiziert per keyd-Journal:
+`DEVICE: ignoring 4711:0815 ... (dotool keyboard)`.
 
-**Noch offen:** Die Quelle der **Phantom-`f24`-Events** (ohne Tastendruck) ist nicht
-geklärt. Verdacht: `keyd`-Combo-Leckage aus `leftmeta+leftshift+f23 = f24` in
-`/etc/keyd/default.conf`. Das Trigger-Logging (uncommitted) soll es sichtbar machen:
-```bash
-journalctl --user -u stt-button -f | grep -i "Trigger"
-```
+**Verifikation (27.10, nach dem Fix):** Passiver Wächter (`/tmp/f24_watch.py`,
+90 s Leerlauf): **0 Events**. Positivkontrolle (1× Copilot): exakt 1 Press+Release.
+Live-Betrieb mit laufendem Dienst: nur echter Trigger im Log.
+
+> **Wichtige Lehre:** Das „offene Phantom-Log" war 3,5 h ÄLTER als der keyd-Fix.
+> Vor jeder weiteren Diagnose Alter der Messungen prüfen — das Problem war
+> bereits gelöst.
 
 ---
 
-## 4. Das verbleibende Kernproblem: CapsLock-Inversion (⚠️ NICHT gelöst)
+## 4. CapsLock-Inversion ✅ GELÖST (27.10., abschließend verifiziert)
+
+> **ABSCHLUSS (27.10, 21:03):** Nach dem keyd-Fix (`-4711:0815`, dotool nicht
+> mehr gegrabbt) ist das System wieder **konventionell**: LED aus = CapsLock aus
+> = normale Schreibung (per Diktat „Eins, zwei, drei, viereinhalb" + LED-Sicht
+> bestätigt). Live-Config auf `capslock_led_inverted = false` gesetzt, keine
+> Warnung mehr. Die nachfolgende Dokumentation der *zeitweise invertierten*
+> Semantik bleibt als Fallstudie erhalten — genau diese Verläufe sind der
+> Grund, warum die App nie ungefragt toggeln darf.
+
 
 ### 4.1 Was empirisch BEWIESEN ist
 
@@ -208,17 +223,18 @@ dotool) ist bereits implementiert.
 
 ## 5. Was als Nächstes zu tun ist
 
-### 5.1 Priorität 1 — Systemzustand heilen (Nutzer, sudo erforderlich)
+> **STATUS 27.10, ~21:05:** Prioritäten 1–3 sind **erledigt** (keyd-Fix gesetzt
+> und verifiziert; K1–K8 committet in `2dbc79b`; Phantom-F24 via 90-s-Test +
+> Live-Betrieb ausgeschlossen). Übrig bleibt nur noch §5.4 Aufräumen.
 
-```bash
-# a) keyd: dotool-Device ausnehmen (siehe §4.4)
-# b) Ab- und wieder anmelden (mutter-Seat-State zurücksetzen)
-```
+### 5.1 Priorität 1 — Systemzustand heilen ✅ ERLEDIGT
 
-Nach dem Relogin prüfen: ASCII **und** Umlaute korrekt? Wenn ja, ist das
-CapsLock-Kapitel geschlossen.
+- keyd-Ausschluss `-4711:0815` gesetzt, `keyd check` fehlerfrei,
+  Journal zeigt `ignoring 4711:0815 (dotool keyboard)`.
+- Kein Relogin nötig geworden — nach dem Fix war die Schreibung sofort korrekt
+  und die LED-Semantik wieder konventionell (`capslock_led_inverted = false`).
 
-### 5.2 Priorität 2 — Korrekturen K1–K8 umsetzen (Code)
+### 5.2 Priorität 2 — Korrekturen K1–K8 umsetzen (Code) ✅ ERLEDIGT (`2dbc79b`)
 
 Die Implementer-Runde (GLM 5.3) wurde **mitten in der Arbeit gestoppt**. Der Plan
 liegt vollständig vor und ist umsetzbar:
@@ -237,10 +253,13 @@ liegt vollständig vor und ist umsetzbar:
 **Kernregel für alle Änderungen:** Die App darf CapsLock **nie ungefragt** togglen.
 Default `capslock_autocorrect=False` → nur warnen.
 
-### 5.3 Priorität 3 — Phantom-F24 klären
+### 5.3 Priorität 3 — Phantom-F24 klären ✅ ERLEDIGT
 
-Trigger-Logging ist implementiert (uncommitted). Nach dem nächsten Start:
+Quelle war die dotool→keyd-Rückkopplung (§3.3). Verifikation: 90-s-Leerlauf
+mit 0 Events, Positivkontrolle exakt 1 Press+Release, Live-Diktat sauber.
+Wiedervorlage bei Bedarf:
 ```bash
+/tmp/f24_watch.py 90   # passiver Wächter (Dienst muss aus sein)
 journalctl --user -u stt-button -f | grep -i "Trigger"
 ```
 Kommt `Trigger press` ohne Tastendruck → keyd-Combo-Leckage (Systemconfig).
@@ -300,13 +319,15 @@ Ground-Truth-Experiment (Marker tippen bei definierten Zuständen) hat es geklä
 
 ## 8. Offene Fragen / Risiken
 
-1. **keyd-`[ids] *`** — ist es wirklich die Ursache der Umlaut-/Lock-Probleme?
-   Nachweis erst nach `sudo keyd monitor` + Device-Ausnahme möglich.
-2. **Phantom-F24** — Quelle unbekannt (keyd-Combo? Hardware-Prellen?).
-3. **Uncommittete Änderungen** — 10 geänderte + 5 neue Dateien. Getestet, aber nicht
-   committet. Bei Fortsetzung **zuerst** `pytest` laufen lassen und committen.
-4. **Der Dienst ist disabled** — muss nach Klärung wieder aktiviert werden:
-   `systemctl --user enable --now stt-button`
+1. ~~**keyd-`[ids] *`**~~ — **erledigt:** Device-Ausschluss `-4711:0815` ist
+   gesetzt und per keyd-Journal verifiziert (`ignoring 4711:0815`).
+2. **Phantom-F24** — **erledigt:** Quelle war die dotool→keyd-Rückkopplung.
+   90-s-Leerlauf-Test nach dem Fix: 0 Events; Live-Betrieb sauber (siehe §3.3).
+3. **Uncommittete Änderungen** — Doku-Updates (KONZEPT/HANDOFF) und die
+   Live-Config (`capslock_led_inverted = false`) sind die letzten Reste.
+4. **Dienst-Autostart** — läuft aktuell manuell (`start`, aber `disabled`).
+   Dauerhaft: `systemctl --user enable stt-button` (bewusst noch nicht
+   gesetzt, damit ein Neustart first nichts Uberraschendes tut).
 5. **Der `windowed`-Modus ist unfertig** — er hat die dokumentierten Deadlocks.
    `whole_buffer` ist Default und funktioniert; wer wortweises Live-Erscheinen will,
    muss `windowed` mit den Fixes aus §3.1 fertigstellen.
