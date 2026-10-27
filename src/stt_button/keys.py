@@ -265,6 +265,11 @@ class KeyListener:
                 continue
             self._handle(code, value)
 
+    def _device_names(self) -> str:
+        """Device-Namen fuer das Log (mehrere Devices moeglich)."""
+        names = [d.name for d in self.devices]
+        return ", ".join(names) if names else "?"
+
     def _handle(self, code: int, value: int) -> None:
         if code not in self._wanted:
             return
@@ -273,6 +278,12 @@ class KeyListener:
             if code in self._pressed:
                 return
             self._pressed.add(code)
+            # Phantom-Events (z.B. F24 ohne Tastendruck) sind nur im Journal
+            # zuordenbar, wenn jeder Trigger geloggt wird. Bewusst KEIN
+            # Debounce: das wuerde die Push-to-Talk-Latenz verschlechtern.
+            log.info(
+                "Trigger press: code=%d device=%s", code, self._device_names()
+            )
             if self._all_pressed():
                 self._on_press(KeyEvent(code=code, value=value))
             return
@@ -285,6 +296,9 @@ class KeyListener:
             # Dienstes). Bei Kombinationen wird erst gemeldet, wenn
             # keine Taste mehr gedrueckt ist.
             if not self._pressed:
+                log.info(
+                    "Trigger release: code=%d device=%s", code, self._device_names()
+                )
                 self._on_release(KeyEvent(code=code, value=value))
             elif was_pressed:
                 # Teilstelle einer Kombination: noch kein Trigger.

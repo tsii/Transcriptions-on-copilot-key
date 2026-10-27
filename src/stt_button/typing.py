@@ -23,8 +23,8 @@ log = logging.getLogger(__name__)
 BACKSPACE_BATCH = 20
 
 
-def _capslock_state() -> str:
-    """Liest den CapsLock-LED-Zustand (Diagnose).
+def _capslock_leds() -> dict[str, str]:
+    """Liest den CapsLock-LED-Zustand pro Device (Diagnose).
 
     Hintergrund: Ein invertierter CapsLock-Zustand in der Input-Pipeline
     verfaelscht den getippten Text zeichengenau ("Das" -> "dAS"). Das ist
@@ -32,25 +32,50 @@ def _capslock_state() -> str:
     Tippvorgang, um die Quelle eindeutig zu identifizieren.
 
     Returns:
+        Mapping Device-Name -> "an" (=1), "aus" (=0) oder "?" (nicht lesbar).
+        Der Device-Name ist der Basename des LED-Dirnames, z.B.
+        "input3::capslock".
+    """
+    result: dict[str, str] = {}
+    try:
+        leds = glob.glob("/sys/class/leds/*capslock*/brightness")
+    except Exception:  # noqa: BLE001 - Diagnose darf nie den Betrieb stoeren
+        return result
+    for path in leds:
+        import os
+        # Basename des LED-Dirnames, z.B. "/sys/class/leds/input3::capslock"
+        # -> "input3::capslock".
+        device = os.path.basename(os.path.dirname(path))
+        try:
+            with open(path) as fh:
+                raw = fh.read().strip()
+            if raw == "1":
+                result[device] = "an"
+            elif raw == "0":
+                result[device] = "aus"
+            else:
+                result[device] = "?"
+        except OSError:
+            result[device] = "?"
+    return result
+
+
+def _capslock_state() -> str:
+    """Liest den aggregierten CapsLock-LED-Zustand (Diagnose).
+
+    Baut auf :func:`_capslock_leds` auf: "an", wenn irgendein Device "an"
+    meldet, sonst "aus"; bei keiner LED "?".
+
+    Returns:
         "an", "aus" oder "?" (kein LED gefunden).
     """
     try:
-        leds = glob.glob("/sys/class/leds/*capslock*/brightness")
-        if not leds:
-            return "?"
-        # Bei mehreren Devices: "an", wenn irgendeine LED leuchtet.
-        states = []
-        for path in leds:
-            try:
-                with open(path) as fh:
-                    states.append(fh.read().strip())
-            except OSError:
-                pass
-        if not states:
-            return "?"
-        return "an" if any(s == "1" for s in states) else "aus"
+        leds = _capslock_leds()
     except Exception:  # noqa: BLE001 - Diagnose darf nie den Betrieb stoeren
         return "?"
+    if not leds:
+        return "?"
+    return "an" if any(v == "an" for v in leds.values()) else "aus"
 
 
 class TyperError(RuntimeError):
@@ -104,6 +129,7 @@ class DotoolTyper:
         xkb_variant: str = "nodeadkeys",
         typedelay_ms: int = 20,
         typehold_ms: int = 15,
+        capslock_autocorrect: bool = False,
         capslock_led_inverted: bool = True,
     ) -> None:
         if binary:
@@ -118,35 +144,51 @@ class DotoolTyper:
         # Shift beim Folgebuchstaben nach -> "So" wird zu "SO".
         self._typedelay_ms = typedelay_ms
         self._typehold_ms = typehold_ms
-        # Auf diesem System ist die CapsLock-LED invertiert zum echten
-        # Lock-State (LED an = normale Schreibung).
+        # Standard: NICHT eingreifen. Der CapsLock-Lock-State ist nicht
+        # zuverlaessig lesbar (LED != State, xset != State) - die App darf
+        # ihn deshalb nur erkennen und warnen.
+        self._capslock_autocorrect = capslock_autocorrect
+        # LED-Semantik dieses Systems (empirisch belegt): True = LED aus
+        # bedeutet CapsLock aktiv (= invertiert). False = konventionelle
+        # Zuordnung (LED an = CapsLock aktiv).
         self._capslock_led_inverted = capslock_led_inverted
 
-    def _ensure_capslock_normal(self) -> None:
-        """Stellt sicher, dass CapsLock den Text NICHT invertiert.
+    def _capslock_leds_target(self) -> str:
+        """Ziel-LED-Zustand fuer normale Schreibung.
 
-        Auf diesem System ist die CapsLock-LED **out-of-sync** zum echten
-        XKB-Lock-State: LED **an** = normale (Klein-)Schreibung, LED **aus** =
-        invertierte Schreibung. Das wurde empirisch verifiziert.
-
-        Ziel-Zustand ist daher LED = "an". Der gewuenschte Zustand ist ueber
-        ``capslock_led_inverted`` konfigurierbar, falls das System sich anders
-        verhaelt.
-
-        ``key capslock`` ist ein TOGGLE - deshalb wird nach dem Umschalten
-        verifiziert und hoechstens zweimal getoggelt.
+        Bei invertierter Semantik ist LED "an" normal, sonst "aus".
         """
+        return "an" if self._capslock_led_inverted else "aus"
+
+    def _ensure_capslock_normal(self) -> None:
+        """Warnt, wenn CapsLock den Text invertiert - toggelt im Default nie.
+
+        Ground Truth (empirisch belegt): LED **aus** = CapsLock aktiv =
+        invertierter Text; LED **an** = normale Schreibung. Das Ziel ist
+        ueber ``capslock_led_inverted`` konfigurierbar.
+
+        ``key capslock`` ist ein TOGGLE und der Lock-State nicht verlaesslich
+        verifizierbar. Deshalb wird standardmaessig nur gewarnt. Nur bei
+        explizitem ``capslock_autocorrect=True`` wird umgeschaltet, mit
+        hoechstens zwei Versuchen.
+        """
+        target = self._capslock_leds_target()
         state = _capslock_state()
         if state == "?":
             # Keine LED gefunden - nicht blind toggeln (Desync-Gefahr).
             log.debug("CapsLock-Zustand unbekannt (keine LED) - kein Eingriff")
             return
-
-        # Ziel-LED-Zustand bestimmen.
-        # invertiert (dieses System): LED "an" = normale Schreibung.
-        # konventionell:               LED "aus" = normale Schreibung.
-        target = "an" if self._capslock_led_inverted else "aus"
         if state == target:
+            return
+
+        if not self._capslock_autocorrect:
+            log.warning(
+                "CapsLock-LED steht auf %r, Ziel %r - getippter Text kann "
+                "invertiert erscheinen. Es wird NICHT umgeschaltet "
+                "(capslock_autocorrect = false). Abhilfe: physische "
+                "CapsLock-Taste druecken oder ab-/anmelden.",
+                state, target,
+            )
             return
 
         log.warning(
@@ -157,11 +199,12 @@ class DotoolTyper:
             self._send_raw("key capslock\n")
             time.sleep(0.08)
             if _capslock_state() == target:
-                log.info("CapsLock normalisiert (Versuch %d)", attempt)
+                log.info("CapsLock auf Ziel %r gesetzt (Versuch %d)", target, attempt)
                 return
         log.error(
-            "CapsLock konnte nicht normalisiert werden - Text kann invertiert "
-            "sein. Manuell: stt-button reset-capslock"
+            "CapsLock liess sich nicht auf Ziel %r setzen - Text kann invertiert "
+            "sein. Manuell: stt-button reset-capslock",
+            target,
         )
 
     def type_text(self, text: str) -> None:
@@ -204,7 +247,7 @@ class DotoolTyper:
     def _send_raw(self, payload: str) -> None:
         """Schickt einen Payload an dotool - ohne CapsLock-Behandlung.
 
-        Wird auch von :meth:`_ensure_capslock_off` genutzt, daher bewusst
+        Wird auch von :meth:`_ensure_capslock_normal` genutzt, daher bewusst
         ohne erneute CapsLock-Pruefung (kein Rekursionsrisiko).
         """
         import os
@@ -232,16 +275,28 @@ class DotoolTyper:
         # ("Das" -> "dAS") - das passiert NICHT im ASR, sondern durch den
         # Modifier-/Lock-Zustand der Input-Pipeline.
         led_before = _capslock_state()
+        leds_before = _capslock_leds()
         self._send_raw(payload)
         led_after = _capslock_state()
 
-        if led_before != "aus" or led_after != "aus":
+        target = self._capslock_leds_target()
+        if led_before != target or led_after != target:
             log.warning(
-                "CAPSLOCK-Diagnose: vor=%s nach=%s payload=%r",
+                "CAPSLOCK-Diagnose: LED vor=%s nach=%s - CapsLock ist "
+                "vermutlich aktiv (LED ist kein verlaesslicher State), der "
+                "Text kann invertiert erscheinen. payload=%r",
                 led_before, led_after, payload[:80],
             )
         else:
-            log.debug("capslock ok (aus) payload=%r", payload[:60])
+            log.debug("capslock ok (%s) payload=%r", target, payload[:60])
+
+        # Pro-Device-Diagnose: die LED <-> State-Zuordnung ist nicht
+        # verlaesslich; mehrere Devices koennen widersprechen.
+        if leds_before:
+            log.debug(
+                "CAPSLOCK-LEDs pro Device: %s (LED != State, nur Diagnose)",
+                leds_before,
+            )
 
 
 class WtypeTyper:

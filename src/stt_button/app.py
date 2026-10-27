@@ -67,6 +67,7 @@ class Application:
                     xkb_variant=self.config.xkb_variant,
                     typedelay_ms=self.config.typedelay_ms,
                     typehold_ms=self.config.typehold_ms,
+                    capslock_autocorrect=self.config.capslock_autocorrect,
                     capslock_led_inverted=self.config.capslock_led_inverted,
                 )
             except TyperError as exc:
@@ -113,6 +114,7 @@ class Application:
                 min_audio_s=min_audio_s,
                 sample_rate=cfg.sample_rate,
                 commit_agreements=cfg.commit_agreements,
+                vad=SileroVadGate(),
             )
 
         return PushToTalkController(

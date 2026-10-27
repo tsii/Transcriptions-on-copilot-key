@@ -374,6 +374,10 @@ class StreamTranscriber:
     min_audio_s: float = 0.8
     sample_rate: int = DEFAULT_SAMPLE_RATE
     commit_agreements: int = 2
+    #: Optionales VAD-Gate (z.B. :class:`~stt_button.vad.SileroVadGate`).
+    #: Meldet es im NEUEN Audio-Bereich keine Sprache, wird nicht transkribiert
+    #: (verhindert Halluzinationen auf Stille -> Phantom-Backspaces).
+    vad: object | None = None
 
     _buffer: bytearray = field(default_factory=bytearray, init=False, repr=False)
     _last_transcribed_at: float = field(default=0.0, init=False, repr=False)
@@ -382,6 +386,8 @@ class StreamTranscriber:
     _committed_len: int = field(default=0, init=False, repr=False)
     _history: list[str] = field(default_factory=list, init=False, repr=False)
     _last_text: str = field(default="", init=False, repr=False)
+    #: Audio-Stand (Sekunden), zu dem das VAD zuletzt befragt wurde.
+    _vad_checked_at: float = field(default=0.0, init=False, repr=False)
 
     # ------------------------------------------------------------------
     # Zustand
@@ -418,6 +424,7 @@ class StreamTranscriber:
         self._committed_len = 0
         self._history = []
         self._last_text = ""
+        self._vad_checked_at = 0.0
 
     def feed(self, chunk: bytes) -> None:
         """Legt Audiodaten in den Puffer."""
@@ -438,6 +445,34 @@ class StreamTranscriber:
             if self.audio_seconds - self._last_transcribed_at < self.interval_s:
                 return None
 
+        # VAD-Gate: Stille/Rauschen darf nie bis zur ASR kommen. Geprueft wird
+        # nur das neue Audio (ab der letzten Transkription) - das spart Rechen-
+        # zeit und verhindert Phantom-Text samt Backspace-Ruecknahmen.
+        # Ein Fehler im Gate darf das Diktat nicht verhindern: es ist eine
+        # Optimierung, kein Muss.
+        if self.vad is not None:
+            if not self._vad_due():
+                return None
+            self._vad_checked_at = self.audio_seconds
+            new_audio = self._new_audio()
+            arr = _pcm_to_float(new_audio) if new_audio else None
+            # Unter 1s kann das VAD nichts beurteilen -> nicht blocken.
+            if arr is not None and len(arr) >= self.sample_rate:
+                try:
+                    speech = self.vad.has_speech(arr)
+                except Exception as exc:  # noqa: BLE001 - Gate ist optional
+                    log.warning(
+                        "VAD-Gate fehlgeschlagen (%s) - transkribiere trotzdem", exc
+                    )
+                else:
+                    if not speech:
+                        log.debug(
+                            "VAD: keine Sprache in %.1fs neuem Audio - "
+                            "Transkription uebersprungen",
+                            len(new_audio) / (self.sample_rate * BYTES_PER_SAMPLE),
+                        )
+                        return None
+
         return self._transcribe()
 
     def finalize(self) -> TranscriptionResult:
@@ -452,6 +487,24 @@ class StreamTranscriber:
     # ------------------------------------------------------------------
     # Intern
     # ------------------------------------------------------------------
+    def _new_audio(self) -> bytes:
+        """Audio seit der letzten Transkription (sonst der ganze Puffer)."""
+        start_byte = int(
+            self._last_transcribed_at * self.sample_rate * BYTES_PER_SAMPLE
+        )
+        return bytes(self._buffer[start_byte:])
+
+    def _vad_due(self) -> bool:
+        """Ist ein neuer VAD-Lauf faellig?
+
+        Bei Stille wird ``_last_transcribed_at`` nie fortgeschrieben; ohne
+        diese Drosselung pruefte das Gate im Controler-Takt (20 ms) immer
+        wieder den ganzen Puffer.
+        """
+        if self._vad_checked_at <= 0.0:
+            return True
+        return self.audio_seconds - self._vad_checked_at >= self.interval_s
+
     def _transcribe(self) -> TranscriptionResult:
         self._last_transcribed_at = self.audio_seconds
         self._has_transcribed = True

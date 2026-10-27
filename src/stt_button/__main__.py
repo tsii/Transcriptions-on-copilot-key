@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import subprocess
 import sys
 
-from .config import Config, ConfigError, load_config
+from .config import ConfigError, load_config
+from .typing import _capslock_leds, _capslock_state
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -99,40 +101,125 @@ def _cmd_test_typer(args: argparse.Namespace) -> int:
 
 
 def _cmd_reset_capslock(args: argparse.Namespace) -> int:
-    """Bringt die CapsLock-LED in den Zustand "normale Schreibung".
+    """Setzt die CapsLock-LED auf den Zielzustand aus der Config.
 
-    Auf diesem System ist die LED invertiert zum echten XKB-Lock-State:
-    LED **an** = normale Schreibung, LED **aus** = invertierter Text.
-    Der Zielzustand ist ueber ``capslock_led_inverted`` konfigurierbar.
+    Das Ziel ist konfigurierbar ueber ``capslock_led_inverted``. Ground Truth
+    (empirisch belegt, ThinkPad + keyd + GNOME/Wayland): LED **aus** =
+    CapsLock aktiv = invertierter Text; LED **an** = normale Schreibung.
+    Daher ist das Default-Ziel hier "an".
+
+    ``key capslock`` ist ein TOGGLE, der Lock-State ist nicht zuverlaessig
+    verifizierbar: deshalb hoechstens drei Versuche.
     """
     import time as _t
 
-    from .config import load_config
-    from .typing import DotoolTyper, _capslock_state
+    from .config import ConfigError, load_config
+    from .typing import DotoolTyper
 
-    cfg = load_config(getattr(args, "config", None))
-    target = "an" if cfg.capslock_led_inverted else "aus"
+    target = "an"  # Default invertiert (belegt)
+    try:
+        cfg = load_config(getattr(args, "config", None))
+        target = "an" if cfg.capslock_led_inverted else "aus"
+    except ConfigError as exc:
+        print(f"Hinweis: Konfiguration wird ignoriert ({exc})")
 
-    print(f"CapsLock-LED: {_capslock_state()}  (Ziel: {target})")
-    typer = DotoolTyper(capslock_led_inverted=cfg.capslock_led_inverted)
-    for _ in range(3):
+    def _show_leds(label: str) -> None:
+        leds = _capslock_leds()
+        if leds:
+            for device, val in sorted(leds.items()):
+                print(f"  {device}: {val}")
+        else:
+            print(f"  (keine LED gefunden)  {label}")
+
+    print(f"CapsLock-Ziel: {target}")
+    print("LEDs pro Device:")
+    _show_leds("vorher")
+
+    typer = DotoolTyper()
+    for attempt in (1, 2, 3):
         if _capslock_state() == target:
             break
+        print(f"  Toggle {attempt}/3: CapsLock auf {target!r} ...")
         typer._send_raw("key capslock\n")
         _t.sleep(0.12)
 
     final = _capslock_state()
     print(f"CapsLock-LED jetzt: {final}")
     if final == target:
-        print("OK - normale Schreibung sollte funktionieren.")
+        # Semantik erklaeren, abhaengig vom Ziel.
+        if target == "an":
+            print("OK - LED an = normale Schreibung")
+        else:
+            print("OK - LED aus = normale Schreibung")
+        print(
+            "Falls Text weiter invertiert: einmal physische CapsLock-Taste "
+            "druecken oder ab-/anmelden."
+        )
         return 0
+    print("WARNUNG: Zielzustand nicht erreicht.")
     print(
-        "WARNUNG: Zielzustand nicht erreicht.\n"
         "  Der Lock sitzt vermutlich im XKB-State des Compositors.\n"
         "  Abhilfe: keyd neu starten (sudo systemctl restart keyd) "
         "oder ab-/anmelden."
     )
     return 1
+
+
+def _cmd_caps_diagnose(args: argparse.Namespace) -> int:
+    """Diagnose: CapsLock-LED pro Device, xset q, Zielzustand und Marker.
+
+    Liefert alle LEDs samt Zustand, die Caps-Lock-Zeile aus ``xset q``
+    (tolerant, DISPLAY=:0), den gueltigen Zielzustand laut Config und tippt
+    einen Marker ``[[diagnose-OK]]``, den der Nutzer im Fokusfenster prueft.
+    """
+    import os
+
+    from .config import ConfigError, load_config
+    from .typing import DotoolTyper
+
+    target = "an"
+    try:
+        cfg = load_config(getattr(args, "config", None))
+        target = "an" if cfg.capslock_led_inverted else "aus"
+    except ConfigError as exc:
+        print(f"Hinweis: Konfiguration wird ignoriert ({exc})")
+
+    print("CapsLock-Diagnose")
+    print("-----------------")
+    print("LEDs pro Device:")
+    leds = _capslock_leds()
+    if leds:
+        for device, val in sorted(leds.items()):
+            print(f"  {device}: {val}")
+    else:
+        print("  (keine LED gefunden)")
+
+    print("\nxset q (Caps-Lock-Zeile):")
+    try:
+        env = os.environ.copy()
+        env["DISPLAY"] = ":0"
+        proc = subprocess.run(["xset", "q"], capture_output=True, text=True, env=env)
+        if proc.returncode == 0:
+            for line in (proc.stdout or "").splitlines():
+                if "Caps Lock" in line or "caps lock" in line.lower():
+                    print(f"  {line.strip()}")
+        else:
+            print(f"  xset q fehlgeschlagen (rc={proc.returncode})")
+    except (FileNotFoundError, OSError) as exc:
+        print(f"  xset q nicht verfuegbar: {exc}")
+
+    print(f"\nGueltiger Zielzustand laut Config: {target}")
+    print(
+        f"  (capslock_led_inverted -> LED {target} = normale Schreibung)"
+    )
+
+    print("\nTippe Marker [[diagnose-OK]] ...")
+    typer = DotoolTyper()
+    typer.type_text("[[diagnose-OK]]")
+    print(
+        "Pruefe im Fokusfenster, ob [[diagnose-OK]] normal angekommen ist."
+    )
+    return 0
 
 
 def _cmd_compare_stream(args: argparse.Namespace) -> int:
@@ -222,6 +309,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_caps = sub.add_parser("reset-capslock",
                             help="CapsLock ausschalten (behebt invertierten Text)")
     p_caps.set_defaults(func=_cmd_reset_capslock)
+
+    p_diag = sub.add_parser("caps-diagnose",
+                            help="CapsLock-LEDs pro Device + Zielzustand diagnostizieren")
+    p_diag.set_defaults(func=_cmd_caps_diagnose)
 
     return parser
 

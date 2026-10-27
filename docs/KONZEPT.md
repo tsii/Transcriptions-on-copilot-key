@@ -285,37 +285,78 @@ zeichengenau, ist es **kein ASR-Fehler**, sondern der Lock-Zustand der Ausgabe-P
   Zu klein → unter CPU-Last gehen Key-Events verloren → Modifier hängen.
 * **Lock-Status loggen** (vor/nach jedem Tippvorgang) — sonst ist die Quelle nicht
   zuordenbar.
-* **Aktiven CapsLock vor dem Tippen ausschalten** (empfohlener Fix, siehe unten).
+* **CapsLock nur erkennen und warnen** (Standard, `capslock_autocorrect = false`).
+  Die App darf CapsLock **niemals** selbst togglen (Begründung unten).
 * **Korrektes Tastaturlayout** setzen (Desktop: `DOTOOL_XKB_LAYOUT=de`,
   `DOTOOL_XKB_VARIANT=nodeadkeys`). Ohne das: `z`↔`y` vertauscht, `?`→`_`.
 
-#### CapsLock zuverlässig erkennen und zurücksetzen
+#### CapsLock: erkennen und warnen — nicht eingreifen
 
-**Wichtig — die Zustandsquelle:** Die Kernel-LED ist die **verlässliche** Quelle,
-`xset q` (XWayland) **nicht**: Bei Wayland-Compositor-Zustand meldet `xset`
-„off“, während die LED korrekt „an“ zeigt (selbst gemessen).
+**Die Zuordnung ist auf diesem System empirisch belegt invertiert:**
+`LED aus = CapsLock aktiv = invertierter Text`; `LED an = normale Schreibung`
+(Klein/Groß wie getippt). Gemessen auf ThinkPad + keyd + GNOME/Wayland — das
+ist **invertiert** zur ueblichen Konvention.
+
+**Kernregel:** **Die App darf CapsLock niemals ungefragt togglen.** Der
+Lock-State ist nicht zuverlaessig lesbar (`LED != State`, `xset != State`):
+
+* `key capslock` per uinput ist ein **Toggle** — man weiß nie, in welche Richtung er
+  geht. Ein zweiter Toggle „zur Sicherheit“ kann den Fehler wieder herstellen.
+* Die Kernel-LED kann dem echten Lock-State nachhängen (State-Writethrough) oder
+  von mehreren Devices unterschiedlich gemeldet werden.
+* `xset q` (XWayland) ist **keine** verlaessliche Quelle: bei Wayland-Compositor-State
+  meldet `xset` „off“, während der Lock aktiv ist (selbst gemessen).
+
+Deshalb: **nur detektieren und warnen**. Der Vorher-Zustand wird geloggt, damit
+die Quelle eines invertierten Diktats eindeutig zuordenbar ist:
 
 ```python
-def _capslock_state() -> str:
-    """Kernel-LED lesen - 'an', 'aus' oder '?'."""
+def _capslock_leds() -> dict[str, str]:
+    """Kernel-LED pro Device lesen - Device-Name -> 'an'/'aus'/'?'."""
     leds = glob.glob("/sys/class/leds/*capslock*/brightness")
+    result = {}
+    for path in leds:
+        device = os.path.basename(os.path.dirname(path))
+        raw = open(path).read().strip()
+        result[device] = "an" if raw == "1" else ("aus" if raw == "0" else "?")
+    return result
+
+def _capslock_state() -> str:
+    """Aggregiert ueber alle Devices - 'an', 'aus' oder '?'."""
+    leds = _capslock_leds()
     if not leds:
         return "?"
-    # Bei mehreren Devices (z.B. physische Tastatur + keyd-Device):
-    # 'an', wenn IRGENDEINE LED leuchtet.
-    return "an" if any(open(p).read().strip() == "1" for p in leds) else "aus"
+    return "an" if any(v == "an" for v in leds.values()) else "aus"
 
-def _ensure_capslock_off(self):
-    if _capslock_state() != "an":
+def _ensure_capslock_normal(self):
+    """Im Default: nur warnen - KEIN Toggle."""
+    target = "an" if self._capslock_led_inverted else "aus"
+    state = _capslock_state()
+    if state == "?" or state == target:
         return
-    self._send_raw("key capslock\n")   # NICHT _send() -> Rekursionsgefahr!
-    time.sleep(0.05)                   # State-Writethrough abwarten
-    if _capslock_state() == "an":
-        log.error("CapsLock liess sich nicht ausschalten")
+    log.warning(
+        "CapsLock-LED steht auf %r, Ziel %r - Text kann invertiert "
+        "erscheinen. Es wird NICHT umgeschaltet.", state, target,
+    )
 ```
 
-Und vor **jedem** `type_text()` aufrufen. Wichtig: einen `_send_raw()` ohne
-CapsLock-Prüfung verwenden, sonst ruft sich die Prüfung selbst auf.
+Nur wer den Eingriff **explizit** will, setzt `capslock_autocorrect = true`:
+dann wird auf den konfigurierbaren Zielzustand geschaltet — `capslock_led_inverted =
+true` (Default) bedeutet Ziel LED „an“, `false` bedeutet Ziel LED „aus“ — mit
+Verifikation und höchstens zwei Versuchen. Der Toggle nutzt ausschließlich
+`_send_raw()` (ohne CapsLock-Prüfung), sonst ruft sich die Prüfung selbst auf
+(Rekursionsgefahr).
+
+**Manuelle Abhilfe** (Aufgabe des Nutzers, nicht der App):
+
+* `stt-button reset-capslock` — setzt die LED auf den konfigurierten
+  Zielzustand (max. 3 Toggles) und nennt die nächsten Schritte.
+* `stt-button caps-diagnose` — listet alle LEDs pro Device, die `xset q`
+  Caps-Lock-Zeile und den gültigen Zielzustand und tippt einen Marker
+  `[[diagnose-OK]]`.
+* Einmal die **physische CapsLock-Taste** drücken oder ab-/anmelden (setzt den
+  seat-globalen XKB-State zurück).
+* Bleibt es invertiert: `sudo systemctl restart keyd` und Re-Login.
 
 #### Umlaute sind ein guter Lackmustest
 
@@ -490,7 +531,8 @@ Gesamtaudios** vergleichen. Genau dieser Test hat die windowed-Defekte aufgedeck
 **Debug-Hilfen, die sich gelohnt haben:**
 * Audio jeder Aufnahme nach `/tmp/stt_last.wav` dumpen → reproduzierbar analysierbar.
 * Jeden Transkriptions-Schritt loggen (`audio_seconds → text, committed_len`).
-* Lock-Zustand (CapsLock) vor/nach jedem Tippen loggen (3.5).
+* Lock-Zustand (CapsLock) vor/nach jedem Tippen loggen, Trigger-Press/Release
+  loggen (3.5).
 
 ---
 

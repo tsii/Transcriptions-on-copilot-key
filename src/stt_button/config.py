@@ -80,10 +80,16 @@ class Config:
     #: erscheint dann invertiert/gross. Bei Problemen erhoehen (z.B. 30/25).
     typedelay_ms: int = 20
     typehold_ms: int = 15
-    #: Ist die CapsLock-LED out-of-sync zum echten Lock-State? Auf diesem
-    #: ThinkPad verifiziert: LED **an** = normale Schreibung, LED **aus** =
-    #: invertiert. Dann muss vor dem Tippen auf LED "an" normalisiert werden.
-    #: Bei "False" wird konventionell auf LED "aus" normalisiert.
+    #: Soll die App CapsLock vor dem Tippen zwangsweise einschalten/ausschalten?
+    #: Standard ist **False**: der Lock-State ist nicht zuverlaessig lesbar
+    #: (LED != State, xset != State), deshalb wird nur gewarnt. Wer den
+    #: Eingriff trotzdem will, setzt den Wert explizit auf True.
+    capslock_autocorrect: bool = False
+    #: Semantik der CapsLock-LED dieses Systems. Ground Truth (empirisch
+    #: belegt, ThinkPad + keyd + GNOME/Wayland): LED **aus** = CapsLock
+    #: aktiv = invertierter Text; LED **an** = normale Schreibung. Das ist
+    #: INVERTIERT zur ueblichen Konvention, daher True als Default. Bei
+    #: capslock_autocorrect=True ist das Ziel der LED-Zustand "an" (normal).
     capslock_led_inverted: bool = True
     append_space: bool = True
     #: Maximale Laenge (Zeichen) einer Ruecknahme. Laengere Korrekturen

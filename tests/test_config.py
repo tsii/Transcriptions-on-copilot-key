@@ -159,3 +159,35 @@ class TestTypingDelays:
         p = write_config(tmp_path, "typedelay_ms = -1")
         with pytest.raises(ConfigError):
             load_config(p)
+
+
+class TestCapslockAutocorrect:
+    """Die App darf CapsLock standardmaessig NICHT umschalten."""
+
+    def test_default_is_off(self) -> None:
+        assert Config().capslock_autocorrect is False
+
+    def test_parse_true(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, "capslock_autocorrect = true")
+        assert load_config(p).capslock_autocorrect is True
+
+    def test_wrong_type_is_rejected(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, 'capslock_autocorrect = "ja"')
+        with pytest.raises(ConfigError) as exc:
+            load_config(p)
+        assert "capslock_autocorrect" in str(exc.value)
+
+    def test_capslock_led_inverted_key_accepted(self, tmp_path: Path) -> None:
+        """Der Schluessel `capslock_led_inverted` ist bekannt und wird uebernommen."""
+        p = write_config(tmp_path, "capslock_led_inverted = true")
+        cfg = load_config(p)
+        assert cfg.capslock_led_inverted is True
+
+    def test_capslock_led_inverted_key_accepted_false(self, tmp_path: Path) -> None:
+        """Auch `false` wird uebernommen (kein ConfigError)."""
+        p = write_config(tmp_path, "capslock_led_inverted = false")
+        cfg = load_config(p)
+        assert cfg.capslock_led_inverted is False
+
+    def test_config_has_led_inverted_attribute_default_true(self) -> None:
+        assert Config().capslock_led_inverted is True

@@ -28,7 +28,8 @@ xkb_layout = "de"               # Tastaturlayout fuer dotool
 xkb_variant = "nodeadkeys"      # ohne tote Tasten (fuer Akzente)
 typedelay_ms = 20              # Tipp-Tempo; bei Modifier-Haengern erhoehen (z.B. 30)
 typehold_ms = 15               # Tasten-Haltezeit
-capslock_led_inverted = true   # LED an = normale Schreibung (auf diesem System verifiziert)
+capslock_autocorrect = false   # App darf CapsLock NIE ungefragt togglen (nur warnen); true = vor dem Tippen auf den Zielzustand zwingen
+capslock_led_inverted = true    # LED-Semantik dieses Systems (belegt): true = LED aus heisst CapsLock aktiv; Ziel bei autocorrect = LED an
 append_space = true            # Leerzeichen nach dem Diktat
 max_revision_chars = 60
 
