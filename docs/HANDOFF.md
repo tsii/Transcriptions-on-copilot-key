@@ -101,9 +101,24 @@ capslock_autocorrect = false     # (Zeile 41, manuell gefixt; vorher: capslock_l
 finalen Transkription (blockierte im Key-Thread, mehrere Sekunden) war der Zustand
 `FINALIZING` → der Tastendruck wurde **verworfen**.
 
-**Fix (Commit `5826f26`):** Finale Transkription läuft im Hintergrund-Thread; ein
-Tastendruck währenddessen wird **vorgemerkt** (`_pending_start`) und danach
-automatisch ausgeführt. Test: `test_start_during_finalizing_is_pending_not_dropped`.
+**Fix (Commit `5826f26`):** Finale Transkription läuft im Hintergrund-Thread.
+
+**⚠️ Folge-Bug (Geisteraufnahme), ebenfalls GELÖST (TDD, openrouter/Kimi-k3.1-pro
++ GLM 5.3):** Der Vorläufer-Mechanismus `_pending_start` (Bool) merkte nur
+„irgendwann gab es einen Press“; das Release während FINALIZING ging verloren →
+nach Finalisierungsende wurde für eine längst losgelassene Taste eine
+Geisteraufnahme gestartet (im Live-Log belegt). **Heutiger Stand:**
+`_key_down` (physischer Tastenzustand) ersetzt den Bool — Release aktualisiert
+IMMER den Tastenzustand, Start nach Finalisierung nur bei gehaltener Taste,
+Prüfung+Start atomar unter `_lock`. Tests (deterministisch, BlockingTranscriber
+statt Sleeps): `test_release_during_finalizing_updates_key_state`,
+`test_key_held_through_finalize_restarts_recording`,
+`test_start_after_finalizing_only_when_key_held`,
+`test_release_after_finalized_start_stops_fresh_recording`,
+`test_press_during_recording_is_idempotent`. Alter Sleep-Test entfernt.
+Bekannte Grenze: Kurzhub während FINALIZING wird verworfen (kein Audio erfasst).
+Nebenwirkung (Design-konform): bei **gehaltener** Taste nach Max-Dauer-Finalize
+startet automatisch die nächste Aufnahme.
 
 ### 3.3 Phantom-Aufnahmen im Leerlauf ✅ GELÖST (27.10., verifiziert)
 

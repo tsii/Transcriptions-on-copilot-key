@@ -40,9 +40,19 @@ IDLE ──press──▶ RECORDING ──release──▶ FINALIZING ──▶ 
 * **Taste halten = aufnehmen, loslassen = finalisieren.** Kein Toggle, kein Doppelklick.
 * `start_recording()` ist **idempotent** (doppelter Tastendruck startet nicht neu).
 * Ein Lock (`threading.RLock`) serialisiert Zugriffe aus Key-Thread und ASR-Schleife.
+* **Der Tastenzustand wird immer geführt:** `_key_down` wird bei *jedem* Press/Release
+  aktualisiert — unabhängig davon, in welchem Zustand der Controller gerade ist.
+  Nach Abschluss einer Finalisierung wird **nur dann** automatisch die nächste
+  Aufnahme gestartet, wenn die Taste **noch gedrückt** ist (Prüfung + Start
+  atomar unter demselben Lock). Ein abgeschlossener Kurzhub während FINALIZING
+  wird verworfen — er hat nie Audio erfasst. (Früher: Bool `_pending_start`
+  = „irgendwann ein Press gesehen“ → Geisteraufnahme; siehe Fallstrick 3.6.)
 
 > **Android:** `AudioRecord` beim `ACTION_DOWN` starten, beim `ACTION_UP` stoppen.
-> `onKeyDown` kann mehrfach feuern → Idempotenz ist Pflicht.
+> `onKeyDown` kann mehrfach feuern → Idempotenz ist Pflicht. Genauso gilt:
+> `ACTION_UP` muss den Tastenzustand IMMER löschen, auch während die
+> vorherige Transkription noch läuft — sonst startet die nächste Aufnahme
+> für eine längst losgelassene Taste.
 
 ### 2.2 Trigger-Erkennung getrennt vom Mikrofon
 
@@ -379,7 +389,36 @@ ob das Tastaturlayout (`de`) korrekt gesetzt ist.
 > `InputConnection.commitText()` / `AccessibilityService` eingefügt, nicht per
 > Tasten-Emulation. Das ist ein echter Vorteil.
 
-### 3.6 Zusammenfassung: Do's & Don'ts
+### 3.6 Press/Release-Kanten während FINALIZING: die Geisteraufnahme ⚠️
+
+**Symptom:** Der Nutzer ist mit Diktat 1 fertig, bevor die (sekundenlange) finale
+Transkription durch ist, drückt sofort die Taste für Diktat 2 — und die Aufnahme
+startet **ohne gedrückte Taste** oder gar nicht.
+
+**Ursache (zwei Races):**
+1. Der „vorgemerkt“-Mechanismus war ein **Bool** (`_pending_start`): Er merkte nur
+   „irgendwann gab es einen Press“. Das zugehörige Release fiel in FINALIZING und
+   wurde kommentarlos verworfen → nach Finalisierungsende wurde eine Aufnahme für
+   eine längst losgelassene Taste gestartet.
+2. „Pending verbrauchen“ und `state = RECORDING` waren **nicht atomar** — auch ein
+   Release kurz nach Finalisierungsende konnte im Handoff-Fenster verloren gehen.
+
+**Fix (236 Tests, TDD):** Bool → **`_key_down`** (physischer Tastenzustand).
+Invariantsen:
+* Release aktualisiert den Tastenzustand **immer**, unabhängig vom Controllerzustand.
+* Gestartet wird nach Finalisierungsende **nur bei gehaltener Taste**.
+* Prüfung + Start laufen **atomar unter demselben Lock** (RLock erlaubt `_start_now()`
+  innerhalb des Blocks; dort blockiert ohnehin schon `_finish()`).
+
+**Bewusste Grenze:** Ein vollständig abgeschlossener Kurzhub während FINALIZING wird
+**verworfen** — er hat nie Audio erfasst (während FINALIZING läuft kein Capture).
+Verlustfreie Diktate in dieser Phase erfordern Rohaudio-Pufferung über
+Zustandswechsel hinweg; das ist bewusst NICHT implementiert (Kosten/Nutzen).
+
+> **Android:** exakt dieselbe Falle bei `ACTION_DOWN`/`ACTION_UP` während einer
+> laufenden Transkription. Tastenzustand führen, nie einen Bool-„war mal gedrückt“.
+
+### 3.7 Zusammenfassung: Do's & Don'ts
 
 | ✅ Do | ❌ Don't |
 |---|---|
