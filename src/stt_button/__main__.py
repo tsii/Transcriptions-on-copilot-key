@@ -99,36 +99,40 @@ def _cmd_test_typer(args: argparse.Namespace) -> int:
 
 
 def _cmd_reset_capslock(args: argparse.Namespace) -> int:
-    """Schaltet CapsLock aus (behebt invertierten Diktat-Text).
+    """Bringt die CapsLock-LED in den Zustand "normale Schreibung".
 
-    Nuetzlich, wenn der Text invertiert erscheint ("Das" -> "dAS"), weil
-    CapsLock an ist - auch wenn die Tastatur-LED etwas anderes anzeigt.
+    Auf diesem System ist die LED invertiert zum echten XKB-Lock-State:
+    LED **an** = normale Schreibung, LED **aus** = invertierter Text.
+    Der Zielzustand ist ueber ``capslock_led_inverted`` konfigurierbar.
     """
+    import time as _t
+
+    from .config import load_config
     from .typing import DotoolTyper, _capslock_state
 
-    state = _capslock_state()
-    print(f"CapsLock laut LED: {state}")
+    cfg = load_config(getattr(args, "config", None))
+    target = "an" if cfg.capslock_led_inverted else "aus"
 
-    typer = DotoolTyper()
-    # Immer einmal toggeln, wenn der Zustand an ODER unbekannt ist - bei
-    # bekanntem 'aus' nur, wenn der Nutzer es explizit will.
-    if state == "an":
+    print(f"CapsLock-LED: {_capslock_state()}  (Ziel: {target})")
+    typer = DotoolTyper(capslock_led_inverted=cfg.capslock_led_inverted)
+    for _ in range(3):
+        if _capslock_state() == target:
+            break
         typer._send_raw("key capslock\n")
-        import time as _t
-        _t.sleep(0.1)
-        print(f"Nach Reset: {_capslock_state()}")
-        return 0
+        _t.sleep(0.12)
 
-    # Zustand 'aus' oder '?': einmal toggeln und zurueck, um einen
-    # etwaigen Desync zu beheben.
-    typer._send_raw("key capslock\n")
-    import time as _t
-    _t.sleep(0.1)
-    typer._send_raw("key capslock\n")
-    _t.sleep(0.1)
-    print(f"Nach Doppel-Toggle (Desync-Reset): {_capslock_state()}")
-    print("Falls der Text weiter invertiert kommt: CapsLock-Taste manuell pruefen.")
-    return 0
+    final = _capslock_state()
+    print(f"CapsLock-LED jetzt: {final}")
+    if final == target:
+        print("OK - normale Schreibung sollte funktionieren.")
+        return 0
+    print(
+        "WARNUNG: Zielzustand nicht erreicht.\n"
+        "  Der Lock sitzt vermutlich im XKB-State des Compositors.\n"
+        "  Abhilfe: keyd neu starten (sudo systemctl restart keyd) "
+        "oder ab-/anmelden."
+    )
+    return 1
 
 
 def _cmd_compare_stream(args: argparse.Namespace) -> int:

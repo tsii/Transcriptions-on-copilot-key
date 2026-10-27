@@ -238,8 +238,8 @@ def _capture(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
         return subprocess_result()
 
     monkeypatch.setattr("stt_button.typing.subprocess.run", fake_run)
-    # CapsLock deterministisch "aus" (sonst Reset-Payload je nach Systemzustand).
-    monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "aus")
+    # CapsLock-Zielzustand deterministisch (invertierte LED -> Ziel "an").
+    monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "an")
     return calls
 
 
@@ -252,9 +252,8 @@ def _capture_stdin(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         return subprocess_result()
 
     monkeypatch.setattr("stt_button.typing.subprocess.run", fake_run)
-    # CapsLock deterministisch "aus", damit der Test nicht vom echten
-    # Systemzustand abhaengt (sonst wird ein Reset-Payload eingefuegt).
-    monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "aus")
+    # CapsLock-Zielzustand deterministisch (invertierte LED -> Ziel "an").
+    monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "an")
     return stdin
 
 
@@ -419,9 +418,37 @@ class TestCapslockDiagnostics:
 
 
 class TestCapslockReset:
-    def test_capslock_active_triggers_reset(self, monkeypatch) -> None:
-        """Bei aktivem CapsLock wird 'key capslock' gesendet."""
-        states = iter(["an", "aus"])          # vor Reset: an; nach Reset: aus
+    def test_led_off_triggers_toggle_to_on(self, monkeypatch) -> None:
+        """Invertierte LED: bei 'aus' wird getoggelt (Ziel ist 'an')."""
+        # Call-Reihenfolge: _ensure (aus), _ensure-Check (an), dann _send (an)
+        states = iter(["aus", "an", "an", "an"])
+        monkeypatch.setattr(
+            "stt_button.typing._capslock_state", lambda: next(states, "an")
+        )
+        payloads: list[str] = []
+        monkeypatch.setattr(
+            "stt_button.typing.subprocess.run",
+            lambda cmd, **kw: payloads.append(kw.get("input", "")) or subprocess_result(),
+        )
+        DotoolTyper(capslock_led_inverted=True).type_text("Das")
+        assert any("key capslock" in p for p in payloads), payloads
+        assert any("type Das" in p for p in payloads), payloads
+
+    def test_led_on_sends_no_toggle(self, monkeypatch) -> None:
+        """Invertierte LED: bei 'an' (Ziel) wird NICHT getoggelt."""
+        monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "an")
+        payloads: list[str] = []
+        monkeypatch.setattr(
+            "stt_button.typing.subprocess.run",
+            lambda cmd, **kw: payloads.append(kw.get("input", "")) or subprocess_result(),
+        )
+        DotoolTyper(capslock_led_inverted=True).type_text("Das")
+        assert not any("key capslock" in p for p in payloads)
+        assert any("type Das" in p for p in payloads)
+
+    def test_conventional_mode_led_off_is_target(self, monkeypatch) -> None:
+        """Nicht-invertiert (Standard): Ziel ist LED 'aus', bei 'an' toggeln."""
+        states = iter(["an", "aus", "aus", "aus"])
         monkeypatch.setattr(
             "stt_button.typing._capslock_state", lambda: next(states, "aus")
         )
@@ -430,14 +457,11 @@ class TestCapslockReset:
             "stt_button.typing.subprocess.run",
             lambda cmd, **kw: payloads.append(kw.get("input", "")) or subprocess_result(),
         )
-        DotoolTyper().type_text("Das")
+        DotoolTyper(capslock_led_inverted=False).type_text("Das")
         assert any("key capslock" in p for p in payloads), payloads
-        # Der eigentliche Text muss danach auch getippt werden.
-        assert any("type Das" in p for p in payloads), payloads
 
-    def test_capslock_off_sends_no_reset(self, monkeypatch) -> None:
-        """Bei ausgeschaltetem CapsLock wird kein Reset gesendet."""
-        monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "aus")
+    def test_unknown_state_does_not_toggle(self, monkeypatch) -> None:
+        monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "?")
         payloads: list[str] = []
         monkeypatch.setattr(
             "stt_button.typing.subprocess.run",
@@ -445,4 +469,3 @@ class TestCapslockReset:
         )
         DotoolTyper().type_text("Das")
         assert not any("key capslock" in p for p in payloads)
-        assert any("type Das" in p for p in payloads)

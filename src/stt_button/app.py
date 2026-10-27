@@ -67,6 +67,7 @@ class Application:
                     xkb_variant=self.config.xkb_variant,
                     typedelay_ms=self.config.typedelay_ms,
                     typehold_ms=self.config.typehold_ms,
+                    capslock_led_inverted=self.config.capslock_led_inverted,
                 )
             except TyperError as exc:
                 log.warning("dotool nicht verfuegbar (%s) - Fallback auf wtype", exc)

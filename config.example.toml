@@ -27,7 +27,8 @@ typer = "dotool"               # "dotool" (GNOME/Wayland), "wtype", "clipboard"
 xkb_layout = "de"               # Tastaturlayout fuer dotool
 xkb_variant = "nodeadkeys"      # ohne tote Tasten (fuer Akzente)
 typedelay_ms = 20              # Tipp-Tempo; bei Modifier-Haengern erhoehen (z.B. 30)
-typehold_ms = 15               # Tasten-Haltezeit; bei Modifier-Haengern erhoehen (z.B. 25)
+typehold_ms = 15               # Tasten-Haltezeit
+capslock_led_inverted = true   # LED an = normale Schreibung (auf diesem System verifiziert)
 append_space = true            # Leerzeichen nach dem Diktat
 max_revision_chars = 60
 

@@ -104,6 +104,7 @@ class DotoolTyper:
         xkb_variant: str = "nodeadkeys",
         typedelay_ms: int = 20,
         typehold_ms: int = 15,
+        capslock_led_inverted: bool = True,
     ) -> None:
         if binary:
             self.binary = binary
@@ -117,48 +118,57 @@ class DotoolTyper:
         # Shift beim Folgebuchstaben nach -> "So" wird zu "SO".
         self._typedelay_ms = typedelay_ms
         self._typehold_ms = typehold_ms
+        # Auf diesem System ist die CapsLock-LED invertiert zum echten
+        # Lock-State (LED an = normale Schreibung).
+        self._capslock_led_inverted = capslock_led_inverted
 
-    def _ensure_capslock_off(self) -> None:
-        """Schaltet CapsLock aus, falls es aktiv ist (mit Verifikation).
+    def _ensure_capslock_normal(self) -> None:
+        """Stellt sicher, dass CapsLock den Text NICHT invertiert.
 
-        Ein aktiver CapsLock invertiert jeden getippten Buchstaben
-        ("Das" -> "dAS", inkl. Umlauten) - zeichengenau und mit unveraenderten
-        Satzzeichen. Das passiert NICHT im ASR, sondern bei der Tastatur-
-        Emulation.
+        Auf diesem System ist die CapsLock-LED **out-of-sync** zum echten
+        XKB-Lock-State: LED **an** = normale (Klein-)Schreibung, LED **aus** =
+        invertierte Schreibung. Das wurde empirisch verifiziert.
 
-        Vorsicht bei Toggle-Desync: ``key capslock`` ist ein TOGGLE. Wenn die
-        Kernel-LED und der echte Compositor-Zustand auseinanderlaufen, kann
-        ein bedingungsloses Toggeln CapsLock EINschalten. Deshalb:
-          1. LED lesen
-          2. nur bei "an" toggeln
-          3. Ergebnis verifizieren; bei Fehlschlag einmal nachfassen
-          4. Fehlschlag deutlich loggen (dann hilft: stt-button reset-capslock)
+        Ziel-Zustand ist daher LED = "an". Der gewuenschte Zustand ist ueber
+        ``capslock_led_inverted`` konfigurierbar, falls das System sich anders
+        verhaelt.
+
+        ``key capslock`` ist ein TOGGLE - deshalb wird nach dem Umschalten
+        verifiziert und hoechstens zweimal getoggelt.
         """
         state = _capslock_state()
-        if state == "aus":
-            return
         if state == "?":
-            # Keine LED gefunden - lieber nicht toggeln (Desync-Risiko).
-            log.debug("CapsLock-Zustand unbekannt (keine LED) - kein Reset")
+            # Keine LED gefunden - nicht blind toggeln (Desync-Gefahr).
+            log.debug("CapsLock-Zustand unbekannt (keine LED) - kein Eingriff")
             return
 
-        log.warning("CapsLock aktiv -> wird fuer das Diktat ausgeschaltet")
+        # Ziel-LED-Zustand bestimmen.
+        # invertiert (dieses System): LED "an" = normale Schreibung.
+        # konventionell:               LED "aus" = normale Schreibung.
+        target = "an" if self._capslock_led_inverted else "aus"
+        if state == target:
+            return
+
+        log.warning(
+            "CapsLock-LED steht auf %r, Ziel %r -> wird umgeschaltet",
+            state, target,
+        )
         for attempt in (1, 2):
             self._send_raw("key capslock\n")
             time.sleep(0.08)
-            if _capslock_state() == "aus":
-                log.info("CapsLock ausgeschaltet (Versuch %d)", attempt)
+            if _capslock_state() == target:
+                log.info("CapsLock normalisiert (Versuch %d)", attempt)
                 return
         log.error(
-            "CapsLock liess sich nicht ausschalten - Text kann invertiert sein. "
-            "Manuell: stt-button reset-capslock"
+            "CapsLock konnte nicht normalisiert werden - Text kann invertiert "
+            "sein. Manuell: stt-button reset-capslock"
         )
 
     def type_text(self, text: str) -> None:
         if not text:
             return
         # CapsLock darf das Diktat nicht invertieren.
-        self._ensure_capslock_off()
+        self._ensure_capslock_normal()
         # Antipp-Verzoegerung setzen, damit Shift nicht nachhaengt ("So"
         # statt "SO").
         pre = f"typedelay {self._typedelay_ms}\ntypehold {self._typehold_ms}\n"
