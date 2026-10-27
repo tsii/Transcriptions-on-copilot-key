@@ -98,6 +98,39 @@ def _cmd_test_typer(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_reset_capslock(args: argparse.Namespace) -> int:
+    """Schaltet CapsLock aus (behebt invertierten Diktat-Text).
+
+    Nuetzlich, wenn der Text invertiert erscheint ("Das" -> "dAS"), weil
+    CapsLock an ist - auch wenn die Tastatur-LED etwas anderes anzeigt.
+    """
+    from .typing import DotoolTyper, _capslock_state
+
+    state = _capslock_state()
+    print(f"CapsLock laut LED: {state}")
+
+    typer = DotoolTyper()
+    # Immer einmal toggeln, wenn der Zustand an ODER unbekannt ist - bei
+    # bekanntem 'aus' nur, wenn der Nutzer es explizit will.
+    if state == "an":
+        typer._send_raw("key capslock\n")
+        import time as _t
+        _t.sleep(0.1)
+        print(f"Nach Reset: {_capslock_state()}")
+        return 0
+
+    # Zustand 'aus' oder '?': einmal toggeln und zurueck, um einen
+    # etwaigen Desync zu beheben.
+    typer._send_raw("key capslock\n")
+    import time as _t
+    _t.sleep(0.1)
+    typer._send_raw("key capslock\n")
+    _t.sleep(0.1)
+    print(f"Nach Doppel-Toggle (Desync-Reset): {_capslock_state()}")
+    print("Falls der Text weiter invertiert kommt: CapsLock-Taste manuell pruefen.")
+    return 0
+
+
 def _cmd_compare_stream(args: argparse.Namespace) -> int:
     """Vergleicht Streaming- vs. Ganz-Audio-Transkription.
 
@@ -181,6 +214,10 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Streaming vs. Ganz-Audio-Transkription")
     p_cmp.add_argument("--file", help="Audiodatei (default /tmp/stt_last.wav)")
     p_cmp.set_defaults(func=_cmd_compare_stream)
+
+    p_caps = sub.add_parser("reset-capslock",
+                            help="CapsLock ausschalten (behebt invertierten Text)")
+    p_caps.set_defaults(func=_cmd_reset_capslock)
 
     return parser
 

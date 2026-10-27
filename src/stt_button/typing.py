@@ -122,22 +122,37 @@ class DotoolTyper:
         """Schaltet CapsLock aus, falls es aktiv ist (mit Verifikation).
 
         Ein aktiver CapsLock invertiert jeden getippten Buchstaben
-        ("Das" -> "dAS") - zeichengenau, inkl. unveraenderter Satzzeichen.
-        Das passiert NICHT im ASR, sondern rein bei der Tastatur-Emulation.
+        ("Das" -> "dAS", inkl. Umlauten) - zeichengenau und mit unveraenderten
+        Satzzeichen. Das passiert NICHT im ASR, sondern bei der Tastatur-
+        Emulation.
 
-        Wir erkennen den Zustand an der Kernel-LED (verlaesslich, im
-        Gegensatz zu ``xset q``/XWayland, das bei Wayland-Compositor-
-        Zustand abweichen kann) und schalten ihn per ``key capslock``
-        zurueck - danach wird der Erfolg verifiziert.
+        Vorsicht bei Toggle-Desync: ``key capslock`` ist ein TOGGLE. Wenn die
+        Kernel-LED und der echte Compositor-Zustand auseinanderlaufen, kann
+        ein bedingungsloses Toggeln CapsLock EINschalten. Deshalb:
+          1. LED lesen
+          2. nur bei "an" toggeln
+          3. Ergebnis verifizieren; bei Fehlschlag einmal nachfassen
+          4. Fehlschlag deutlich loggen (dann hilft: stt-button reset-capslock)
         """
-        if _capslock_state() != "an":
+        state = _capslock_state()
+        if state == "aus":
             return
-        log.warning("CapsLock war aktiv -> wird fuer das Diktat ausgeschaltet")
-        self._send_raw("key capslock\n")
-        # Kurz warten, damit der State durchgeschrieben ist.
-        time.sleep(0.05)
-        if _capslock_state() == "an":
-            log.error("CapsLock liess sich nicht ausschalten - Text kann invertiert sein")
+        if state == "?":
+            # Keine LED gefunden - lieber nicht toggeln (Desync-Risiko).
+            log.debug("CapsLock-Zustand unbekannt (keine LED) - kein Reset")
+            return
+
+        log.warning("CapsLock aktiv -> wird fuer das Diktat ausgeschaltet")
+        for attempt in (1, 2):
+            self._send_raw("key capslock\n")
+            time.sleep(0.08)
+            if _capslock_state() == "aus":
+                log.info("CapsLock ausgeschaltet (Versuch %d)", attempt)
+                return
+        log.error(
+            "CapsLock liess sich nicht ausschalten - Text kann invertiert sein. "
+            "Manuell: stt-button reset-capslock"
+        )
 
     def type_text(self, text: str) -> None:
         if not text:

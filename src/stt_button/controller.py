@@ -70,15 +70,32 @@ class PushToTalkController:
         # Audio-Chunks, die der Capture-Thread kontinuierlich einliest.
         self._audio_queue: queue.Queue[bytes] = queue.Queue()
         self._capture_thread: threading.Thread | None = None
+        # Ein Tastendruck waehrend der Finalisierung wird vorgemerkt.
+        self._pending_start: bool = False
 
     # ------------------------------------------------------------------
     # Trigger
     # ------------------------------------------------------------------
     def start_recording(self) -> None:
-        """Beginnt eine Aufnahme (aufgerufene bei Tastendruck)."""
+        """Beginnt eine Aufnahme (aufgerufen bei Tastendruck).
+
+        Wichtig: Wenn die vorherige Aufnahme noch finalisiert (finale
+        Transkription laeuft im Hintergrund), wird der Start NICHT verworfen,
+        sondern vorgemerkt. Sonst geht ein schnell folgendes zweites Diktat
+        komplett verloren (Datenverlust).
+        """
         with self._lock:
-            if self.state != ControllerState.IDLE:
+            if self.state == ControllerState.RECORDING:
+                return  # bereits aktiv -> idempotent
+            if self.state == ControllerState.FINALIZING:
+                # Vormerken: startet automatisch, sobald finalize fertig ist.
+                self._pending_start = True
+                log.info("Diktat vorgemerkt (vorherige Finalisierung laeuft)")
                 return
+        self._start_now()
+
+    def _start_now(self) -> None:
+        """Startet die Aufnahme sofort (Zustand bereits geprueft)."""
         try:
             self._source = self._source_factory()
             self._source.start()
@@ -98,9 +115,6 @@ class PushToTalkController:
         self._last_audio_at = time.monotonic()
         self._total_bytes = 0
 
-        # Capture-Thread: liest kontinuierlich Audio ein, unabhaengig von der
-        # blockierenden ASR-Inferenz im Hauptthread. Ohne diesen Thread geht
-        # Audio verloren, sobald eine Transkription laeuft.
         self._audio_queue = queue.Queue()
         self._capture_thread = threading.Thread(
             target=self._capture_loop,
@@ -108,7 +122,6 @@ class PushToTalkController:
             daemon=True,
         )
         self._capture_thread.start()
-
         log.info("Aufnahme gestartet")
 
     def stop_recording(self) -> None:
@@ -245,20 +258,42 @@ class PushToTalkController:
         # Vollstaendige Aufnahme zu Debug-Zwecken abspeichern.
         self._dump_audio(transcriber)
 
+        # Die finale Transkription kann mehrere Sekunden dauern (CPU). Sie
+        # laeuft deshalb im HINTERGRUND, damit der Key-Thread sofort wieder
+        # bereit ist und ein schnell folgendes zweites Diktat nicht verloren
+        # geht.
         if transcriber is not None:
-            try:
-                result = transcriber.finalize()
-            except Exception as exc:  # noqa: BLE001
-                log.error("Schluss-Transkription fehlgeschlagen: %s", exc)
-                self.state = ControllerState.IDLE
-                self._transcriber = None
-                return
-            self._delta_typer.finalize(result.text, result.committed_len)
-            self._transcriber = None
+            finalizer = threading.Thread(
+                target=self._finalize_worker,
+                args=(transcriber,),
+                name="finalize",
+                daemon=True,
+            )
+            self._pending_start = False
+            finalizer.start()
+        else:
+            self.state = ControllerState.IDLE
 
-        self.state = ControllerState.IDLE
-        log.info("Aufnahme beendet (%d bytes Audio)", self._total_bytes)
-        self._total_bytes = 0
+    def _finalize_worker(self, transcriber) -> None:
+        """Fuehrt die finale Transkription aus (Hintergrund-Thread)."""
+        try:
+            result = transcriber.finalize()
+            self._delta_typer.finalize(result.text, result.committed_len)
+        except Exception as exc:  # noqa: BLE001
+            log.error("Schluss-Transkription fehlgeschlagen: %s", exc)
+        finally:
+            with self._lock:
+                self._transcriber = None
+                self.state = ControllerState.IDLE
+                log.info("Aufnahme beendet (%d bytes Audio)", self._total_bytes)
+                self._total_bytes = 0
+                pending = self._pending_start
+                self._pending_start = False
+            # Ein waehrend der Finalisierung gedrueckter Start wird jetzt
+            # nachgeholt - sonst ginge das zweite Diktat verloren.
+            if pending:
+                log.info("Vorgemerkten Start jetzt ausfuehren")
+                self.start_recording()
 
     def _dump_audio(self, transcriber) -> None:
         """Speichert die komplette Aufnahme nach /tmp/stt_last.wav (Debug)."""

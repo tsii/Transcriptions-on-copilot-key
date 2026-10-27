@@ -109,8 +109,30 @@ class TestStateLifecycle:
         ctrl, ctx = make_controller()
         ctrl.start_recording()
         ctrl.stop_recording()
+        # Finalisierung laeuft im Hintergrund -> kurz warten.
+        for _ in range(100):
+            if ctrl.state == ControllerState.IDLE:
+                break
+            time.sleep(0.02)
         assert ctrl.state == ControllerState.IDLE
         assert ctx["source"].stopped == 1
+
+    def test_start_during_finalizing_is_pending_not_dropped(self) -> None:
+        """Fix: Tastendruck waehrend Finalisierung darf nicht verloren gehen."""
+        ctrl, ctx = make_controller()
+        ctrl.start_recording()
+        ctrl.stop_recording()          # -> FINALIZING (Hintergrund)
+        # Sofort wieder druecken (waehrend finalize laeuft)
+        ctrl.start_recording()
+        # Entweder bereits neu gestartet oder vorgemerkt - nicht verworfen.
+        assert ctrl._pending_start or ctrl.state == ControllerState.RECORDING
+        # Nach Abschluss der Finalisierung muss die neue Aufnahme laufen.
+        for _ in range(150):
+            if ctrl.state == ControllerState.RECORDING:
+                break
+            time.sleep(0.02)
+        assert ctrl.state == ControllerState.RECORDING
+        assert ctx["source"].started >= 2
 
     def test_stop_without_start_is_noop(self) -> None:
         ctrl, ctx = make_controller()
