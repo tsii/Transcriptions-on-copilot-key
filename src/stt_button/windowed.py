@@ -23,6 +23,13 @@ log = logging.getLogger(__name__)
 SAMPLE_RATE = 16000
 
 
+def _to_float_audio(data: bytes) -> np.ndarray:
+    """s16le-Bytes robust in float32 [-1,1] wandeln (auch bei ungerader Laenge)."""
+    if len(data) % 2:
+        data = data[:-1]
+    return np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+
+
 @dataclass
 class WindowedTranscriber:
     """Fensterbasiertes Streaming-Transkriptions-Objekt."""
@@ -31,6 +38,10 @@ class WindowedTranscriber:
     interval_s: float = 1.0
     min_audio_s: float = 3.0
     min_final_audio_s: float = 0.5
+    #: Maximale Segmentlaenge fuer die finale Rest-Transkription (Sekunden).
+    #: Lange Reste werden geschnitten, damit Token-Budget/Encoder-Speicher
+    #: nicht zum Engpass werden.
+    max_final_segment_s: float = 30.0
     sample_rate: int = SAMPLE_RATE
     commit_agreements: int = 2
     left_context_s: float = 4.0
@@ -45,6 +56,7 @@ class WindowedTranscriber:
     _last_partial: str = field(default="", init=False, repr=False)
     _committed_text: str = field(default="", init=False, repr=False)
     _last_transcribed_audio_s: float = field(default=0.0, init=False, repr=False)
+    _silence_misses: int = field(default=0, init=False, repr=False)
 
     # ------------------------------------------------------------------
     # Zustand
@@ -88,6 +100,16 @@ class WindowedTranscriber:
         if chunk:
             self._buffer.extend(chunk)
 
+    def _flush_pending_text(self) -> None:
+        """Sichert den letzten Partial in den committeten Text.
+
+        Wird vor dem Ueberspringen einer Pause aufgerufen, damit der bereits
+        erkannte Text nicht beim Vorruecken von committed_s verloren geht.
+        """
+        if self._last_partial.strip():
+            self._committed_text += self._last_partial.strip() + " "
+            self._last_partial = ""
+
     def maybe_transcribe(self):
         """Transkribiert das nächste Fenster, wenn eines fällig ist.
 
@@ -117,13 +139,44 @@ class WindowedTranscriber:
             committed_byte = int(self._committer.committed_s * self.sample_rate * 2)
             vad_data = bytes(self._buffer[committed_byte:end_byte])
             if vad_data:
-                arr = np.frombuffer(vad_data, dtype=np.int16).astype(np.float32)
-                if len(arr) and not self.vad.has_speech(arr / 32768.0):
-                    log.info(
-                        "Fenster %.1f-%.1fs uebersprungen (VAD: keine Sprache)",
-                        window.start, window.end,
-                    )
+                arr = _to_float_audio(vad_data)
+                if len(arr) and not self.vad.has_speech(arr):
+                    # Fix A (Pause-Stall): Nach 2 aufeinanderfolgenden
+                    # VAD-Misses ist das eine echte Pause -> committed_s
+                    # vorruecken, sonst bleibt der Commit-Punkt ewig stehen
+                    # und alles nach der Pause geht verloren.
+                    self._silence_misses += 1
+                    if self._silence_misses >= 2:
+                        # Sicherung: nur ueberspringen, wenn im Fenster
+                        # wirklich KEINE Sprache ist UND der Puffer schon
+                        # weiter reicht (sonst wuerde nur "noch nicht
+                        # dran"-Sprache uebersprungen).
+                        self._flush_pending_text()
+                        skip_to = min(
+                            self._committer.committed_s + self.chunk_s,
+                            self.audio_seconds,
+                        )
+                        # Nur vorruecken, wenn der Puffer mindestens bis
+                        # Fensterende gefuellt ist (kein verfruehtes Skip).
+                        if self.audio_seconds >= window.end - 0.01:
+                            self._committer.skip_silence(skip_to)
+                            log.info(
+                                "Pause erkannt -> committed_s auf %.1fs vorgert",
+                                self._committer.committed_s,
+                            )
+                        self._silence_misses = 0
+                        log.info(
+                            "Pause erkannt -> committed_s auf %.1fs vorgert",
+                            self._committer.committed_s,
+                        )
+                    else:
+                        log.debug(
+                            "Fenster %.1f-%.1fs: VAD still (Miss %d)",
+                            window.start, window.end, self._silence_misses,
+                        )
                     return None
+            # Sprache erkannt -> Miss-Zaehler zuruecksetzen
+            self._silence_misses = 0
 
         tr = self.engine.transcribe_with_timestamps(slice_data, window.start)
         self._last_transcribed_audio_s = self.audio_seconds
@@ -184,14 +237,14 @@ class WindowedTranscriber:
         #    Ein langer Rest ist mit hoher Wahrscheinlichkeit echte Sprache -
         #    Datenverlust ist schlimmer als Halluzinationsrisiko (RC-B1).
         if self.vad is not None and len(rest) < 2 * self.sample_rate * 2:
-            arr = np.frombuffer(rest, dtype=np.int16).astype(np.float32)
-            if len(arr) and not self.vad.has_speech(arr / 32768.0):
+            arr = _to_float_audio(rest)
+            if len(arr) and not self.vad.has_speech(arr):
                 log.info("finalize: kurzer Rest ist Stille -> uebersprungen")
                 return _full(self._last_partial)
         elif self.vad is not None and len(rest) >= 2 * self.sample_rate * 2:
             # Langer Rest: bei VAD-False trotzdem transkribieren, aber warnen.
-            arr = np.frombuffer(rest, dtype=np.int16).astype(np.float32)
-            if len(arr) and not self.vad.has_speech(arr / 32768.0):
+            arr = _to_float_audio(rest)
+            if len(arr) and not self.vad.has_speech(arr):
                 log.warning(
                     "finalize: langer Rest (%.1fs) ist laut VAD stumm, "
                     "transkribiere trotzdem (Datenverlust vermeiden)",
@@ -203,16 +256,32 @@ class WindowedTranscriber:
 
         # RC-A2-Fix: Rest mit Links-Kontext + Zeitstempeln transkribieren statt
         # kontextlos (verhindert GROSS am Restanfang mitten im Satz).
+        # Fix B: Sehr lange Reste werden in <=30s-Segmente geschnitten, damit
+        # weder Token-Budget noch Encoder-Speicher zum Engpass werden.
         ctx_byte = int(self.left_context_s * self.sample_rate * 2)
         slice_start = max(0, committed_byte - ctx_byte)
-        slice_data = bytes(self._buffer[slice_start:])
-        offset = slice_start / (self.sample_rate * 2)
+        max_seg_bytes = int(self.max_final_segment_s * self.sample_rate * 2)
 
         try:
-            tr = self.engine.transcribe_with_timestamps(slice_data, offset)
-            # Rest-Teil ab committed_s extrahieren (nur die neuen Tokens).
-            rest_tokens = [t for t in tr.tokens if t.start >= self._committer.committed_s - 1e-3]
-            text = "".join(t.text for t in rest_tokens).strip()
+            texts: list[str] = []
+            seg_start = slice_start
+            total = len(self._buffer)
+            while seg_start < total:
+                seg_end = min(seg_start + max_seg_bytes, total)
+                seg_data = bytes(self._buffer[seg_start:seg_end])
+                offset = seg_start / (self.sample_rate * 2)
+                tr = self.engine.transcribe_with_timestamps(seg_data, offset)
+                rest_tokens = [
+                    t for t in tr.tokens
+                    if t.start >= self._committer.committed_s - 1e-3
+                ]
+                seg_text = "".join(t.text for t in rest_tokens).strip()
+                if seg_text:
+                    texts.append(seg_text)
+                # naechstes Segment ohne Links-Kontext-Overlap
+                seg_start = seg_end
+
+            text = " ".join(texts).strip()
             if not text:
                 # Fallback auf whole-transcribe, falls keine Timestamps kamen.
                 result = self.engine.transcribe(rest)

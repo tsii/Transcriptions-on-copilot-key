@@ -10,12 +10,46 @@ der funktioniert auch in Fenstern, in denen ``wtype`` nicht wirkt.
 """
 from __future__ import annotations
 
+import glob
+import logging
 import shutil
 import subprocess
 from typing import Protocol, runtime_checkable
 
+log = logging.getLogger(__name__)
+
 #: Maximale Anzahl Backspaces pro wtype-Aufruf (haelt die Kommandozeile kurz).
 BACKSPACE_BATCH = 20
+
+
+def _capslock_state() -> str:
+    """Liest den CapsLock-LED-Zustand (Diagnose).
+
+    Hintergrund: Ein invertierter CapsLock-Zustand in der Input-Pipeline
+    verfaelscht den getippten Text zeichengenau ("Das" -> "dAS"). Das ist
+    NICHT der ASR-Text. Deshalb loggen wir den Lock-Zustand vor/nach jedem
+    Tippvorgang, um die Quelle eindeutig zu identifizieren.
+
+    Returns:
+        "an", "aus" oder "?" (kein LED gefunden).
+    """
+    try:
+        leds = glob.glob("/sys/class/leds/*capslock*/brightness")
+        if not leds:
+            return "?"
+        # Bei mehreren Devices: "an", wenn irgendeine LED leuchtet.
+        states = []
+        for path in leds:
+            try:
+                with open(path) as fh:
+                    states.append(fh.read().strip())
+            except OSError:
+                pass
+        if not states:
+            return "?"
+        return "an" if any(s == "1" for s in states) else "aus"
+    except Exception:  # noqa: BLE001 - Diagnose darf nie den Betrieb stoeren
+        return "?"
 
 
 class TyperError(RuntimeError):
@@ -124,6 +158,12 @@ class DotoolTyper:
         env = os.environ.copy()
         env["DOTOOL_XKB_LAYOUT"] = self._xkb_layout
         env["DOTOOL_XKB_VARIANT"] = self._xkb_variant
+
+        # Diagnose: Lock-Zustand vor dem Tippen erfassen. Der sichtbare Text
+        # wird naemlich von einer invertierten CapsLock-Ebene verfaelscht
+        # ("Das" -> "dAS") - das passiert NICHT im ASR, sondern durch den
+        # Modifier-/Lock-Zustand der Input-Pipeline.
+        led_before = _capslock_state()
         try:
             proc = subprocess.run(
                 [self.binary], input=payload, capture_output=True, text=True, env=env
@@ -132,6 +172,16 @@ class DotoolTyper:
             raise TyperError(f"{self.binary} ist nicht installiert") from exc
         except OSError as exc:
             raise TyperError(f"{self.binary} konnte nicht starten: {exc}") from exc
+        led_after = _capslock_state()
+
+        if led_before or led_after or led_before != led_after:
+            log.warning(
+                "CAPSLOCK-Diagnose: vor=%s nach=%s payload=%r",
+                led_before, led_after, payload[:80],
+            )
+        else:
+            log.debug("capslock ok (aus) payload=%r", payload[:60])
+
         if proc.returncode != 0:
             raise TyperError(
                 f"{self.binary} fehlgeschlagen (rc={proc.returncode}): "

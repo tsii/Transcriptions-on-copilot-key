@@ -32,6 +32,25 @@ class TimestampCommitter:
         self._candidate_key: tuple = (0.0, "")
         self._agreement_count = 0
 
+    def skip_silence(self, end_s: float) -> None:
+        """Ueberspringt eine stille Passage (Pause) ohne Text zu committen.
+
+        Ohne das bleibt der Commit-Punkt an jeder Sprechpause >= chunk_s
+        permanent haengen (das Fenster ist auf committed_s+3s gedeckelt und
+        der VAD liefert dauerhaft 'keine Sprache') -> alles nach der Pause
+        geht verloren.
+
+        Wichtig: ``end_s`` ist das Ende der STILLEN Passage. Der commit-Punkt
+        wird genau dorthin gesetzt (nicht darueber hinaus), damit die danach
+        folgenden Sprach-Tokens (start >= end_s) wieder als ``fresh`` gelten.
+        """
+        if end_s <= self.committed_s:
+            return
+        self.committed_s = end_s
+        self._candidate_key = (round(self.committed_s, 3), "")
+        self._agreement_count = 0
+        self.last_partial = ""
+
     def update(
         self, tr: Transcription, commit_horizon: float
     ) -> tuple[str, str]:
@@ -63,26 +82,37 @@ class TimestampCommitter:
         new_commit_text = _join(commit_tokens)
         partial_text = _join(partial_tokens)
 
-        # RC-A1: LocalAgreement - nur committen, wenn derselbe Text-Bereich
-        # in ``commit_agreements`` aufeinanderfolgenden Fenstern gleich war.
-        # RC-A1: LocalAgreement - nur committen, wenn derselbe Text-Bereich
-        # (gleicher committed_s + gleicher Text) in ``commit_agreements``
-        # aufeinanderfolgenden Fenstern identisch war.
+        # RC-A1: LocalAgreement gilt nur fuer den ERSTEN Commit (der kommt aus
+        # dem kontextlosen Anfangsfenster und kann halluzinieren). Ab dem
+        # ersten bestaetigten Commit laeuft das Streaming normal durch -
+        # sonst entsteht ein Deadlock, wenn committed_s bei jedem Commit
+        # vorrueckt und der Agreement-Cache dadurch nie 2 Treffer sammelt.
         candidate_text = new_commit_text
-        candidate_key = (round(self.committed_s, 3), candidate_text)
-        if candidate_text and candidate_key == self._candidate_key:
-            self._agreement_count += 1
-        else:
-            self._candidate_key = candidate_key
-            self._agreement_count = 1
+        already_started = bool(self.committed_text.strip())
 
-        if new_commit_text and self._agreement_count >= self.commit_agreements:
-            self.committed_tokens.extend(commit_tokens)
-            self.committed_text += new_commit_text
-            if commit_tokens:
-                self.committed_s = commit_tokens[-1].end
+        if already_started:
+            # Ab dem 2. Commit: direkt committen (kein Agreement mehr noetig).
+            if new_commit_text:
+                self.committed_tokens.extend(commit_tokens)
+                self.committed_text += new_commit_text
+                if commit_tokens:
+                    self.committed_s = commit_tokens[-1].end
         else:
-            new_commit_text = ""  # noch nicht bestaetigt -> nicht committen
+            # Erster Commit: erst nach ``commit_agreements`` Bestaetigungen.
+            candidate_key = (round(self.committed_s, 3), candidate_text)
+            if candidate_text and candidate_key == self._candidate_key:
+                self._agreement_count += 1
+            else:
+                self._candidate_key = candidate_key
+                self._agreement_count = 1
+
+            if new_commit_text and self._agreement_count >= self.commit_agreements:
+                self.committed_tokens.extend(commit_tokens)
+                self.committed_text += new_commit_text
+                if commit_tokens:
+                    self.committed_s = commit_tokens[-1].end
+            else:
+                new_commit_text = ""  # noch nicht bestaetigt -> nicht committen
 
         self.last_partial = partial_text
         return new_commit_text, partial_text

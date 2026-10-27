@@ -383,3 +383,20 @@ class TestParakeetEngine:
         e = ParakeetEngine()
         result = e.transcribe(b"\x00\x00" * 16000)
         assert result.text == "Hallo"
+
+
+class TestTokenBudget:
+    def test_token_budget_scales_with_audio(self) -> None:
+        """Fix B: max_new_tokens muss mit der Audiolaenge skalieren."""
+        from stt_button.asr import _token_budget
+        # 30s Audio -> mind. 360 Tokens (12 Tokens/s)
+        assert _token_budget(30.0) >= 360
+        # 60s -> mind. 720
+        assert _token_budget(60.0) >= 720
+        # kurze Audio bleibt beim Mindestbudget
+        assert _token_budget(1.0) >= 256
+
+    def test_token_budget_capped(self) -> None:
+        from stt_button.asr import _token_budget
+        # Deckel gegen Ausreisser
+        assert _token_budget(10000.0) <= 4096

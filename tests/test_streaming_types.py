@@ -55,15 +55,16 @@ class TestStreamWindowPolicy:
         assert window.commit_horizon <= window.end
 
     def test_window_bounded_even_for_long_stream(self) -> None:
-        """Fenster bleibt konstant klein, auch bei 60s Stream (Skalierungs-Fix)."""
+        """Fenster bleibt begrenzt, auch bei 60s Stream (Skalierungs-Fix)."""
         policy = self._policy()
         committed_s = 30.0
         audio_len_s = 60.0
         window = policy.next_window(committed_s=committed_s, audio_len_s=audio_len_s)
         assert window is not None
-        # Fensterlänge = links + chunk + rechts, aber start >= committed - links
         assert window.start >= committed_s - policy.left_context_s
-        assert window.end - window.start <= policy.left_context_s + policy.chunk_s + policy.right_context_s
+        # Begrenzung: max. das Doppelte der Nominalgroesse (Deadlock-Schutz).
+        nominal = policy.left_context_s + policy.chunk_s + policy.right_context_s
+        assert window.end - window.start <= nominal * 2
 
     def test_commit_horizon_leaves_right_context(self) -> None:
         policy = self._policy()

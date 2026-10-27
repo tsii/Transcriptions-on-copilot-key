@@ -67,9 +67,16 @@ class StreamWindowPolicy:
 
         # Neues Fenster beginnt beim committed-Punkt minus Links-Kontext.
         start = max(0.0, committed_s - self.left_context_s)
-        # Ende = committed + chunk + right_context, gedeckelt auf audio_len.
         commit_end = committed_s + self.chunk_s
-        end = min(audio_len_s, commit_end + self.right_context_s)
+
+        # Fix (Deadlock): Das Fenster darf NICHT hart auf committed+chunk+right
+        # gedeckelt sein. Sonst sieht die Transkription Audio jenseits dieses
+        # Punkts nie, wenn der Commit-Punkt nicht vorrueckt -> Deadlock.
+        # Wir nehmen das Fenster bis zum vorhandenen Audio, begrenzt auf das
+        # Doppelte der Nominalgroesse (haelt die Inferenzkosten im Rahmen).
+        max_window_s = (self.left_context_s + self.chunk_s
+                        + self.right_context_s) * 2
+        end = min(audio_len_s, start + max_window_s)
 
         # Wenn der Commit-Punkt schon am (oder über) dem Audioende liegt,
         # gibt es nichts neues zu committen.

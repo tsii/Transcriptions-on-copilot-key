@@ -25,7 +25,7 @@ class TestDefaults:
         assert cfg.append_space is True
         assert cfg.asr_interval_s == 1.0
         assert cfg.min_audio_s == 3.0
-        assert cfg.max_record_s == 60
+        assert cfg.max_record_s == 300
         assert cfg.key_codes == ["KEY_F24"]
         assert cfg.input_device_name == "keyd virtual keyboard"
 
@@ -141,3 +141,21 @@ class TestPathResolution:
         p = write_config(tmp_path, 'language = "en"')
         with pytest.raises(ConfigError):
             load_config(p, override={"nonsense": 1})
+
+
+class TestTypingDelays:
+    def test_typing_delays_default(self) -> None:
+        cfg = Config()
+        assert cfg.typedelay_ms == 20
+        assert cfg.typehold_ms == 15
+
+    def test_typing_delays_parse(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, "typedelay_ms = 30\ntypehold_ms = 25")
+        cfg = load_config(p)
+        assert cfg.typedelay_ms == 30
+        assert cfg.typehold_ms == 25
+
+    def test_negative_typedelay_rejected(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, "typedelay_ms = -1")
+        with pytest.raises(ConfigError):
+            load_config(p)

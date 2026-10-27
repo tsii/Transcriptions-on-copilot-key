@@ -229,3 +229,57 @@ def test_no_commit_at_audio_edge_without_right_context() -> None:
     else:
         # None ist auch akzeptabel (warten), aber dann darf nichts committen.
         assert w is None
+
+
+def test_vad_silence_advances_committed_after_two_misses() -> None:
+    """Fix A: Nach 2x VAD-negativ muss committed_s vorruecken (kein Stall)."""
+    e = FakeEngine()
+    t = WindowedTranscriber(engine=e, min_audio_s=0.5, chunk_s=1.0,
+                            left_context_s=1.0, right_context_s=0.5,
+                            interval_s=0.0, vad=SilenceVad())
+    t.feed(audio(3.0))
+    before = t._committer.committed_s
+    t.maybe_transcribe()   # 1. VAD-Miss
+    t.maybe_transcribe()   # 2. VAD-Miss -> vorruecken
+    assert t._committer.committed_s > before
+
+
+def test_single_vad_miss_does_not_advance() -> None:
+    """Fix A: Eine einzelne VAD-Miss-Prüfung darf NICHT vorrücken."""
+    e = FakeEngine()
+    t = WindowedTranscriber(engine=e, min_audio_s=0.5, chunk_s=1.0,
+                            left_context_s=1.0, right_context_s=0.5,
+                            interval_s=0.0, vad=SilenceVad())
+    t.feed(audio(3.0))
+    before = t._committer.committed_s
+    t.maybe_transcribe()   # nur 1 Miss
+    assert t._committer.committed_s == before
+
+
+def test_long_pause_does_not_stall_pipeline() -> None:
+    """Fix A: 5s Sprache / 4s Stille / 10s Sprache -> kein ewiger Stall."""
+    class AlwaysSpeech:
+        def has_speech(self, a): return True
+
+    # Erst Sprache mit Commit
+    tokens = [Token(" Anfang", 0.0, 0.3), Token(" Text", 0.3, 0.6),
+              Token(" hier", 0.6, 0.9)]
+    e = FakeEngine({0.0: tokens, 1.0: tokens})
+    t = WindowedTranscriber(engine=e, min_audio_s=0.5, chunk_s=1.0,
+                            left_context_s=1.0, right_context_s=0.5,
+                            interval_s=0.0, vad=AlwaysSpeech())
+    t.feed(audio(5.0))
+    for _ in range(4):
+        t.maybe_transcribe()
+    after_speech = t._committer.committed_s
+    assert after_speech > 0
+
+    # Jetzt 8s Stille (Pause)
+    class Sil:
+        def has_speech(self, a): return False
+    t.vad = Sil()
+    t.feed(audio(8.0))
+    for _ in range(6):
+        t.maybe_transcribe()
+    # committed_s muss durch die Pause vorgerueckt sein (nicht steckengeblieben)
+    assert t._committer.committed_s > after_speech

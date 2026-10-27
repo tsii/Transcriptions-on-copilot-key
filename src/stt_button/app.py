@@ -65,6 +65,8 @@ class Application:
                 return DotoolTyper(
                     xkb_layout=self.config.xkb_layout,
                     xkb_variant=self.config.xkb_variant,
+                    typedelay_ms=self.config.typedelay_ms,
+                    typehold_ms=self.config.typehold_ms,
                 )
             except TyperError as exc:
                 log.warning("dotool nicht verfuegbar (%s) - Fallback auf wtype", exc)

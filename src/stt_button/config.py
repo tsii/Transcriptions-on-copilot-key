@@ -54,7 +54,7 @@ class Config:
     # --- Streaming ---------------------------------------------------------
     #: Streaming-Modus: "windowed" (Fenster + Zeitstempel-Commit) oder
     #: "whole_buffer" (alter Ansatz, ganzer Puffer re-transkribiert).
-    streaming_mode: str = "windowed"
+    streaming_mode: str = "whole_buffer"
     #: Mindest-Audiolaenge (Sekunden), bevor ueberhaupt transkribiert wird.
     #: Zu kurze Chunks lassen den Transducer Satzanfaenge falsch gross
     #: schreiben und Woerter verschlucken (Halluzination aus isolierten
@@ -63,7 +63,7 @@ class Config:
     #: Intervall (Sekunden Audio), in dem neu transkribiert wird.
     asr_interval_s: float = 1.0
     #: Maximale Aufnahmedauer (Sekunden) -> automatische Finalisierung.
-    max_record_s: float = 60.0
+    max_record_s: float = 300.0
     #: Anzahl aufeinanderfolgender identischer Praefixe, bis ein Praefix
     #: als "committed" gilt und nie mehr zurueckgenommen wird.
     commit_agreements: int = 2
@@ -75,6 +75,11 @@ class Config:
     #: XKB-Tastaturlayout fuer dotool (de fuer deutsche Tastatur).
     xkb_layout: str = "de"
     xkb_variant: str = "nodeadkeys"
+    #: Dotool-Tipptiming. Zu klein -> unter CPU-Last koennen Key-Events
+    #: verloren gehen und Modifier (Shift/CapsLock) "haengen" -> der Text
+    #: erscheint dann invertiert/gross. Bei Problemen erhoehen (z.B. 30/25).
+    typedelay_ms: int = 20
+    typehold_ms: int = 15
     append_space: bool = True
     #: Maximale Laenge (Zeichen) einer Ruecknahme. Laengere Korrekturen
     #: werden vermieden, um Nutzertext nicht zu zerstoeren.
@@ -110,6 +115,10 @@ class Config:
             raise ConfigError("cpu_threads muss mindestens 1 sein")
         if self.max_revision_chars < 0:
             raise ConfigError("max_revision_chars darf nicht negativ sein")
+        if self.typedelay_ms < 0:
+            raise ConfigError("typedelay_ms darf nicht negativ sein")
+        if self.typehold_ms < 0:
+            raise ConfigError("typehold_ms darf nicht negativ sein")
         if self.commit_agreements < 1:
             raise ConfigError("commit_agreements muss mindestens 1 sein")
         if self.sample_rate < 8000:

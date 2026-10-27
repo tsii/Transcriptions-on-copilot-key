@@ -42,6 +42,27 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
+def _pcm_to_float(data: bytes) -> "object":
+    """s16le-Bytes robust in float32 [-1,1] wandeln (auch bei ungerader Laenge)."""
+    import numpy as np
+    if len(data) % 2:
+        data = data[:-1]
+    return np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+
+
+def _token_budget(audio_seconds: float) -> int:
+    """Berechnet das noetige ``max_new_tokens`` fuer eine Audiolaenge.
+
+    Fix B (Langdiktat-Kappung): Ein fixes Limit von 256 Tokens schneidet
+    laengere Diktate hart ab. Deutsche Sprache braucht grob 12 Subword-
+    Tokens pro Sekunde (2-4 Tokens/Wort, ~2.5 Woerter/s + Reserve).
+    Mindestbudget 256, Deckel 4096 (TDT-Decoder hat kein eigenes Limit;
+    der Deckel schuetzt nur vor Speicher-/Laufzeit-Ausreissern).
+    """
+    budget = int(audio_seconds * 12) + 64
+    return max(256, min(budget, 4096))
+
+
 @dataclass(frozen=True)
 class TranscriptionResult:
     """Ergebnis einer Transkription."""
@@ -115,7 +136,7 @@ class WhisperEngine:
 
         import numpy as np
 
-        audio = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+        audio = _pcm_to_float(data)
 
         segments, _info = self._model.transcribe(
             audio,
@@ -195,15 +216,17 @@ class ParakeetEngine:
 
         import numpy as np
 
-        audio = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+        audio = _pcm_to_float(data)
         inputs = self._processor([audio], sampling_rate=16000)
         inputs.to(self.device, dtype=self._model.dtype)
         # max_new_tokens explizit setzen, sonst waechst das Default-
         # max_length mit dem Audio und schneidet lange Diktate ab.
+        # Fix B: Budget skaliert mit der Audiolaenge.
+        audio_s = len(data) / (16000 * 2)
         output = self._model.generate(
             **inputs,
             return_dict_in_generate=True,
-            max_new_tokens=256,
+            max_new_tokens=_token_budget(audio_s),
         )
         text = self._processor.decode(output.sequences, skip_special_tokens=True)[0]
         text = _strip_ansi(text.strip())
@@ -228,13 +251,13 @@ class ParakeetEngine:
 
         import numpy as np
 
-        audio = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+        audio = _pcm_to_float(data)
         inputs = self._processor([audio], sampling_rate=16000)
         inputs.to(self.device, dtype=self._model.dtype)
         output = self._model.generate(
             **inputs,
             return_dict_in_generate=True,
-            max_new_tokens=256,
+            max_new_tokens=_token_budget(len(data) / (16000 * 2)),
         )
         _text, stamps = self._processor.decode(
             output.sequences,
@@ -315,7 +338,7 @@ class QwenEngine:
 
         import numpy as np
 
-        audio = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+        audio = _pcm_to_float(data)
 
         # Der Qwen-Prozessor akzeptiert einen Dateipfad; wir schreiben
         # den Puffer als temporaere WAV.
@@ -328,7 +351,9 @@ class QwenEngine:
             inputs = self._processor.apply_transcription_request(
                 audio=f.name
             ).to(self.device, self._model.dtype)
-            output_ids = self._model.generate(**inputs, max_new_tokens=256)
+            output_ids = self._model.generate(
+                **inputs, max_new_tokens=_token_budget(len(data) / (16000 * 2))
+            )
             generated = output_ids[:, inputs["input_ids"].shape[1]:]
             text = self._processor.decode(
                 generated, return_format="transcription_only"

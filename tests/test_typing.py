@@ -367,3 +367,47 @@ class TestDotoolTyper:
         monkeypatch.setattr("stt_button.typing.shutil.which", lambda b: None)
         with pytest.raises(TyperError):
             DotoolTyper()
+
+
+class TestAppendTrap:
+    def test_large_revision_replaces_when_anchor_matches(self) -> None:
+        """Fix D: Grosse Revision mit passendem committed-Anker -> ersetzen, nicht anhaengen."""
+        t = FakeTyper()
+        d = DeltaTyper(t, append_space=False, max_revision_chars=60)
+        # Langer Text mit committed-Prefix
+        d.update("Das ist der Anfang eines sehr langen Textes mit vielen Woertern hier", committed_len=20)
+        t.calls.clear()
+        # Neue Fassung: gleicher committed-Prefix (20 Zeichen), aber langer Tail geaendert
+        new = "Das ist der Anfang voellig anderer weiterer Text hier und noch mehr"
+        d.update(new, committed_len=20)
+        # Es MUSS zurueckgenommen werden (kein blindes Anhaengen des neuen Tails)
+        assert any(c[0] == "backspace" for c in t.calls)
+        # Und der neue Tail muss dem revidierten Rest entsprechen (ab common prefix)
+        typed = "".join(c[1] for c in t.calls if c[0] == "type")
+        assert typed != ""
+        assert "anderer weiterer Text" in typed
+
+
+class TestCapslockDiagnostics:
+    def test_capslock_state_returns_valid_value(self) -> None:
+        """Diagnose-Funktion liefert 'an', 'aus' oder '?' (nie Exception)."""
+        from stt_button.typing import _capslock_state
+        assert _capslock_state() in ("an", "aus", "?")
+
+    def test_capslock_state_handles_missing_leds(self, monkeypatch) -> None:
+        monkeypatch.setattr("stt_button.typing.glob.glob", lambda p: [])
+        from stt_button.typing import _capslock_state
+        assert _capslock_state() == "?"
+
+    def test_send_logs_capslock_when_active(self, monkeypatch, caplog) -> None:
+        """Wenn CapsLock an ist, wird eine Warnung geloggt."""
+        import logging as _l
+        monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "an")
+        calls = []
+        monkeypatch.setattr(
+            "stt_button.typing.subprocess.run",
+            lambda *a, **k: calls.append(1) or subprocess_result(),
+        )
+        with caplog.at_level(_l.WARNING, logger="stt_button.typing"):
+            DotoolTyper().type_text("Test")
+        assert any("CAPSLOCK" in r.message for r in caplog.records)
