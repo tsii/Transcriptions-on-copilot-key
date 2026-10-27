@@ -207,6 +207,29 @@ if to_add:    type_text(to_add)
    `committed_len=0`): Beim Loslassen darf das Modell alles korrigieren, denn der
    Nutzer diktiert fertig und der Cursor steht sicher hinter dem eigenen Text.
 
+### 2.7.1 Final-Delta-Paste (final_paste)
+
+Zeichenweises Tippen kostet ~35 ms pro Zeichen (typedelay+typehold) — 300 Zeichen
+≈ 10,5 s. Mit `final_paste = true` wird das **berechnete Delta** beim Abschluss
+(`finalize`) stattdessen per `wl-copy` + Paste-Chord (`paste_key`, Default `ctrl+v`,
+`ctrl+shift+v` für Terminals) eingefügt.
+
+**Delta-Regel:** `paste()` bekommt ausschließlich `to_add` — den Suffix nach dem
+gemeinsamen Präfix des bereits Getippten —, niemals den Volltext. Backspaces
+laufen weiterhin über den normalen Typer (dotool), `append_space` kommt danach.
+
+**Grenzen (bewusst):**
+
+* Kein Zurückspielen des alten Clipboard-Inhalts — das ist ein Race mit
+  Clipboard-Managern; die Diktat-Historie landet stattdessen dort. Kein `wl-paste`.
+* `wl-copy` fehlt oder der Copy schlägt fehl → Fallback auf zeichenweises Tippen
+  (`type_text`), kein Startfehler.
+* Schlägt der Paste-Chord **nach** erfolgreichem Copy, wird er NICHT mit Tippen
+  wiederholt (Doppel-Einfüge-Gefahr) — der Fehler wird geloggt.
+* Live-Ausgabe während der Aufnahme bleibt immer dotool; nur `finalize()` pastet.
+* Passwortfelder: wie jede Clipboard-Ausgabe landet das Diktat kurzzeitig in der
+  Zwischenablage — bei sensiblen Einggaben `final_paste` ausschalten.
+
 ### 2.8 Shutdown-Reihenfolge beim Loslassen ⚠️
 
 **Realer Bug, der Audio verschluckte.** Falsche Reihenfolge:

@@ -6,6 +6,7 @@ kein Wayland-Tool.
 """
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -68,7 +69,72 @@ class FakeTyper:
         self.calls.append(("key", name))
 
 
+class BlockingTranscriber:
+    """StreamTranscriber-Fake, dessen finalize() auf ein Event wartiert.
+
+    Macht das Ende der Finalisierung deterministisch steuerbar: Ohne
+    threading.Events muessten die Tests sleeps raten (flaky).
+    """
+    def __init__(self, unblock: threading.Event) -> None:
+        self._unblock = unblock
+        self._buffer = b"\x00" * 16000  # fuer evtl. Audio-Dump
+        self.sample_rate = 16000
+        self.finalized = threading.Event()
+
+    def feed(self, data: bytes) -> None:
+        pass
+
+    def maybe_transcribe(self):
+        return None
+
+    def finalize(self):
+        self._unblock.wait()
+        return TranscriptionResult(text="fertig")
+
+
+class FakeSourceFactory:
+    """Zaehlt die erzeugten Quellen (je Aufnahme eine neue)."""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = list(chunks)
+        self.created: list[FakeAudioSource] = []
+
+    def __call__(self) -> FakeAudioSource:
+        source = FakeAudioSource(self._chunks)
+        self.created.append(source)
+        return source
+
+    @property
+    def started(self) -> int:
+        return sum(1 for s in self.created if s.started > 0)
+
+    @property
+    def stopped(self) -> int:
+        return sum(1 for s in self.created if s.stopped > 0)
+
+
 def make_controller(**kwargs) -> tuple[PushToTalkController, dict]:
+    blocking = kwargs.pop("blocking_transcriber", False)
+    if blocking:
+        unblock = threading.Event()
+        factory = FakeSourceFactory([b"\x00" * 16000] * 6)
+        engine = FakeEngine()
+        typer = FakeTyper()
+        delta = DeltaTyper(typer, append_space=True)
+        ctrl = PushToTalkController(
+            config=None,
+            source_factory=factory,
+            engine=engine,
+            delta_typer=delta,
+            transcriber_factory=lambda *a, **kw: BlockingTranscriber(unblock),
+            **kwargs,
+        )
+        ctrl._test_unblock_finalize = unblock
+        ctrl._wait_state = lambda target, timeout=5.0: _wait_state(
+            ctrl, target, timeout
+        )
+        return ctrl, {"source": factory, "engine": engine, "typer": typer,
+                      "delta": delta}
     source = FakeAudioSource([b"\x00" * 16000] * 6)
     engine = FakeEngine()
     typer = FakeTyper()
@@ -86,6 +152,19 @@ def make_controller(**kwargs) -> tuple[PushToTalkController, dict]:
         "typer": typer,
         "delta": delta,
     }
+
+
+def _wait_state(ctrl: PushToTalkController, target: ControllerState,
+                timeout: float = 5.0) -> None:
+    """Wartet (mit Deadline, ohne blindes Sleep) bis der Zustand erreicht ist."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if ctrl.state == target:
+            return
+        time.sleep(0.005)
+    raise AssertionError(
+        f"Zustand {target} nicht erreicht (ist {ctrl.state})"
+    )
 
 
 class TestStateLifecycle:
@@ -117,22 +196,90 @@ class TestStateLifecycle:
         assert ctrl.state == ControllerState.IDLE
         assert ctx["source"].stopped == 1
 
-    def test_start_during_finalizing_is_pending_not_dropped(self) -> None:
-        """Fix: Tastendruck waehrend Finalisierung darf nicht verloren gehen."""
-        ctrl, ctx = make_controller()
+    def test_release_during_finalizing_updates_key_state(self) -> None:
+        """Fix: Release waehrend FINALIZING aktualisiert _key_down immer.
+
+        Vorher kehrte stop_recording() bei state != RECORDING kommentarlos
+        zurueck - der Release-Edge ging verloren und die Geisteraufnahme
+        startete spaeter trotzdem.
+        """
+        ctrl, ctx = make_controller(blocking_transcriber=True)
         ctrl.start_recording()
-        ctrl.stop_recording()          # -> FINALIZING (Hintergrund)
-        # Sofort wieder druecken (waehrend finalize laeuft)
+        ctrl.stop_recording()            # -> FINALIZING
+        assert ctrl.state == ControllerState.FINALIZING
+        ctrl.start_recording()           # press waehrend FINALIZING
+        assert ctrl._key_down is True
+        ctrl.stop_recording()            # release waehrend FINALIZING
+        # Der Release-Edge darf NIE verloren gehen:
+        assert ctrl._key_down is False
+        # Jetzt die Finalisierung abschliessen lassen.
+        ctrl._test_unblock_finalize.set()
+        ctrl._wait_state(ControllerState.IDLE)
+        # KEINE Geisteraufnahme: die Taste ist nicht gehalten.
+        assert ctrl.state == ControllerState.IDLE
+        assert ctx["source"].started == 1
+
+    def test_key_held_through_finalize_restarts_recording(self) -> None:
+        """Taste bleibt gehalten: nach Finalisierung startet die Aufnahme."""
+        ctrl, ctx = make_controller(blocking_transcriber=True)
         ctrl.start_recording()
-        # Entweder bereits neu gestartet oder vorgemerkt - nicht verworfen.
-        assert ctrl._pending_start or ctrl.state == ControllerState.RECORDING
-        # Nach Abschluss der Finalisierung muss die neue Aufnahme laufen.
-        for _ in range(150):
-            if ctrl.state == ControllerState.RECORDING:
-                break
-            time.sleep(0.02)
+        ctrl.stop_recording()            # -> FINALIZING
+        ctrl.start_recording()           # press (halten) waehrend FINALIZING
+        ctrl._test_unblock_finalize.set()
+        ctrl._wait_state(ControllerState.RECORDING)
+        # Start nur, weil _key_down noch True ist.
         assert ctrl.state == ControllerState.RECORDING
-        assert ctx["source"].started >= 2
+        assert ctrl._key_down is True
+        assert ctx["source"].started == 2
+
+    def test_start_after_finalizing_only_when_key_held(self) -> None:
+        """Alternierender Druck: press+release vor Finalisierungsende.
+
+        Die Taste wurde vor dem Ende der Finalisierung bereits wieder
+        losgelassen - es darf KEINE Aufnahme gestartet werden.
+        """
+        ctrl, ctx = make_controller(blocking_transcriber=True)
+        ctrl.start_recording()
+        ctrl.stop_recording()
+        ctrl.start_recording()           # vorgemerkt
+        ctrl.stop_recording()            # ... aber schon losgelassen
+        ctrl._test_unblock_finalize.set()
+        ctrl._wait_state(ControllerState.IDLE)
+        assert ctrl.state == ControllerState.IDLE
+        assert ctx["source"].started == 1
+
+    def test_release_after_finalized_start_stops_fresh_recording(self) -> None:
+        """Release direkt nach dem automatischen Start stoppt die neue Aufnahme.
+
+        Frueher scheiterte ein Release im Handoff-Fenster an state==IDLE
+        (bzw. der Start und das Release race-ten gegeneinander).
+        """
+        ctrl, ctx = make_controller(blocking_transcriber=True)
+        ctrl.start_recording()
+        ctrl.stop_recording()            # -> FINALIZING
+        ctrl.start_recording()           # Taste gehalten
+        ctrl._test_unblock_finalize.set()
+        ctrl._wait_state(ControllerState.RECORDING)  # Auto-Start ist da
+        ctrl.stop_recording()           # Release danach
+        ctrl._test_unblock_finalize.set()  # 2. Finalisierung freigeben
+        ctrl._wait_state(ControllerState.IDLE)
+        assert ctrl._key_down is False
+        assert ctx["source"].started == 2
+        assert ctx["source"].stopped == 2
+
+    def test_press_during_recording_is_idempotent(self) -> None:
+        """Mehrfaches Druecken waehrend RECORDING startet nichts Neues."""
+        ctrl, ctx = make_controller(blocking_transcriber=True)
+        ctrl.start_recording()
+        ctrl.start_recording()           # nochmal druecken
+        assert ctrl._key_down is True
+        assert ctrl.state == ControllerState.RECORDING
+        assert ctx["source"].started == 1
+        ctrl.stop_recording()
+        ctrl._test_unblock_finalize.set()
+        ctrl._wait_state(ControllerState.IDLE)
+        assert ctx["source"].started == 1
+
 
     def test_stop_without_start_is_noop(self) -> None:
         ctrl, ctx = make_controller()
@@ -182,12 +329,25 @@ class TestTimeouts:
         assert ctrl.state == ControllerState.IDLE
 
     def test_max_record_auto_finalizes(self) -> None:
-        ctrl, ctx = make_controller()
+        """Max-Dauer finalisiert; ohne gehaltene Taste KEIN Auto-Neustart.
+
+        Wird die Taste (wie beim echten Loslassen) vor Finalisierungsende
+        losgelassen, bleibt der Controller in IDLE. Hielte der Nutzer die
+        Taste weiter, startete die naechste Aufnahme automatisch - das
+        testet test_key_held_through_finalize_restarts_recording.
+        """
+        ctrl, ctx = make_controller(blocking_transcriber=True)
         ctrl._max_record_s = 0.01
         ctrl.start_recording()
         time.sleep(0.02)
         ctrl._enforce_max_duration()
+        assert ctrl.state == ControllerState.FINALIZING
+        ctrl.stop_recording()          # Taste loslassen
+        assert ctrl._key_down is False
+        ctrl._test_unblock_finalize.set()
+        ctrl._wait_state(ControllerState.IDLE)
         assert ctrl.state == ControllerState.IDLE
+        assert ctx["source"].stopped == 1
 
 
 class TestErrors:

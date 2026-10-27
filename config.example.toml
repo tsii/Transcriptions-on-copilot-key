@@ -32,6 +32,9 @@ capslock_autocorrect = false   # App darf CapsLock NIE ungefragt togglen (nur wa
 capslock_led_inverted = true    # LED-Semantik dieses Systems (belegt): true = LED aus heisst CapsLock aktiv; Ziel bei autocorrect = LED an
 append_space = true            # Leerzeichen nach dem Diktat
 max_revision_chars = 60
+final_paste = false           # true = finales Delta beim Abschluss per Zwischenablage statt tippen (Durchsatz)
+paste_key = "ctrl+v"          # Einfuege-Chord; "ctrl+shift+v" fuer Terminals
+paste_binary = "wl-copy"      # Binary fuer den Copy-Schritt (wl-clipboard)
 
 # --- Streaming ---------------------------------------------------------
 streaming_mode = "whole_buffer"

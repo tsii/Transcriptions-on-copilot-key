@@ -70,8 +70,10 @@ class PushToTalkController:
         # Audio-Chunks, die der Capture-Thread kontinuierlich einliest.
         self._audio_queue: queue.Queue[bytes] = queue.Queue()
         self._capture_thread: threading.Thread | None = None
-        # Ein Tastendruck waehrend der Finalisierung wird vorgemerkt.
-        self._pending_start: bool = False
+        # Physischer Zustand der Trigger-Taste (press/release). Er wird
+        # bei JEDEM Tastenereignis aktualisiert - ein Release geht nie
+        # verloren, auch nicht waehrend der Finalisierung.
+        self._key_down: bool = False
 
     # ------------------------------------------------------------------
     # Trigger
@@ -79,20 +81,23 @@ class PushToTalkController:
     def start_recording(self) -> None:
         """Beginnt eine Aufnahme (aufgerufen bei Tastendruck).
 
-        Wichtig: Wenn die vorherige Aufnahme noch finalisiert (finale
-        Transkription laeuft im Hintergrund), wird der Start NICHT verworfen,
-        sondern vorgemerkt. Sonst geht ein schnell folgendes zweites Diktat
-        komplett verloren (Datenverlust).
+        Wichtig: Der Tastenzustand (``_key_down``) wird IMMER gesetzt,
+        auch waehrend der Finalisierung. Ein Start erfolgt nur bei IDLE
+        (atomar unter dem Lock); bei FINALIZING startet die Aufnahme
+        erst nach Abschluss - und nur, wenn die Taste dann noch gehalten
+        wird. Sonst ginge ein schnell folgendes Diktat verloren
+        (Datenverlust) bzw. es entstuende eine Geisteraufnahme ohne
+        gehaltene Taste.
         """
         with self._lock:
+            self._key_down = True
             if self.state == ControllerState.RECORDING:
                 return  # bereits aktiv -> idempotent
             if self.state == ControllerState.FINALIZING:
-                # Vormerken: startet automatisch, sobald finalize fertig ist.
-                self._pending_start = True
-                log.info("Diktat vorgemerkt (vorherige Finalisierung laeuft)")
+                # Start nach Finalisierungsende, nur falls Taste gehalten.
+                log.info("Taste gehalten - Start nach Finalisierung")
                 return
-        self._start_now()
+            self._start_now()
 
     def _start_now(self) -> None:
         """Startet die Aufnahme sofort (Zustand bereits geprueft)."""
@@ -125,8 +130,15 @@ class PushToTalkController:
         log.info("Aufnahme gestartet")
 
     def stop_recording(self) -> None:
-        """Beendet die Aufnahme und finalisiert (aufgerufen beim Loslassen)."""
+        """Beendet die Aufnahme und finalisiert (aufgerufen beim Loslassen).
+
+        Der Tastenzustand wird IMMER aktualisiert - auch wenn gerade
+        finalisiert wird. Sonst wuerde der Release-Edge verloren gehen und
+        eine waehrend der Finalisierung gedrueckte Taste eine Geister-
+        aufnahme ausloesen.
+        """
         with self._lock:
+            self._key_down = False
             if self.state != ControllerState.RECORDING:
                 return
             self._finish()
@@ -269,7 +281,6 @@ class PushToTalkController:
                 name="finalize",
                 daemon=True,
             )
-            self._pending_start = False
             finalizer.start()
         else:
             self.state = ControllerState.IDLE
@@ -287,13 +298,12 @@ class PushToTalkController:
                 self.state = ControllerState.IDLE
                 log.info("Aufnahme beendet (%d bytes Audio)", self._total_bytes)
                 self._total_bytes = 0
-                pending = self._pending_start
-                self._pending_start = False
-            # Ein waehrend der Finalisierung gedrueckter Start wird jetzt
-            # nachgeholt - sonst ginge das zweite Diktat verloren.
-            if pending:
-                log.info("Vorgemerkten Start jetzt ausfuehren")
-                self.start_recording()
+                # Nachgeholt wird der Start nur, wenn die Taste noch
+                # gehalten wird - Pruefung und Start atomar unter dem
+                # selben Lock (kein Handoff-Fenster fuer Races).
+                if self._key_down:
+                    log.info("Taste gehalten - neue Aufnahme starten")
+                    self._start_now()
 
     def _dump_audio(self, transcriber) -> None:
         """Speichert die komplette Aufnahme nach /tmp/stt_last.wav (Debug)."""

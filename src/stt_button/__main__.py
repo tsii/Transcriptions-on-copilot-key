@@ -89,10 +89,29 @@ def _cmd_test_asr(args: argparse.Namespace) -> int:
 
 
 def _cmd_test_typer(args: argparse.Namespace) -> int:
-    from .typing import ClipboardTyper, WtypeTyper
+    from .typing import ClipboardPaster, DeltaTyper
 
     cfg = load_config(args.config)
     typer = ClipboardTyper() if cfg.typer == "clipboard" else WtypeTyper()
+    if getattr(args, "final_paste", False):
+        # Testet denselben Finalize-Pfad wie im Live-Betrieb: DeltaTyper
+        # mit ClipboardPaster, Ausgabe ausschliesslich ueber finalize().
+        paster = ClipboardPaster(
+            typer,
+            copy_binary=cfg.paste_binary,
+            paste_key=cfg.paste_key,
+        )
+        delta = DeltaTyper(
+            typer,
+            append_space=cfg.append_space,
+            final_paster=paster,
+        )
+        delta.finalize(args.text)
+        print(
+            f"'{args.text}' wurde per {cfg.paste_binary} + {cfg.paste_key} "
+            f"eingefuegt."
+        )
+        return 0
     typer.type_text(args.text)
     if cfg.append_space:
         typer.key("space")
@@ -299,6 +318,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_typer = sub.add_parser("test-typer", help="Textausgabe testen")
     p_typer.add_argument("--text", default="test", help="Text zum Tippen")
+    p_typer.add_argument(
+        "--final-paste",
+        action="store_true",
+        help="Finales Delta per Zwischenablage (wl-copy + Paste-Chord) testen",
+    )
     p_typer.set_defaults(func=_cmd_test_typer)
 
     p_cmp = sub.add_parser("compare-stream",

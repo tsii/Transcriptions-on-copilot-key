@@ -15,7 +15,14 @@ from .asr import ParakeetEngine, QwenEngine, StreamTranscriber, WhisperEngine
 from .config import Config
 from .controller import PushToTalkController
 from .keys import KeyListener, resolve_device
-from .typing import ClipboardTyper, DeltaTyper, DotoolTyper, TyperError, WtypeTyper
+from .typing import (
+    ClipboardPaster,
+    ClipboardTyper,
+    DeltaTyper,
+    DotoolTyper,
+    TyperError,
+    WtypeTyper,
+)
 from .vad import SileroVadGate
 from .windowed import WindowedTranscriber
 
@@ -84,13 +91,25 @@ class Application:
 
     def _build_controller(self) -> PushToTalkController:
         typer = self._build_typer()
+        cfg = self.config
+
+        # Final-Delta-Paste nur bei explizitem Flag: dann wird das finale
+        # Delta per Zwischenablage eingefuegt statt zeichenweise getippt.
+        # Ohne Flag bleibt es beim bisherigen Verhalten (final_paster=None).
+        final_paster = None
+        if cfg.final_paste:
+            final_paster = ClipboardPaster(
+                typer,
+                copy_binary=cfg.paste_binary,
+                paste_key=cfg.paste_key,
+            )
+
         delta = DeltaTyper(
             typer,
-            append_space=self.config.append_space,
-            max_revision_chars=self.config.max_revision_chars,
+            append_space=cfg.append_space,
+            max_revision_chars=cfg.max_revision_chars,
+            final_paster=final_paster,
         )
-
-        cfg = self.config
 
         def make_source() -> PwRecordSource:
             return PwRecordSource(

@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from stt_button.typing import (
+    ClipboardPaster,
     ClipboardTyper,
     DeltaTyper,
     DotoolTyper,
@@ -216,6 +217,154 @@ class TestFinalize:
         d.finalize("")
         # Eine leere Endausgabe loescht nichts - ein ASR-Fehler darf den
         # bereits getippten Text nicht vernichten.
+        assert t.calls == []
+
+
+class TestFinalPaste:
+    """Final-Delta-Paste: finalize() pastet nur das berechnete Delta."""
+
+    def test_live_update_never_pastes(self) -> None:
+        """Live-Updates bleiben beim Typer (dotool), niemals Paste waehrend der Aufnahme."""
+        t = FakeTyper()
+        pastes: list[str] = []
+
+        class Recorder:
+            def paste(self, text: str) -> None:
+                pastes.append(text)
+
+        d = DeltaTyper(t, final_paster=Recorder())
+        d.update("Hallo Welt")
+        d.update("Hallo Welt und")
+        d.update("Hallo Welt und mehr")
+        assert pastes == []
+        assert t.typed == "Hallo Welt und mehr"
+
+    def test_finalize_pastes_only_suffix_after_committed_prefix(self) -> None:
+        """"Hallo Welt" -> "Hallo Welt und mehr": nur " und mehr" wird gepastet."""
+        t = FakeTyper()
+        pastes: list[str] = []
+
+        class Recorder:
+            def paste(self, text: str) -> None:
+                pastes.append(text)
+
+        d = DeltaTyper(t, final_paster=Recorder())
+        d.update("Hallo Welt", committed_len=0)
+        d.finalize("Hallo Welt und mehr", committed_len=11)
+        assert pastes == [" und mehr"]
+        assert t.typed == "Hallo Welt"  # kein doppeltes Tippen des Suffixes
+
+    def test_finalize_backspaces_before_pasting_revision_delta(self) -> None:
+        """"Weld" -> "Welt": backspace 1, dann paste "t" - keine Neu-Eingabe des Praefixes."""
+        t = FakeTyper()
+        pastes: list[str] = []
+
+        class Recorder:
+            def paste(self, text: str) -> None:
+                pastes.append(text)
+
+        d = DeltaTyper(t, final_paster=Recorder())
+        d.update("Hallo Weld")
+        t.calls.clear()
+        d.finalize("Hallo Welt")
+        assert t.calls == [("backspace", "1"), ("key", "space")]
+        assert pastes == ["t"]
+
+    def test_finalize_empty_delta_only_appends_space(self) -> None:
+        """Kein Delta (Text unveraendert) => kein Paste, nur Leerzeichen."""
+        t = FakeTyper()
+        pastes: list[str] = []
+
+        class Recorder:
+            def paste(self, text: str) -> None:
+                pastes.append(text)
+
+        d = DeltaTyper(t, final_paster=Recorder())
+        d.update("Hallo Welt")
+        t.calls.clear()
+        d.finalize("Hallo Welt")
+        assert pastes == []
+        assert t.calls == [("key", "space")]
+
+    def test_finalize_appends_space_after_paste(self) -> None:
+        """Das Leerzeichen kommt nach dem Paste - beide Aufrufe in richtiger Reihenfolge."""
+        t = FakeTyper()
+        events: list[tuple[str, str]] = []
+
+        class Recorder:
+            def paste(self, text: str) -> None:
+                events.append(("paste", text))
+
+        d = DeltaTyper(t, final_paster=Recorder(), append_space=True)
+        d.update("Hallo")
+        t.calls.clear()
+        d.finalize("Hallo Welt")
+        assert events == [("paste", " Welt")]
+        # Space via typer.key NACH dem Paste
+        assert t.calls == [("key", "space")]
+
+
+class TestClipboardPaster:
+    """ClipboardPaster: wl-copy + Paste-Chord mit Fallback auf type_text."""
+
+    def test_clipboard_paster_copies_delta_and_uses_configured_chord(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Copy via paste_binary, Chord aus paste_key (ctrl+shift+v), kein Restore."""
+        calls = _capture(monkeypatch)
+        t = FakeTyper()
+        p = ClipboardPaster(t, copy_binary="wl-copy", paste_key="ctrl+shift+v")
+        p.paste(" und mehr")
+        assert calls == [
+            ["wl-copy", " und mehr"],
+            # Chord via den normalen Typer (dotool-Format: ctrl+shift+v)
+        ]
+        assert t.calls == [("key", "ctrl+shift+v")]
+        # KEIN wl-paste, kein Zurueckspielen des alten Clipboard-Inhalts
+        assert all("wl-paste" not in " ".join(c) for c in calls)
+
+    def test_missing_or_failing_wl_copy_falls_back_without_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fehlt wl-copy oder schlaegt der Copy fehl => type_text-Fallback, KEIN Paste-Chord."""
+        t = FakeTyper()
+        monkeypatch.setattr("stt_button.typing.shutil.which", lambda b: None)
+        p = ClipboardPaster(t, copy_binary="wl-copy")
+        p.paste(" und mehr")
+        assert t.calls == [("type", " und mehr")]  # Alter Pfad
+
+        # Copy schlaegt fehl (rc != 0) => ebenfalls type_text, kein Chord
+        t2 = FakeTyper()
+        monkeypatch.setattr("stt_button.typing.shutil.which", lambda b: "/usr/bin/wl-copy")
+
+        def failing_run(cmd, *args, **kwargs):
+            class R:
+                returncode = 1
+                stdout = ""
+                stderr = "boom"
+
+            return R()
+
+        monkeypatch.setattr("stt_button.typing.subprocess.run", failing_run)
+        p2 = ClipboardPaster(t2, copy_binary="wl-copy")
+        p2.paste(" und mehr")
+        assert t2.calls == [("type", " und mehr")]
+
+    def test_paste_key_failure_is_not_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Chord-Fehler nach erfolgreichem Copy: NICHT mit type_text wiederholen."""
+        t = FakeTyper()
+        monkeypatch.setattr("stt_button.typing.shutil.which", lambda b: "/usr/bin/wl-copy")
+        monkeypatch.setattr(
+            "stt_button.typing.subprocess.run",
+            lambda cmd, *a, **k: subprocess_result(),
+        )
+        p = ClipboardPaster(t, copy_binary="wl-copy")
+
+        def failing_key(name: str) -> None:
+            raise TyperError("chord fehlgeschlagen")
+
+        t.key = failing_key  # type: ignore[method-assign]
+        p.paste(" und mehr")  # darf NICHT werfen und NICHT tippen
         assert t.calls == []
 
 

@@ -21,6 +21,7 @@ VALID_LANGUAGES = ("de", "en", "auto")
 VALID_TYPERS = ("wtype", "clipboard", "dotool")
 VALID_BACKENDS = ("whisper", "parakeet", "qwen")
 VALID_STREAMING_MODES = ("windowed", "whole_buffer")
+VALID_PASTE_KEYS = ("ctrl+v", "ctrl+shift+v")
 
 
 class ConfigError(ValueError):
@@ -92,6 +93,16 @@ class Config:
     #: capslock_autocorrect=True ist das Ziel der LED-Zustand "an" (normal).
     capslock_led_inverted: bool = True
     append_space: bool = True
+    #: Soll das finale Delta beim Abschluss (finalize) per Zwischenablage
+    #: eingefuegt werden statt zeichenweise getippt? Das beschleunigt lange
+    #: Diktate massiv (300 Zeichen * ~35 ms Tippzeit entfallen). Default
+    #: False = bisheriges Verhalten (alles per dotool tippen).
+    final_paste: bool = False
+    #: Einfuege-Chord fuer final_paste. "ctrl+shift+v" fuer Terminals, in
+    #: denen ctrl+v ein anderes Signal ausloest.
+    paste_key: str = "ctrl+v"
+    #: Binary, die das Delta in die Zwischenablage legt (wl-clipboard).
+    paste_binary: str = "wl-copy"
     #: Maximale Laenge (Zeichen) einer Ruecknahme. Laengere Korrekturen
     #: werden vermieden, um Nutzertext nicht zu zerstoeren.
     max_revision_chars: int = 60
@@ -138,6 +149,13 @@ class Config:
             raise ConfigError("key_codes darf nicht leer sein")
         if not self.input_device_name.strip():
             raise ConfigError("input_device_name darf nicht leer sein")
+        if self.paste_key not in VALID_PASTE_KEYS:
+            raise ConfigError(
+                f"paste_key muss eines von {VALID_PASTE_KEYS} sein, "
+                f"nicht {self.paste_key!r}"
+            )
+        if not self.paste_binary.strip():
+            raise ConfigError("paste_binary darf nicht leer sein")
 
 
 def _coerce(name: str, value: Any, target_type: Any) -> Any:

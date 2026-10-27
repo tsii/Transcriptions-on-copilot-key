@@ -96,6 +96,19 @@ class Typer(Protocol):
         """Drueckt eine Taste, z.B. ``"space"`` oder ``"ctrl+v"``."""
 
 
+@runtime_checkable
+class FinalPaster(Protocol):
+    """Schnittstelle fuer das Einfuegen des finalen Deltas per Clipboard.
+
+    Wird beim Abschluss (finalize) statt des zeichenweisen Tippens genutzt,
+    um lange Diktate ohne ~35 ms pro Zeichen auszugeben. Bekommt nur das
+    berechnete Delta - niemals den Volltext.
+    """
+
+    def paste(self, text: str) -> None:
+        """Fuegt ``text`` an der Cursor-Position ein."""
+
+
 def _run(cmd: list[str]) -> None:
     """Fuehrt einen Befehl aus und wandelt Fehler in :class:`TyperError` um."""
     try:
@@ -373,6 +386,68 @@ class ClipboardTyper:
         _run(cmd)
 
 
+class ClipboardPaster:
+    """Fuegt das finale Delta per ``wl-copy`` + Paste-Chord ein.
+
+    Der Copy-Schritt folgt dem Muster von :class:`ClipboardTyper`: das
+    Binary (z.B. ``wl-copy``) bekommt den Text als Argument, der Chord wird
+    ueber den normalen Typer (``typer.key``) gedrueckt.
+
+    Fallback-Regeln:
+
+    * Fehlt das Copy-Binary oder schlaegt der Copy fehl, wird das Delta
+      zeichenweise getippt (``type_text``) - der alte Pfad bleibt nutzbar.
+    * Schlaegt der Paste-Chord NACH erfolgreichem Copy, wird NICHT mit
+      ``type_text`` wiederholt: das Delta kann bereits eingefuegt worden
+      sein (Doppel-Einfuege-Gefahr). Der Fehler wird geloggt und liegen
+      gelassen.
+    * Der bisherige Clipboard-Inhalt wird NICHT zurueckgespielt (Race mit
+      Clipboard-Managern, kein ``wl-paste``).
+    """
+
+    def __init__(
+        self,
+        typer: Typer,
+        *,
+        copy_binary: str = "wl-copy",
+        paste_key: str = "ctrl+v",
+    ) -> None:
+        self._typer = typer
+        self.copy_binary = copy_binary
+        self.paste_key = paste_key
+
+    def paste(self, text: str) -> None:
+        """Kopiert ``text`` in die Zwischenablage und drueckt den Paste-Chord."""
+        if not text:
+            return
+        if shutil.which(self.copy_binary) is None:
+            log.warning(
+                "%s nicht verfuegbar - tippe das Delta zeichenweise",
+                self.copy_binary,
+            )
+            self._typer.type_text(text)
+            return
+        try:
+            _run([self.copy_binary, text])
+        except TyperError as exc:
+            log.warning(
+                "Copy nach %s fehlgeschlagen (%s) - tippe das Delta zeichenweise",
+                self.copy_binary, exc,
+            )
+            self._typer.type_text(text)
+            return
+        try:
+            self._typer.key(self.paste_key)
+        except TyperError as exc:
+            # Bewusst KEIN Retry mit type_text: der Chord kann teilweise
+            # gewirkt haben, das Delta koennte bereits eingefuegt sein.
+            log.error(
+                "Paste-Chord %r fehlgeschlagen (%s) - kein Retry "
+                "(Doppel-Einfuege-Gefahr)",
+                self.paste_key, exc,
+            )
+
+
 class DeltaTyper:
     """Tippt nur die Differenz zwischen zwei Transkriptionen.
 
@@ -386,10 +461,14 @@ class DeltaTyper:
         *,
         append_space: bool = True,
         max_revision_chars: int = 60,
+        final_paster: FinalPaster | None = None,
     ) -> None:
         self._typer = typer
         self._append_space = append_space
         self._max_revision_chars = max_revision_chars
+        # Optional: pastet das finale Delta per Zwischenablage statt es zu
+        # tippen. Live-Updates bleiben immer beim normalen Typer (dotool).
+        self._final_paster = final_paster
         self._last_text = ""
         self._last_committed = 0
 
@@ -456,12 +535,56 @@ class DeltaTyper:
         self._last_committed = committed
 
     def finalize(self, final_text: str, committed_len: int = 0) -> None:
-        """Gibt den endgueltigen Text aus und schliesst mit einem Leerzeichen ab."""
-        # Eine leere Endausgabe darf den bereits getippten Text nicht loeschen
-        # (z.B. wenn das Modell bei der Schluss-Transkription gescheitert ist).
+        """Gibt den endgueltigen Text aus und schliesst mit einem Leerzeichen ab.
+
+        Mit konfiguriertem ``final_paster`` wird das berechnete Delta
+        (``to_add``) genau einmal per Zwischenablage eingefuegt - der
+        committete Praefix und bereits getippter Text werden niemals mit-
+        gesendet. Ohne ``final_paster`` gilt der bisherige Pfad: Backspace
+        und Delta ueber den normalen Typer.
+
+        Eine leere Endausgabe darf den bereits getippten Text nicht loeschen
+        (z.B. wenn das Modell bei der Schluss-Transkription gescheitert ist).
+        """
         if not final_text.strip():
             return
-        self.update(final_text, committed_len, force_revision=True)
+
+        old = self._last_text
+        committed_len = max(0, committed_len)
+        # Committed-Schutz: der hoehere Stand gewinnt, damit ein kleinerer
+        # committed_len beim Abschluss nichts bereits Gesichertes oeffnet.
+        effective_committed = max(committed_len, self._last_committed)
+
+        if len(final_text) >= effective_committed:
+            committed = min(effective_committed, len(old), len(final_text))
+
+            # Weicht das Modell im committeten Bereich ab, uebernehmen wir
+            # dort die alte Fassung.
+            if old[:committed] != final_text[:committed]:
+                final_text = old[:committed] + final_text[committed:]
+
+            old_tail = old[committed:]
+            new_tail = final_text[committed:]
+
+            common = _common_prefix_len(old_tail, new_tail)
+            to_remove = len(old_tail) - common
+            to_add = new_tail[common:]
+
+            # Backspace bleibt immer beim normalen Typer (dotool), auch im
+            # final_paste-Modus. Die finale Korrektur ist voll korrigierend:
+            # keine max_revision_chars-Schutzgrenze (force_revision im alten
+            # Pfad).
+            if to_remove:
+                self._typer.backspace(to_remove)
+            if to_add:
+                if self._final_paster is not None:
+                    self._final_paster.paste(to_add)
+                else:
+                    self._typer.type_text(to_add)
+
+            self._last_text = old[:committed] + new_tail
+            self._last_committed = committed
+
         if self._append_space:
             self._typer.key("space")
         self._last_text = final_text

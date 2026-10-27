@@ -161,6 +161,36 @@ class TestTypingDelays:
             load_config(p)
 
 
+class TestFinalPaste:
+    """Final-Delta-Paste: finales Delta beim Abschluss per Zwischenablage."""
+
+    def test_final_paste_defaults_and_toml(self, tmp_path: Path) -> None:
+        """Defaults: final_paste aus, ctrl+v, wl-copy; TOML uebernimmt alle drei."""
+        cfg = Config()
+        assert cfg.final_paste is False
+        assert cfg.paste_key == "ctrl+v"
+        assert cfg.paste_binary == "wl-copy"
+
+        p = write_config(tmp_path, """
+            final_paste = true
+            paste_key = "ctrl+shift+v"
+            paste_binary = "wl-copy"
+        """)
+        cfg2 = load_config(p)
+        assert cfg2.final_paste is True
+        assert cfg2.paste_key == "ctrl+shift+v"
+        assert cfg2.paste_binary == "wl-copy"
+
+    def test_invalid_paste_key_is_rejected(self, tmp_path: Path) -> None:
+        """Nur "ctrl+v" und "ctrl+shift+v" sind erlaubte Einfuege-Chords."""
+        p = write_config(tmp_path, 'paste_key = "ctrl+b"')
+        with pytest.raises(ConfigError) as exc:
+            load_config(p)
+        assert "paste_key" in str(exc.value)
+        # Validierung (nicht nur "unbekannter Schluessel"): erlaubte Werte nennen.
+        assert "ctrl+v" in str(exc.value)
+
+
 class TestCapslockAutocorrect:
     """Die App darf CapsLock standardmaessig NICHT umschalten."""
 
