@@ -24,8 +24,13 @@ VALID_STREAMING_MODES = ("windowed", "whole_buffer", "buffered")
 VALID_PASTE_KEYS = ("ctrl+v", "ctrl+shift+v")
 #: Finalisierungs-Modus: "full" = Puffer neu transkribieren (bewährt),
 #: "cached" = unveraenderten Puffer aus dem letzten erfolgreichen Tick
-#: uebernehmen (spart einen kompletten Engine-Durchlauf).
-VALID_FINALIZE_MODES = ("full", "cached")
+#: uebernehmen (spart einen kompletten Engine-Durchlauf),
+#: "cached_mid_tail" = OPT-IN: nach dem Live-Limit (live_asr_until_s)
+#: alle mid_tail_step_s Sekunden ein Hintergrund-Engine-Call auf
+#: [Checkpoint-Ende - Kontext | Pufferende], gestitcht an die
+#: Arbeitshypothese; finalize() liefert bei gueltiger Kette nur noch den
+#: kleinen letzten Tail statt des Vollpuffers.
+VALID_FINALIZE_MODES = ("full", "cached", "cached_mid_tail")
 #: WAV-Dump der letzten Aufnahme: "sync" = im Finalizer-Thread (bewährt),
 #: "async" = eigener Thread mit Bytes-Snapshot, "off" = kein Dump.
 VALID_AUDIO_DUMP_MODES = ("sync", "async", "off")

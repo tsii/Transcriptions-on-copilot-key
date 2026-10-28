@@ -377,3 +377,20 @@ class TestBufferedMode:
         p = write_config(tmp_path, 'streaming_mode = "pufferlos"\n')
         with pytest.raises(ConfigError, match="streaming_mode"):
             load_config(p)
+
+
+class TestCachedMidTailConfig:
+    """PHASE 2: finalize_mode='cached_mid_tail' (Opt-In)."""
+
+    def test_cached_mid_tail_ist_gueltig(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, 'finalize_mode = "cached_mid_tail"\n')
+        cfg = load_config(p)
+        assert cfg.finalize_mode == "cached_mid_tail"
+
+    def test_defaults_unveraendert(self) -> None:
+        assert Config().finalize_mode == "full"
+
+    def test_ungueltige_weiterhin_abgelehnt(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, 'finalize_mode = "mitte_schwanz"\n')
+        with pytest.raises(ConfigError, match="finalize_mode"):
+            load_config(p)

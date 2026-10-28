@@ -818,3 +818,349 @@ class TestStitchWordOverlap:
         """Regel 4: 'punkt' waere PRAEFIX-Fragment von 'Punkte' -- nur echte
         SUFFIX-Fragmente sind erlaubt -> None."""
         assert stitch_word_overlap("das sind rote Punkte hier", "punkt hier sind schon") is None
+
+
+
+# =====================================================================
+# PHASE 2: finalize_mode="cached_mid_tail"
+# =====================================================================
+def make_mid_tail(
+    engine, *, limit_s=1.0, context_s=2.5, step_s=4.0, anchor_words=2, **kw
+) -> StreamTranscriber:
+    """Baut einen Transcriber im OPT-IN-Modus cached_mid_tail."""
+    return StreamTranscriber(
+        engine,
+        interval_s=0.1,
+        min_audio_s=0.1,
+        live_asr_until_s=limit_s,
+        finalize_mode="cached_mid_tail",
+        mid_tail_context_s=context_s,
+        mid_tail_step_s=step_s,
+        mid_tail_anchor_words=anchor_words,
+        **kw,
+    )
+
+
+class TestCachedMidTail:
+    """PHASE 2: Hintergrund-Stitching nach dem Live-Limit (Opt-In)."""
+
+    # --- 1) Throttling ---------------------------------------------------
+    def test_throttle_kein_call_vor_step_s(self) -> None:
+        """(2) <4s neues Audio seit Checkpoint -> KEIN Extra-Engine-Call."""
+        engine = FakeEngine(["Hallo Welt", "Hallo Welt"])
+        t = make_mid_tail(engine)
+        t.feed(audio(0.5))
+        assert t.maybe_transcribe() is not None  # Live-Snapshot
+        t.feed(audio(1.0))  # 1.5s > Limit 1.0 -> Limit-Zweig
+        assert t.maybe_transcribe() is None
+        assert len(engine.calls) == 1, "unter step_s darf kein Mid-Tail-Call laufen"
+        t.feed(audio(2.0))  # 3.5s: immer noch < 4.0s neu seit Checkpoint
+        assert t.maybe_transcribe() is None
+        assert len(engine.calls) == 1
+
+    def test_throttle_genau_ein_call_und_slice_groesse(self) -> None:
+        """(2) >=4s neues Audio -> genau EIN Call, Slice <= (4.0+2.5)s."""
+        engine = FakeEngine(["Hallo Welt", "Hallo Welt und"])
+        t = make_mid_tail(engine)
+        t.feed(audio(0.5))
+        assert t.maybe_transcribe() is not None  # Checkpoint bei 0.5s
+        t.feed(audio(3.7))  # 4.2s Puffer: 3.7s neu -> noch kein Call
+        assert t.maybe_transcribe() is None
+        assert len(engine.calls) == 1
+        t.feed(audio(0.6))  # 4.8s Puffer: 4.3s neu >= 4.0 -> Call
+        assert t.maybe_transcribe() is None
+        assert len(engine.calls) == 2
+        nbytes = engine.calls[1][0]
+        # Slice = Pufferende - (checkpoint.end - context), Start bei 0
+        # geklemmt: 4.8s - max(0, 0.5-2.5)s = 4.8s.
+        assert nbytes == int(4.8 * BYTES_PER_SECOND)
+        assert nbytes <= int((4.0 + 2.5) * BYTES_PER_SECOND)
+
+    def test_slice_startet_an_snapshot_ende_minus_context(self) -> None:
+        """(4) Fall (i): erster Slice beginnt an snapshot_end - context."""
+        engine = FakeEngine(["Hallo Welt", "Hallo Welt und mehr"])
+        t = make_mid_tail(engine, limit_s=6.0, step_s=4.0, context_s=2.5)
+        # Snapshot bei 5.5s (Live-Tick unter Limit 6.0), dann Limit erreicht.
+        t.feed(audio(5.5))
+        assert t.maybe_transcribe() is not None  # Snapshot end_nbytes=5.5s
+        t.feed(audio(2.5))  # 8.0s > 6.0 Limit; 2.5s neu < 4.0 -> kein Call
+        assert t.maybe_transcribe() is None
+        assert len(engine.calls) == 1
+        t.feed(audio(3.1))  # 11.1s: 5.6s neu >= 4.0 -> Call
+        assert t.maybe_transcribe() is None
+        assert len(engine.calls) == 2
+        # Slice = 11.1s - (5.5s - 2.5s) = 8.1s, NICHT 11.1 (Vollpuffer) und
+        # NICHT ~4.9 (ab einer Commit-Stelle).
+        assert engine.calls[1][0] == int(8.1 * BYTES_PER_SECOND)
+
+    # --- 2) Hintergrundlauf ohne Nebeneffekte ---------------------------
+    def test_hintergrund_liefert_none_und_veraendert_nichts(self) -> None:
+        """(3) Mid-Tail-Call: None, kein _update_commit, kein Cache-Update."""
+        engine = FakeEngine(["Hallo Welt", "Hallo Welt und"])
+        t = make_mid_tail(engine)
+        t.feed(audio(0.5))
+        assert t.maybe_transcribe() is not None
+        committed_before = t._committed_text
+        committed_len_before = t._committed_len
+        history_before = list(t._history)
+        last_text_before = t._last_text
+        cache_bytes_before = t._last_completed_nbytes
+        cache_text_before = t._last_completed_text
+        t.feed(audio(5.0))  # 5.5s: 5.0s neu >= 4.0 -> Mid-Tail-Call
+        result = t.maybe_transcribe()
+        assert result is None, "Mid-Tail-Zweig muss None liefern"
+        assert t._committed_text == committed_before
+        assert t._committed_len == committed_len_before
+        assert t._history == history_before
+        assert t._last_text == last_text_before
+        assert t._last_completed_nbytes == cache_bytes_before
+        assert t._last_completed_text == cache_text_before
+        # Checkpoint wurde aktualisiert (VOR dem Aufruf gesnapshottet: 5.5s).
+        assert t._mid_tail_checkpoint is not None
+        assert t._mid_tail_checkpoint.end_nbytes == int(5.5 * BYTES_PER_SECOND)
+        assert t._mid_tail_checkpoint.text == "Hallo Welt und"
+
+    # --- 3) Stitch-Verhalten ---------------------------------------------
+    def test_normaler_stitch_checkpoint_waechst(self) -> None:
+        """(5) Ueberlappender Text: Checkpoint waechst ohne Duplikat."""
+        engine = FakeEngine(
+            ["Hallo Welt", "Hallo Welt und mehr", "Hallo Welt und mehr noch was"]
+        )
+        t = make_mid_tail(engine, anchor_words=2)
+        t.feed(audio(0.5))
+        assert t.maybe_transcribe() is not None  # Checkpoint 'Hallo Welt'
+        t.feed(audio(5.0))
+        assert t.maybe_transcribe() is None
+        assert t._mid_tail_checkpoint is not None
+        assert t._mid_tail_checkpoint.text == "Hallo Welt und mehr"
+        assert t._mid_tail_failed is False
+        # Zweiter Hintergrundlauf: Fenster deckt das Checkpoint-Ende ab.
+        t.feed(audio(4.5))
+        assert t.maybe_transcribe() is None
+        assert t._mid_tail_checkpoint.text == "Hallo Welt und mehr noch was"
+
+    def test_regression_buffered_fragment(self) -> None:
+        """(6) Fenster beginnt 'unkte ...' -> Stitch loest das Wortfragment
+        ueber die Anker auf, ohne 'Punkte Punkte'-Duplikat."""
+        engine = FakeEngine(
+            [
+                "das sind rote Punkte",
+                "das sind rote Punkte hier sind schon",
+                "unkte hier sind schon alles",
+            ]
+        )
+        t = make_mid_tail(engine, anchor_words=2)
+        t.feed(audio(0.5))
+        assert t.maybe_transcribe() is not None  # Checkpoint bei 0.5s
+        t.feed(audio(5.0))
+        assert t.maybe_transcribe() is None  # 1. Hintergrundlauf
+        assert t._mid_tail_checkpoint.text == "das sind rote Punkte hier sind schon"
+        # 2. Hintergrundlauf: Fenster beginnt mitten in 'Punkte'.
+        t.feed(audio(4.5))
+        assert t.maybe_transcribe() is None
+        assert t._mid_tail_checkpoint is not None
+        assert t._mid_tail_checkpoint.text == (
+            "das sind rote Punkte hier sind schon alles"
+        )
+        assert t._mid_tail_failed is False
+
+    def test_stitch_none_setzt_failed(self) -> None:
+        """(7) Stitch None -> failed, kein weiterer Versuch, Voll-Finalize."""
+        engine = FakeEngine(["Hallo Welt", "voellig anders ohne Anker"])
+        t = make_mid_tail(engine)
+        t.feed(audio(0.5))
+        assert t.maybe_transcribe() is not None
+        t.feed(audio(5.0))
+        assert t.maybe_transcribe() is None  # Stitch schlaegt fehl
+        assert t._mid_tail_failed is True
+        calls_after_fail = len(engine.calls)
+        t.feed(audio(5.0))
+        assert t.maybe_transcribe() is None
+        assert len(engine.calls) == calls_after_fail, (
+            "nach _mid_tail_failed darf kein weiterer Mid-Tail-Call laufen"
+        )
+        # Spaeteres Voll-Finalize: FakeEngine zaehlt den Vollpuffer-Call.
+        result = t.finalize()
+        assert result.text == "voellig anders ohne Anker"
+        assert len(engine.calls) == calls_after_fail + 1
+        # Der Fallback-Call sah den VOLLSTaendigen Puffer (10.5s).
+        assert engine.calls[-1][0] == int(10.5 * BYTES_PER_SECOND)
+
+    def test_engine_exception_kein_abort(self) -> None:
+        """(8) Engine-Exception im Hintergrund -> failed, kein Abort,
+        Finalize = genau EIN Vollpuffer-Call."""
+        class FlakyEngine(FakeEngine):
+            """Wirft GENAU EINMAL (auf dem Mid-Tail-Hintergrund-Call)."""
+
+            def __init__(self) -> None:
+                super().__init__(["Hallo Welt"])
+                self.raised = False
+
+            def transcribe(self, data, initial_prompt=""):
+                if not self.raised and len(self.calls) >= 1:
+                    self.raised = True
+                    raise RuntimeError("boom")
+                return super().transcribe(data, initial_prompt)
+
+        engine = FlakyEngine()
+        t = make_mid_tail(engine)
+        t.feed(audio(0.5))
+        assert t.maybe_transcribe() is not None
+        t.feed(audio(5.0))
+        assert t.maybe_transcribe() is None  # Engine-Exception im Hintergrund
+        assert t._mid_tail_failed is True
+        # Kein Abort: finalize() laeuft und macht GENAU EINEN Vollpuffer-Call.
+        result = t.finalize()
+        assert result.text == "Hallo Welt"
+        assert len(engine.calls) == 2
+        assert engine.calls[-1][0] == int(5.5 * BYTES_PER_SECOND)
+
+    def test_ohne_live_snapshot_kein_mid_tail(self) -> None:
+        """Kein erfolgreicher Live-Snapshot -> kein Mid-Tail-Versuch."""
+        engine = FakeEngine(["Hallo Welt"])
+        t = make_mid_tail(engine, limit_s=0.5, step_s=4.0)
+        t.feed(audio(1.0))  # direkt ueber Limit: noch nie live transkribiert
+        assert t.maybe_transcribe() is None
+        assert len(engine.calls) == 0
+        assert t._mid_tail_checkpoint is None
+        t.feed(audio(5.0))
+        assert t.maybe_transcribe() is None
+        assert len(engine.calls) == 0, "kein Checkpoint -> kein Mid-Tail-Call"
+
+    # --- 4) finalize ------------------------------------------------------
+    def test_finalize_ohne_aenderung_kein_call(self) -> None:
+        """(9) Puffer seit Checkpoint unveraendert -> KEIN Engine-Call,
+        Text aus Checkpoint, committed_len = len(_committed_text)."""
+        engine = FakeEngine(["Hallo Welt", "Hallo Welt und mehr"])
+        t = make_mid_tail(engine)
+        t.feed(audio(0.5))
+        assert t.maybe_transcribe() is not None
+        t.feed(audio(5.0))
+        assert t.maybe_transcribe() is None  # Mid-Tail-Checkpoint gesetzt
+        calls_before = len(engine.calls)
+        result = t.finalize()
+        assert len(engine.calls) == calls_before, (
+            "Puffer unveraendert seit Checkpoint -> kein Engine-Call"
+        )
+        assert result.text == "Hallo Welt und mehr"
+        assert result.committed_len == len(t._committed_text)
+
+    def test_finalize_tail_stitch(self) -> None:
+        """(10/Positiv) Kleiner Tail-Call, Stitch, committed_len gesetzt."""
+        engine = FakeEngine(
+            ["Hallo Welt", "Hallo Welt und mehr", "und mehr das Ende"]
+        )
+        t = make_mid_tail(engine)
+        t.feed(audio(0.5))
+        assert t.maybe_transcribe() is not None
+        t.feed(audio(5.0))
+        assert t.maybe_transcribe() is None  # Checkpoint bei 5.5s
+        t.feed(audio(1.0))  # 6.5s: < 4.0s neu -> kein Hintergrundlauf
+        calls_before = len(engine.calls)
+        result = t.finalize()
+        assert len(engine.calls) == calls_before + 1, "genau EIN Tail-Call"
+        # Tail-Slice = 6.5s - (5.5 - 2.5)s = 3.5s
+        assert engine.calls[-1][0] == int(3.5 * BYTES_PER_SECOND)
+        assert result.text == "Hallo Welt und mehr das Ende"
+        assert result.committed_len == len(t._committed_text)
+
+    def test_finalize_tail_stitch_fehler_vollpuffer_fallback(self) -> None:
+        """(10) Tail-Stitch schlaegt fehl -> EIN Vollpuffer-Call wie heute."""
+        engine = FakeEngine(
+            ["Hallo Welt", "Hallo Welt und mehr", "komplett anders"]
+        )
+        t = make_mid_tail(engine)
+        t.feed(audio(0.5))
+        assert t.maybe_transcribe() is not None
+        t.feed(audio(5.0))
+        assert t.maybe_transcribe() is None  # Checkpoint bei 5.5s
+        t.feed(audio(1.0))
+        result = t.finalize()
+        assert result.text == "komplett anders"
+        # Live + Mid-Tail + Tail-Call + GENAU EIN Vollpuffer-Fallback.
+        assert len(engine.calls) == 4
+        assert engine.calls[-1][0] == int(6.5 * BYTES_PER_SECOND), (
+            "Fallback-Call sieht den VOLLSTaendigen Puffer"
+        )
+        assert result.committed_len == 0, "Vollpuffer-Fallback korrigiert voll"
+
+    def test_finalize_ohne_checkpoint_vollpuffer(self) -> None:
+        """Kein gueltiger Checkpoint -> Verhalten wie heute (Vollpuffer)."""
+        engine = FakeEngine(["alles da"])
+        t = make_mid_tail(engine, limit_s=0.5, step_s=4.0)
+        t.feed(audio(1.0))  # direkt ueber Limit: noch nie live transkribiert
+        assert t.maybe_transcribe() is None
+        assert t._mid_tail_checkpoint is None
+        t.feed(audio(5.0))
+        result = t.finalize()
+        assert result.text == "alles da"
+        assert engine.calls[0][0] == int(6.0 * BYTES_PER_SECOND)
+        assert result.committed_len == 0
+
+    # --- 5) Bestandsschutz ------------------------------------------------
+    def test_default_kein_mid_tail_pfad(self) -> None:
+        """(11) Default finalize_mode='full': kein einziger Mid-Tail-Codepfad."""
+        engine = FakeEngine(["Hallo Welt", "Hallo Welt und"])
+        t = StreamTranscriber(
+            engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0
+        )
+        t.feed(audio(0.5))
+        assert t.maybe_transcribe() is not None
+        t.feed(audio(10.0))
+        assert t.maybe_transcribe() is None
+        assert len(engine.calls) == 1, "keine Mid-Tail-Calls im Default-Modus"
+        assert t._mid_tail_checkpoint is None
+        assert t._mid_tail_failed is False
+        result = t.finalize()
+        assert result.text == "Hallo Welt und"
+        assert len(engine.calls) == 2, "Finalize = genau EIN Vollpuffer-Call"
+        assert engine.calls[-1][0] == int(10.5 * BYTES_PER_SECOND)
+
+    def test_cached_kein_mid_tail_pfad(self) -> None:
+        """(11b) finalize_mode='cached': Engine-Call-Zahlen wie Bestand."""
+        engine = FakeEngine(["Hallo Welt", "Hallo Welt und"])
+        t = StreamTranscriber(
+            engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0,
+            finalize_mode="cached",
+        )
+        t.feed(audio(0.5))
+        assert t.maybe_transcribe() is not None
+        t.feed(audio(10.0))
+        assert t.maybe_transcribe() is None
+        assert len(engine.calls) == 1
+        assert t._mid_tail_checkpoint is None
+        result = t.finalize()  # Puffer veraendert -> voller Call wie Bestand
+        assert result.text == "Hallo Welt und"
+        assert len(engine.calls) == 2
+
+    def test_reset_macht_mid_tail_zustand_loser(self) -> None:
+        """reset() leert Checkpoint und failed-Flag."""
+        engine = FakeEngine(["Hallo Welt", "voellig anders ohne Anker"])
+        t = make_mid_tail(engine)
+        t.feed(audio(0.5))
+        assert t.maybe_transcribe() is not None
+        t.feed(audio(5.0))
+        assert t.maybe_transcribe() is None
+        assert t._mid_tail_failed is True
+        t.reset()
+        assert t._mid_tail_checkpoint is None
+        assert t._mid_tail_failed is False
+
+    def test_ungueltiger_snapshot_kein_checkpoint(self) -> None:
+        """Snapshot-Text ohne Commit-Praefix darf KEIN Checkpoint werden."""
+        engine = FakeEngine(["Hallo Welt", "Welt und mehr"])
+        t = make_mid_tail(engine)
+        t.feed(audio(0.5))
+        assert t.maybe_transcribe() is not None
+        # Commit-Zustand kuenstlich inkonsistent machen (simuliert
+        # zurueckgesetzten Commit zwischen Snapshot und Mid-Tail-Tick).
+        t._committed_text = "Xyz "
+        t.feed(audio(5.0))
+        assert t.maybe_transcribe() is None
+        assert t._mid_tail_checkpoint is None, (
+            "Snapshot-Text ohne Commit-Praefix darf KEIN Checkpoint werden"
+        )
+        assert len(engine.calls) == 1, "kein Mid-Tail-Call ohne Checkpoint"
+        result = t.finalize()
+        assert result.text == "Welt und mehr"
+        assert len(engine.calls) == 2

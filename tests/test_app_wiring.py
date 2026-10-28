@@ -209,3 +209,18 @@ class TestBufferedWiring:
         factory = controller.kwargs["transcriber_factory"]
         t = factory(engine=object(), interval_s=1.0, min_audio_s=3.0)
         assert isinstance(t, WindowedTranscriber)
+
+
+class TestCachedMidTailWiring:
+    """PHASE 2: Application reicht finalize_mode='cached_mid_tail' durch
+    (existierender generischer finalize_mode-Durchgriff)."""
+
+    def test_cached_mid_tail_passed_to_transcriber(self, monkeypatch) -> None:
+        _app, controller = _application(
+            monkeypatch, streaming_mode="whole_buffer",
+            finalize_mode="cached_mid_tail",
+        )
+        factory = controller.kwargs["transcriber_factory"]
+        transcriber = factory(engine=object(), interval_s=1.0, min_audio_s=0.8)
+        assert isinstance(transcriber, StreamTranscriber)
+        assert transcriber.finalize_mode == "cached_mid_tail"

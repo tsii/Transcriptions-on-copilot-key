@@ -362,6 +362,22 @@ class QwenEngine:
         return TranscriptionResult(text=text)
 
 
+@dataclass(frozen=True)
+class _MidTailCheckpoint:
+    """PHASE 2: Hintergrund-Checkpoint fuer finalize_mode="cached_mid_tail".
+
+    Speichert das Pufferende (Bytes) eines erfolgreichen Live-Snapshots
+    bzw. Hintergrund-Stitch-Laufs zusammen mit der gestitchten
+    Arbeitshypothese. Naechste Fenster starten bei ``end_nbytes -
+    mid_tail_context_s``.
+    """
+
+    #: Pufferlaenge (Bytes) zum Zeitpunkt des Snapshots.
+    end_nbytes: int
+    #: Gestitchte Arbeitshypothese zu diesem Pufferstand.
+    text: str
+
+
 @dataclass
 class StreamTranscriber:
     """Sammelt Audio und erzeugt periodisch Transkriptionen.
@@ -392,6 +408,14 @@ class StreamTranscriber:
     #: sammelt weiter, finalize() transkribiert den kompletten Puffer,
     #: reset() reaktiviert die Live-Ticks. 0.0 (Default) = immer aktiv.
     live_asr_until_s: float = 0.0
+    #: PHASE 2 (nur finalize_mode="cached_mid_tail"): Links-Kontext
+    #: (Sekunden) der Mid-Tail-Fenster vor dem Checkpoint-Ende.
+    mid_tail_context_s: float = 2.5
+    #: PHASE 2: Abstand (Sekunden neuem Audio seit Checkpoint) zwischen
+    #: zwei Hintergrund-Mid-Tail-Engine-Calls.
+    mid_tail_step_s: float = 4.0
+    #: PHASE 2: Mindestanzahl Wortanker fuer stitch_word_overlap.
+    mid_tail_anchor_words: int = 2
 
     _buffer: bytearray = field(default_factory=bytearray, init=False, repr=False)
     _last_transcribed_at: float = field(default=0.0, init=False, repr=False)
@@ -421,6 +445,16 @@ class StreamTranscriber:
     #: Live-Limit wurde erreicht, aber die Meldung noch nicht abgeholt
     #: (take_live_paused()).
     _live_paused_pending: bool = field(default=False, init=False, repr=False)
+    # --- PHASE 2: cached_mid_tail ----------------------------------------
+    #: Gueltiger Hintergrund-Checkpoint (Vollpuffer-Bytes + gestitchter
+    #: Arbeitshypothese). None = kein Stitch-Versuch moeglich.
+    _mid_tail_checkpoint: "_MidTailCheckpoint | None" = field(
+        default=None, init=False, repr=False
+    )
+    #: True, nachdem ein Hintergrund-Mid-Tail-Lauf endgueltig gescheitert
+    #: ist (Engine-Exception oder Stitch None): keine weiteren Versuche,
+    #: finalize() faellt auf den Vollpuffer zurueck.
+    _mid_tail_failed: bool = field(default=False, init=False, repr=False)
 
     # ------------------------------------------------------------------
     # Zustand
@@ -465,6 +499,8 @@ class StreamTranscriber:
         self._vad_checked_at = 0.0
         self._live_paused_seen = False
         self._live_paused_pending = False
+        self._mid_tail_checkpoint = None
+        self._mid_tail_failed = False
         self._invalidate_cache()
 
     def take_live_paused(self) -> bool:
@@ -533,6 +569,11 @@ class StreamTranscriber:
             if not self._live_paused_seen:
                 self._live_paused_seen = True
                 self._live_paused_pending = True
+            # PHASE 2: Hintergrund-Mid-Tail-Stitch (nur Opt-In-Modus).
+            # Liefert IMMER None: kein Tippen, kein _update_commit, keine
+            # Aenderung an _history/_committed_text/Live-Cache.
+            if self.finalize_mode == "cached_mid_tail" and not self._mid_tail_failed:
+                self._mid_tail_step()
             return None
         # Die erste Transkription darf sofort erfolgen, danach wird nur
         # neu hinzugekommene Audio beruecksichtigt.
@@ -596,12 +637,139 @@ class StreamTranscriber:
             return TranscriptionResult(
                 text=self._last_completed_text, committed_len=0
             )
+        # PHASE 2: kleiner Tail statt Vollpuffer, wenn die Mid-Tail-Kette
+        # gueltig ist; sonst Verhalten wie heute (Vollpuffer-Fallback).
+        if self.finalize_mode == "cached_mid_tail":
+            mid_tail = self._mid_tail_finalize()
+            if mid_tail is not None:
+                log.debug(
+                    "Finalize aus Mid-Tail-Checkpoint (%d Bytes Puffer, "
+                    "Tail-Stitch)",
+                    len(self._buffer),
+                )
+                return mid_tail
         result = self._transcribe()
         return TranscriptionResult(text=result.text, committed_len=0)
 
     # ------------------------------------------------------------------
     # Intern
     # ------------------------------------------------------------------
+    # --- PHASE 2: cached_mid_tail ---------------------------------------
+    def _mid_tail_valid_snapshot(self) -> "_MidTailCheckpoint | None":
+        """Initial-Checkpoint aus dem letzten erfolgreichen Live-Snapshot.
+
+        Nur gueltig, wenn die Live-Inferenz erfolgreich war und ihr Text mit
+        dem committeten Praefix konsistent beginnt - sonst bleibt None und
+        es gibt KEINEN Stitch-Versuch (finalize() = Vollpuffer wie heute).
+        """
+        if not self._last_completed_ok or self._last_completed_nbytes < 0:
+            return None
+        if not self._last_completed_text.startswith(self._committed_text):
+            return None
+        return _MidTailCheckpoint(
+            end_nbytes=self._last_completed_nbytes,
+            text=self._last_completed_text,
+        )
+
+    def _mid_tail_window(self, end_nbytes: int) -> tuple[bytes, int]:
+        """Fenster [checkpoint.end - Kontext | Pufferende] als Bytes-Slice.
+
+        Der Start wird bei 0 geklemmt (kurzer Puffer). Liefert Slice und
+        Start-Byte (für Tests/Logs).
+        """
+        context_bytes = int(self.mid_tail_context_s * self.sample_rate * BYTES_PER_SAMPLE)
+        start = max(0, end_nbytes - context_bytes)
+        return bytes(self._buffer[start:]), start
+
+    def _mid_tail_step(self) -> None:
+        """Ein Hintergrund-Stitch-Lauf (nie tippend, nie committend).
+
+        (1) Initial-Checkpoint aus dem letzten Live-Snapshot, falls noch
+        keiner existiert. Ungueltiger Snapshot -> kein Versuch.
+        (2) Throttle: erst ab mid_tail_step_s neuem Audio seit Checkpoint.
+        (3) Fenster transkribieren, mit stitch_word_overlap an die
+        Arbeitshypothese naehen; Erfolg -> neuer Checkpoint am VOR dem
+        Engine-Call gesnapshotteten Pufferende. Engine-Exception oder
+        Stitch None -> _mid_tail_failed=True (endgueltig, kein abort).
+        """
+        checkpoint = self._mid_tail_checkpoint
+        if checkpoint is None:
+            checkpoint = self._mid_tail_valid_snapshot()
+            if checkpoint is None:
+                return
+            self._mid_tail_checkpoint = checkpoint
+
+        end_nbytes_snapshot = len(self._buffer)  # VOR dem Engine-Call
+        new_bytes = end_nbytes_snapshot - checkpoint.end_nbytes
+        if new_bytes < self.mid_tail_step_s * self.sample_rate * BYTES_PER_SAMPLE:
+            return
+
+        window, _start = self._mid_tail_window(checkpoint.end_nbytes)
+        try:
+            result = self.engine.transcribe(window, initial_prompt=self._committed_text)
+        except Exception:  # noqa: BLE001 - Hintergrundlauf darf nie abbrechen
+            self._mid_tail_failed = True
+            log.debug("mid_tail: Engine-Exception - keine weiteren Versuche")
+            return
+        window_text = result.text.strip()
+        stitched = stitch_word_overlap(
+            checkpoint.text,
+            window_text,
+            protected_prefix=self._committed_text,
+            min_anchor_words=self.mid_tail_anchor_words,
+        )
+        if stitched is None:
+            self._mid_tail_failed = True
+            log.debug("mid_tail: Stitch ohne Anker - keine weiteren Versuche")
+            return
+        self._mid_tail_checkpoint = _MidTailCheckpoint(
+            end_nbytes=end_nbytes_snapshot, text=stitched
+        )
+        log.debug(
+            "mid_tail: Checkpoint bei %.1fs -> %r",
+            end_nbytes_snapshot / (self.sample_rate * BYTES_PER_SAMPLE),
+            stitched,
+        )
+
+    def _mid_tail_finalize(self) -> TranscriptionResult | None:
+        """Finalize im Modus cached_mid_tail: kleiner Tail statt Vollpuffer.
+
+        None = Mid-Tail nicht moeglich/gescheitert -> Caller macht den
+        bisherigen Vollpuffer-Fallback.
+        """
+        checkpoint = self._mid_tail_checkpoint
+        if self._mid_tail_failed or checkpoint is None:
+            return None
+        if not checkpoint.text.startswith(self._committed_text):
+            return None
+
+        end_nbytes_snapshot = len(self._buffer)
+        if end_nbytes_snapshot == checkpoint.end_nbytes:
+            # Puffer seit Checkpoint unveraendert: KEIN Engine-Call.
+            return TranscriptionResult(
+                text=checkpoint.text, committed_len=len(self._committed_text)
+            )
+
+        window, _start = self._mid_tail_window(checkpoint.end_nbytes)
+        try:
+            result = self.engine.transcribe(window, initial_prompt=self._committed_text)
+        except Exception:  # noqa: BLE001 - Caller faellt auf Vollpuffer zurueck
+            log.debug("mid_tail finalize: Engine-Exception - Vollpuffer-Fallback")
+            return None
+        window_text = result.text.strip()
+        stitched = stitch_word_overlap(
+            checkpoint.text,
+            window_text,
+            protected_prefix=self._committed_text,
+            min_anchor_words=self.mid_tail_anchor_words,
+        )
+        if stitched is None:
+            log.debug("mid_tail finalize: Stitch fehlgeschlagen - Vollpuffer-Fallback")
+            return None
+        return TranscriptionResult(
+            text=stitched, committed_len=len(self._committed_text)
+        )
+
     def _new_audio(self) -> bytes:
         """Audio seit der letzten Transkription (sonst der ganze Puffer)."""
         start_byte = int(
