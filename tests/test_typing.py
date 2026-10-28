@@ -555,11 +555,13 @@ class TestPauseIndicator:
         d.show_paused()
         d.show_paused()  # idempotent: kein Doppeltippen
         assert t.calls == [("type", PAUSE_INDICATOR)], t.calls
-        # Ein einzelnes Zeichen (U+2026) statt drei ASCII-Punkten.
-        assert len(PAUSE_INDICATOR) == 1
+        # ASCII: drei Punkte (dotool kann U+2026 im de/nodeadkeys-Layout
+        # NICHT tippen - Ground-Truth-Experiment vom 11:36-Realtest).
+        assert PAUSE_INDICATOR == "..."
+        assert len(PAUSE_INDICATOR) == 3
 
     def test_finalize_removes_indicator_and_pastes_suffix(self) -> None:
-        """(2) finalize: Diff entfernt den Indikator (1 Backspace), Suffix ohne Rest."""
+        """(2) finalize: Diff entfernt den Indikator (3 Backspaces), Suffix ohne Rest."""
         from stt_button.typing import PAUSE_INDICATOR
 
         t = FakeTyper()
@@ -574,13 +576,13 @@ class TestPauseIndicator:
         d.show_paused()
         t.calls.clear()
         d.finalize("Hallo Welt und mehr")
-        # Nur der Indikator (1 Zeichen U+2026) wird zurueckgenommen:
+        # Nur der Indikator (3 Zeichen '...') wird zurueckgenommen:
         assert t.calls == [("backspace", str(len(PAUSE_INDICATOR)))], t.calls
         assert pastes == [" und mehr"]
         assert all(PAUSE_INDICATOR not in p for p in pastes)
 
     def test_finalize_without_paster_types_suffix_after_backspace(self) -> None:
-        """(2b) Ohne final_paster: Backspace(1), dann Suffix zeichenweise tippen."""
+        """(2b) Ohne final_paster: Backspace(3), dann Suffix zeichenweise tippen."""
         from stt_button.typing import PAUSE_INDICATOR
 
         t = FakeTyper()
@@ -621,7 +623,7 @@ class TestPauseIndicator:
         assert t.calls == [("type", PAUSE_INDICATOR)], t.calls
 
     def test_committed_mode_same_mechanics(self) -> None:
-        """(6) live_typing_mode='committed': gleiche Mechanik, 1 Backspace."""
+        """(6) live_typing_mode='committed': gleiche Mechanik, 3 Backspaces."""
         from stt_button.typing import PAUSE_INDICATOR
 
         t = FakeTyper()
@@ -644,6 +646,117 @@ class TestPauseIndicator:
         # Der Indikator haengt direkt an "Hallo Welt" (kein Leerzeichen
         # dazwischen) -> gemeinsamer Praefix leer, ganzes Suffix gepastet.
         assert pastes == [" und mehr"]
+
+    def test_indicator_dots_collision_real_text(self) -> None:
+        """(9) Indikator '...' vs. echte Punkte: kein Text-Fressen, kein Rest.
+
+        Grund-Truth-Kante: Getippter Stand ist 'Hallo' + Indikator '...',
+        finaler Text 'HalloWelt.' endet auf ECHTEM Punkt. Die Differenz
+        rechnet praefixbasiert (common prefix von 'Hallo...' vs.
+        'HalloWelt.'): 'Hallo' bleibt stehen, die drei Indikator-Punkte
+        werden per Backspace(3) entfernt, 'Welt.' WIRD KOMPLETT neu
+        getippt/gepastet - inklusive des echten Punkts am Ende. Der
+        gemeinsame Praefix endet VOR den Punkten (punkt 6 von 'HalloWelt.'
+        ist 'W', nicht '.'), also kann die Diff keine echten Punkte
+        'fressen': to_remove zaehlt NUR den Indikator-Rest.
+        """
+        from stt_button.typing import PAUSE_INDICATOR
+
+        assert PAUSE_INDICATOR == "..."
+        t = FakeTyper()
+        pastes: list[str] = []
+
+        class Recorder:
+            def paste(self, text: str) -> None:
+                pastes.append(text)
+
+        d = DeltaTyper(t, append_space=False, final_paster=Recorder())
+        d.update("Hallo", committed_len=0)  # Modus 'full'
+        d.show_paused()  # tippt '...' -> Stand 'Hallo...'
+        t.calls.clear()
+        d.finalize("HalloWelt.")
+        # Exakt der Indikator (3 Punkte) wird zurueckgenommen, NICHT mehr:
+        assert t.calls == [("backspace", "3")], t.calls
+        # 'Welt.' als GANZES gepastet - der echte Punkt bleibt erhalten:
+        assert pastes == ["Welt."], pastes
+        assert d.last_text == "HalloWelt.", d.last_text
+
+    def test_indicator_before_real_sentence_with_dots(self) -> None:
+        """(10) Exakte Kante aus dem Bugfix-Auftrag: letzter getippter Text
+        '... ', final '...und so weiter' - der gemeinsame Praefix '...'
+        deckt die Punkte ab, NUR der Unterschied (das Leerzeichen) wird
+        per Backspace entfernt und 'und so weiter' gepastet. KEIN echter
+        Punkt wird gefressen: die Diff ist praefixbasiert, zurueckgenommen
+        wird ausschliesslich old_tail[common:].
+        """
+        from stt_button.typing import PAUSE_INDICATOR
+
+        t = FakeTyper()
+        pastes: list[str] = []
+
+        class Recorder:
+            def paste(self, text: str) -> None:
+                pastes.append(text)
+
+        d = DeltaTyper(t, append_space=False, final_paster=Recorder())
+        d.update("", committed_len=0)
+        d.show_paused()  # tippt '...' -> Stand '...'
+        # Letzter committeter/live getippter Text war '... ' (Indikator
+        # plus Leerzeichen): Stand per normalem update()-Pfaf:
+        d.update("... ", committed_len=0)
+        assert d.last_text == "... ", d.last_text
+        t.calls.clear()
+        d.finalize("...und so weiter")
+        # Common prefix von '... ' vs. '...und so weiter' ist '...' (3):
+        # to_remove == 1 (nur das Leerzeichen), Rest als Paste.
+        assert t.calls == [("backspace", "1")], t.calls
+        # Kein echter Text gefressen: die Punkte bleiben, Suffix ab 'und'.
+        assert pastes == ["und so weiter"], pastes
+        assert d.last_text == "...und so weiter", d.last_text
+
+    def test_final_dots_equal_indicator_is_noop(self) -> None:
+        """(11b) Stoerste Kollisionskette ueberhaupt: finaler Text endet
+        SELBST auf '...' - deckungsgleich mit dem Indikator. Die Diff ist
+        ein No-Op (common prefix == ganze Laenge): kein Backspace, kein
+        Paste, keine echten Punkte angefasst.
+        """
+        from stt_button.typing import PAUSE_INDICATOR
+
+        t = FakeTyper()
+        d = DeltaTyper(t, append_space=False)
+        d.update("Hallo Welt", committed_len=0)
+        d.show_paused()  # Stand 'Hallo Welt...'
+        t.calls.clear()
+        d.finalize("Hallo Welt...")  # echter Text endet zufaellig auf '...'
+        assert t.calls == [], t.calls
+        assert d.last_text == "Hallo Welt...", d.last_text
+
+    def test_final_text_ending_with_dots_after_indicator(self) -> None:
+        """(11) Kollisionskante: finaler Text ENDET selbst auf '...' -
+        der gemeinsame Praefix verlaengert sich dann UEBER den Indikator
+        hinaus (bis min(len(old), len(new))), to_remove==0, nichts wird
+        zurueckgenommen und der Resttext unveraendert gepastet.
+        """
+        from stt_button.typing import PAUSE_INDICATOR
+
+        t = FakeTyper()
+        pastes: list[str] = []
+
+        class Recorder:
+            def paste(self, text: str) -> None:
+                pastes.append(text)
+
+        d = DeltaTyper(t, append_space=False, final_paster=Recorder())
+        d.update("Hallo Welt", committed_len=0)
+        d.show_paused()  # Stand 'Hallo Welt...'
+        t.calls.clear()
+        d.finalize("Tschuess...")
+        # Common prefix: 'Hallo Welt...' vs. 'Tschuess...' -> '' ->
+        # Backspace(13) nimmt ALLES zurueck (volle finale Korrektur,
+        # force_revision-Semantik in finalize), dann alles neu pasten.
+        assert t.calls == [("backspace", "13")], t.calls
+        assert pastes == ["Tschuess..."], pastes
+        assert d.last_text == "Tschuess...", d.last_text
 
 
 class TestReset:

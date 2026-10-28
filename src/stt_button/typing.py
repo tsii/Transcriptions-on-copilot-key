@@ -31,11 +31,19 @@ COMMAND_TIMEOUT_S = 2.0
 
 #: Pausen-Indikator (STUFE 4): wird GENAU EINMAL getippt, wenn die Live-ASR
 #: wegen ``live_asr_until_s`` abschaltet ("ich hoere noch zu, schreibe aber
-#: gerade nicht mit"). Bewusst das EINE Unicode-Zeichen U+2026 statt drei
-#: ASCII-Punkten: es liegt im aktiven Layout de/nodeadkeys auf Level 3 der
-#: Punkt-Taste (AltGr+., keysym U2026) und braucht deshalb beim Entfernen
-#: nur EINEN Backspace statt drei.
-PAUSE_INDICATOR = "\u2026"
+#: gerade nicht mit"). Bewusst drei ASCII-Punkte statt des EINEN
+#: Unicode-Zeichens U+2026: Ground-Truth-Experiment (11:36-Realtest) hat
+#: gezeigt, dass dotool U+2026 im aktiven Layout de/nodeadkeys NICHT
+#: tippen kann ('dotool: WARNING: impossible character for layout: …',
+#: rc=0, Zeichen wird STILL VERWORFEN) - der Indikator erschien also nie
+#: in der Zielanwendung. '...' ist in jedem Layout tippbar.
+#: Kollisions-Unbedenklichkeit: die finalize()-Differenz ist praefixbasiert
+#: (common prefix). Endet der finale Text selbst auf Punkte, verlaengert
+#: sich der gemeinsame Praefix einfach ueber die Punkte (bis zur ersten
+#: Abweichung) - es werden ausschliesslich old_tail[common:] zurueck-
+#: genommen und new_tail[common:] ausgegeben, echte Punkte koennen dabei
+#: weder gefressen noch verduennt werden.
+PAUSE_INDICATOR = "..."
 
 
 def _capslock_leds() -> dict[str, str]:
@@ -569,8 +577,8 @@ class DeltaTyper:
         ``live_asr_until_s``-Limits abschaltet. Der Indikator wird als
         ECHTER getippter Stand gefuehrt (``_last_text`` wird verlaengert),
         damit ihn die bestehende finalize()-Differenz automatisch wieder
-        entfernt (to_remove == len(PAUSE_INDICATOR) == 1 Backspace):
-        Backspace loescht in der Ziel-App genau einen Codepoint.
+        entfernt (to_remove == len(PAUSE_INDICATOR) == 3 Backspaces):
+        Backspace loescht in der Ziel-App genau so viele Codepoints.
 
         Ist der finale Text leer (Modell-Ausfall), bleibt der Indikator
         bewusst stehen (ehrlicher Zustand). Wird die Aufnahme ABGEBROCHEN,

@@ -812,7 +812,7 @@ class TestPauseIndicatorController:
         return [c for c in typer.calls if c == ("type", PAUSE_INDICATOR)]
 
     def test_limit_types_indicator_once_and_final_without_it(self) -> None:
-        """(6) Nach dem Limit EIN Indikator; Release -> Volltext ohne '…'."""
+        """(6) Nach dem Limit EIN Indikator; Release -> Volltext ohne '...'."""
         from stt_button.typing import PAUSE_INDICATOR
 
         ctrl, typer = self._make(live_asr_until_s=1.5)
@@ -833,8 +833,8 @@ class TestPauseIndicatorController:
             ctrl.run_once()
         assert len(self._indicator_calls(typer)) == 1, typer.calls
 
-        # Release: finalize() entfernt den Indikator per Backspace (1
-        # Zeichen U+2026) und liefert den VOLLSTAENDIGEN Text ohne Indikator.
+        # Release: finalize() entfernt den Indikator per Backspace (3
+        # Zeichen '...') und liefert den VOLLSTAENDIGEN Text ohne Indikator.
         ctrl.stop_recording()
         self._wait_idle(ctrl)
         assert ("backspace", str(len(PAUSE_INDICATOR))) in typer.calls, typer.calls
