@@ -414,6 +414,21 @@ class PushToTalkController:
                 if rest:
                     transcriber.feed(rest)
 
+                # BUG 1 (Fix b): Der Live-Pfad kann das Limit NIE gesehen
+                # haben - der letzte Live-Tick startete unter dem Limit,
+                # seine Inferenz ueberdauerte die Grenze, und der Release
+                # kam vor dem naechsten Tick (Realtest 11:56). Erst der
+                # Queue-/Rest-Feed oben hat den Puffer jetzt ueber die
+                # Grenze gedrueckt. take_live_paused() erkennt das Limit
+                # SELBST - hier wird es spaetestens zu Beginn der finalen
+                # Inferenz gemeldet. Der Indikator wird von der finalen
+                # Differenz (3 Backspaces) automatisch entfernt.
+                # Nur StreamTranscriber hat ein Live-Limit -> getattr-Guard.
+                take_live_paused = getattr(transcriber, "take_live_paused", None)
+                if take_live_paused is not None and take_live_paused():
+                    self._trace("live paused")
+                    self._delta_typer.show_paused()
+
                 # Vollstaendige Aufnahme zu Debug-Zwecken abspeichern.
                 self._trace("dump start")
                 self._dump_audio(transcriber)

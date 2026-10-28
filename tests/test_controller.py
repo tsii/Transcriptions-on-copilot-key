@@ -62,6 +62,17 @@ class FakeTyper:
     def type_text(self, text: str) -> None:
         self.calls.append(("type", text))
 
+    @property
+    def typed_text_final(self) -> str:
+        """Getippter Endstand: Backspaces abgezogen (wie am Cursor)."""
+        text = ""
+        for c in self.calls:
+            if c[0] == "type":
+                text += c[1]
+            elif c[0] == "backspace":
+                text = text[: len(text) - int(c[1])]
+        return text
+
     def backspace(self, n: int) -> None:
         self.calls.append(("backspace", str(n)))
 
@@ -889,6 +900,133 @@ class TestPauseIndicatorController:
         assert typed == "wort0 wort1 wort2 wort3 wort4 wort5 wort6 wort7", (
             typer.calls
         )
+
+    def _make_short_session(self, live_asr_until_s: float):
+        """Kurze Session (Regression 11:56): letzter Tick UNTER dem Limit.
+
+        Echte Verdrahtung (echter StreamTranscriber, FakeEngine): 7 Chunks
+        (3.5s) kommen live in die Queue - KEIN Live-Tick sieht damit das
+        4s-Limit. Der 8. Chunk (1s) erscheint erst als stop()-Rest im
+        Finalizer: Dessen Queue-/Rest-Feed drueckt den Puffer auf 4.5s und
+        UEBERSCHREITET damit die Grenze - exakt die Realtest-Situation
+        (Audio lief waehrend der letzten Inferenz weiter, Release kam vor
+        dem naechsten Tick). Vor dem Fix zeigte der Indikator hier NIE.
+        """
+        from stt_button.asr import StreamTranscriber
+
+        engine = FakeEngine()
+        typer = FakeTyper()
+        delta = DeltaTyper(typer, append_space=True)
+
+        def make_transcriber(engine_, interval_s, min_audio_s):
+            return StreamTranscriber(
+                engine_,
+                interval_s=interval_s,
+                min_audio_s=min_audio_s,
+                live_asr_until_s=live_asr_until_s,
+            )
+
+        source = RestAudioSource(
+            [b"\x00" * 16000] * 7, rest=b"\x00" * 16000
+        )
+        ctrl = PushToTalkController(
+            config=None,
+            source_factory=lambda: source,
+            engine=engine,
+            delta_typer=delta,
+            min_audio_s=0.1,
+            asr_interval_s=0.1,
+            no_audio_timeout_s=60.0,
+            transcriber_factory=make_transcriber,
+        )
+        return ctrl, typer
+
+    def test_short_session_indicator_shown_in_finalizer(self) -> None:
+        """(BUG1/3) Letzter Tick unter Limit: Indikator im FINALIZER.
+
+        Der Live-Pfad sah das Limit nie; erst der Queue-Feed im
+        _finalize_worker drueckt den Puffer ueber die Grenze. Der dortige
+        take_live_paused()-Check tippt den Indikator GENAU EINMAL vor der
+        finalen Ausgabe; die Final-Diff entfernt ihn wieder (3 Backspaces,
+        kein '...' im Endergebnis).
+        """
+        from stt_button.typing import PAUSE_INDICATOR
+
+        ctrl, typer = self._make_short_session(live_asr_until_s=4.0)
+        ctrl.start_recording()
+        # Ticks laufen, bis die Queue leer ist: alle 7 Chunks (3.5s) sind
+        # gefuettert, KEIN Live-Tick sah aber >= 4s (Limitschwelle live
+        # nie erreicht - Realtest-Situation).
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            ctrl.run_once()
+            with ctrl._lock:
+                if ctrl._total_bytes >= 7 * 16000:
+                    break
+            time.sleep(0.01)
+        assert not self._indicator_calls(typer), (
+            "Indikator im Live-Pfad getippt - Setup deckt den Bug nicht ab"
+        )
+        ctrl.stop_recording()
+        self._wait_idle(ctrl)
+        # GENAU EINMAL PAUSE_INDICATOR, zeitlich vor dem finalen Suffix:
+        indicators = [
+            (i, c) for i, c in enumerate(typer.calls)
+            if c == ("type", PAUSE_INDICATOR)
+        ]
+        assert len(indicators) == 1, (
+            f"Pausen-Indikator fehlt im Finalizer (Anzahl: {len(indicators)})",
+            typer.calls,
+        )
+        # Final-Diff entfernt ihn: 3 Backspaces vorhanden, Endergebnis
+        # ohne '...'-Rest (8 Chunks = 4.0s -> 8 Woerter). Ohne Final-Paster
+        # kommt das Leerzeichen als separates key('space') (FakeTyper zaehlt
+        # key-Aufruefe nicht zum Cursor-Text), der Aufruf selbst ist hier
+        # die Leerzeichen-Erwartung.
+        assert ("backspace", str(len(PAUSE_INDICATOR))) in typer.calls, (
+            typer.calls
+        )
+        assert typer.typed_text_final == (
+            "wort0 wort1 wort2 wort3 wort4 wort5 wort6 wort7"
+        ), typer.calls
+        assert ("key", "space") in typer.calls, typer.calls
+
+    def test_indicator_live_shown_not_repeated_in_finalizer(self) -> None:
+        """(BUG1/4) Live angezeigter Indikator: im Finalizer KEIN zweiter.
+
+        Die take_live_paused()-Meldung wird konsumiert: Der Finalizer-Check
+        darf sie nicht erneut tippen (DeltaTyper.show_paused() waere ohnehin
+        idempotent, aber auch der Aufruf ist nur bei anstehender Meldung
+        erlaubt).
+        """
+        ctrl, typer = self._make_short_session(live_asr_until_s=1.5)
+        ctrl.start_recording()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            ctrl.run_once()
+            if self._indicator_calls(typer):
+                break
+            time.sleep(0.02)
+        assert len(self._indicator_calls(typer)) == 1, (
+            "Live-Pfad zeigte den Indikator nicht"
+        )
+        ctrl.stop_recording()
+        self._wait_idle(ctrl)
+        assert len(self._indicator_calls(typer)) == 1, (
+            "Indikator im Finalizer ein zweites Mal getippt", typer.calls
+        )
+
+    def test_short_session_limit_zero_never_indicator(self) -> None:
+        """(BUG1/5) live_asr_until_s=0: auch im Finalizer NIE ein Indikator."""
+        ctrl, typer = self._make_short_session(live_asr_until_s=0.0)
+        ctrl.start_recording()
+        for _ in range(10):
+            time.sleep(0.02)
+            ctrl.run_once()
+        assert not self._indicator_calls(typer)
+        ctrl.stop_recording()
+        self._wait_idle(ctrl)
+        assert not self._indicator_calls(typer), typer.calls
 
 
 class TestAudioDumpModes:

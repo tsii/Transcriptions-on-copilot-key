@@ -254,7 +254,9 @@ class TestFinalPaste:
         d = DeltaTyper(t, final_paster=Recorder())
         d.update("Hallo Welt", committed_len=0)
         d.finalize("Hallo Welt und mehr", committed_len=11)
-        assert pastes == [" und mehr"]
+        # append_space=True (Default): Das Leerzeichen haengt direkt am
+        # Paste - KEIN separater Space-Key (Space-Microfix).
+        assert pastes == [" und mehr "]
         assert t.typed == "Hallo Welt"  # kein doppeltes Tippen des Suffixes
 
     def test_finalize_backspaces_before_pasting_revision_delta(self) -> None:
@@ -270,8 +272,10 @@ class TestFinalPaste:
         d.update("Hallo Weld")
         t.calls.clear()
         d.finalize("Hallo Welt")
-        assert t.calls == [("backspace", "1"), ("key", "space")]
-        assert pastes == ["t"]
+        # append_space=True (Default): Backspace, dann Paste inklusive
+        # Leerzeichen - KEIN separater Space-Key (Space-Microfix).
+        assert t.calls == [("backspace", "1")]
+        assert pastes == ["t "]
 
     def test_finalize_empty_delta_only_appends_space(self) -> None:
         """Kein Delta (Text unveraendert) => kein Paste, nur Leerzeichen."""
@@ -302,9 +306,37 @@ class TestFinalPaste:
         d.update("Hallo")
         t.calls.clear()
         d.finalize("Hallo Welt")
-        assert events == [("paste", " Welt")]
-        # Space via typer.key NACH dem Paste
-        assert t.calls == [("key", "space")]
+        assert events == [("paste", " Welt ")]
+        # Das Leerzeichen ist IM Paste enthalten - KEIN separater Space-Key
+        # (kein doppeltes Leerzeichen).
+        assert t.calls == [], t.calls
+
+    def test_finalize_append_space_with_paster_empty_delta_only_key_space(
+        self,
+    ) -> None:
+        """(BUG2/7) Paster + to_add LEER: Space weiterhin via key('space')."""
+        t = FakeTyper()
+        events: list[tuple[str, str]] = []
+
+        class Recorder:
+            def paste(self, text: str) -> None:
+                events.append(("paste", text))
+
+        d = DeltaTyper(t, final_paster=Recorder(), append_space=True)
+        d.update("Hallo Welt")
+        t.calls.clear()
+        d.finalize("Hallo Welt")
+        assert events == [], events
+        assert t.calls == [("key", "space")], t.calls
+
+    def test_finalize_append_space_without_paster_separate_space(self) -> None:
+        """(BUG2/8) Ohne Paster: getrennter Space bleibt (bestehendes Verhalten)."""
+        t = FakeTyper()
+        d = DeltaTyper(t, append_space=True)
+        d.update("Hallo")
+        t.calls.clear()
+        d.finalize("Hallo Welt")
+        assert t.calls == [("type", " Welt"), ("key", "space")], t.calls
 
 
 class TestClipboardPaster:

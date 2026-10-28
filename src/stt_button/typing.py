@@ -691,6 +691,14 @@ class DeltaTyper:
         # committed_len beim Abschluss nichts bereits Gesichertes oeffnet.
         effective_committed = max(committed_len, self._last_committed)
 
+        # Space-Microfix: Bei vorhandenem final_paster und nicht-leerem
+        # Delta wird das abschliessende Leerzeichen direkt an das Paste
+        # angehaengt - ein separater key("space") faellt weg (kein zweites
+        # Leerzeichen, ein Tastendruck weniger). Bei leerem to_add gibt es
+        # kein Paste, dann bleibt der separate Space-Key. Ohne Paster und
+        # bei append_space=False aendert sich nichts.
+        space_in_paste = False
+
         if len(final_text) >= effective_committed:
             committed = min(effective_committed, len(old), len(final_text))
 
@@ -718,8 +726,15 @@ class DeltaTyper:
             if to_add:
                 t0 = time.monotonic()
                 if self._final_paster is not None:
-                    self._final_paster.paste(to_add)
+                    # Angehaengtes Leerzeichen statt separatem Space-Key
+                    # (kein doppeltes Leerzeichen, siehe oben).
+                    space_in_paste = self._append_space
+                    self._final_paster.paste(
+                        to_add + " " if space_in_paste else to_add
+                    )
                     self._trace("paste")
+                    if space_in_paste:
+                        self._trace("space 0.000s (im Paste)")
                 else:
                     self._typer.type_text(to_add)
                     self._trace("type")
@@ -728,7 +743,7 @@ class DeltaTyper:
             self._last_text = old[:committed] + new_tail
             self._last_committed = committed
 
-        if self._append_space:
+        if self._append_space and not space_in_paste:
             t0 = time.monotonic()
             self._typer.key("space")
             self._trace(f"space {time.monotonic() - t0:.3f}s")

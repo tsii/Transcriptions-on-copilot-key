@@ -471,11 +471,20 @@ class StreamTranscriber:
         """Holt die Limit-Meldung der Live-ASR ab (genau einmal pro Aufnahme).
 
         Minimale Signatur (bewusst kein Callback, kein extra Property):
-        ``take_live_paused() -> bool``. Liefert ``True`` genau einmal - beim
-        ersten Abruf, nachdem ``maybe_transcribe()`` erstmals das Live-Limit
-        erreicht hat (``live_asr_until_s > 0`` und Puffer >= Limit) - und
-        konsumiert die Meldung. Weitere Aufrufe liefern ``False``, bis ein
-        ``reset()`` gefolgt von einem erneuten Limit-Erreichen folgt.
+        ``take_live_paused() -> bool``. Liefert ``True`` genau einmal -
+        nach dem ersten Ueberschreiten des Live-Limits
+        (``live_asr_until_s > 0`` und Puffer >= Limit) - und konsumiert die
+        Meldung. Weitere Aufrufe liefern ``False``, bis ein ``reset()``
+        gefolgt von einem erneuten Limit-Ueberschreiten folgt.
+
+        Das Limit wird HIER SELBST erkannt (nicht nur in
+        ``maybe_transcribe()`` vermerkt): Der letzte Live-Tick startet
+        regulaer unter dem Limit und liefert noch ein Ergebnis; die Grenze
+        wird erst waehrend seiner mehrsekundigen Inferenz ueberschritten
+        (Audio laeuft weiter), und der Release kann VOR dem naechsten Tick
+        kommen. Dann hat ``maybe_transcribe()`` das Limit nie gesehen -
+        der Finalizer (der als Letzter fuettert) muss die Meldung trotzdem
+        noch bekommen koennen (Realtest 11:56).
 
         Mit ``live_asr_until_s=0.0`` (Default) liefert die Methode NIE
         ``True`` - das Limit ist dann deaktiviert.
@@ -483,6 +492,13 @@ class StreamTranscriber:
         Returns:
             ``True`` gdw. die Limit-Meldung noch nicht abgeholt war.
         """
+        if (
+            self.live_asr_until_s > 0.0
+            and self.audio_seconds >= self.live_asr_until_s
+            and not self._live_paused_seen
+        ):
+            self._live_paused_seen = True
+            self._live_paused_pending = True
         pending = self._live_paused_pending
         self._live_paused_pending = False
         return pending

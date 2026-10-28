@@ -581,6 +581,51 @@ class TestLivePausedSignal:
         assert t.maybe_transcribe() is None
         assert t.take_live_paused() is True  # wieder genau eine Meldung
 
+    def test_feed_over_limit_signals_without_maybe_transcribe(self) -> None:
+        """BUG 1 (ROT): feed() uebers Limit meldet auch OHNE maybe_transcribe().
+
+        Realtest 11:56: Der letzte Live-Tick startet unter dem Limit, seine
+        2.8s-Inferenz ueberdauert die Grenze; der Release kommt vor dem
+        naechsten Tick - maybe_transcribe() sieht das Limit nie. Deshalb
+        erkennt take_live_paused() das Limit SELBST (feed-Zeitpunkt egal):
+        Puffer >= live_asr_until_s genuegt fuer die Meldung.
+        """
+        engine = FakeEngine(["Hallo Welt"])
+        t = StreamTranscriber(
+            engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0
+        )
+        # KEIN maybe_transcribe()-Aufruf - nur fuettern ueber das Limit:
+        t.feed(audio(1.5))  # 1.5s Puffer > 1.0s Limit
+        assert t.take_live_paused() is True, (
+            "Limit-Erreichung ohne maybe_transcribe() nicht erkannt"
+        )
+        # Genau einmal: konsumiert, weitere Abrufe False.
+        assert t.take_live_paused() is False
+        t.feed(audio(1.0))  # weiterer Zuwachs: KEINE zweite Meldung
+        assert t.take_live_paused() is False
+
+    def test_feed_under_limit_never_signals_via_take(self) -> None:
+        """BUG 1 (ROT): Unter dem Limit und bei 0.0 niemals eine Meldung.
+
+        Auch bei Ueberfuetterung OHNE maybe_transcribe() bleibt die Grenze
+        bindend: live_asr_until_s=0.0 ist deaktiviert.
+        """
+        engine = FakeEngine(["Hallo Welt"])
+        t = StreamTranscriber(
+            engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0
+        )
+        t.feed(audio(0.5))  # 0.5s < 1.0s Limit
+        assert t.take_live_paused() is False
+        t.feed(audio(0.4))  # 0.9s, weiterhin darunter
+        assert t.take_live_paused() is False
+
+        off = StreamTranscriber(
+            FakeEngine(["x"]), interval_s=0.1, min_audio_s=0.1,
+            live_asr_until_s=0.0,
+        )
+        off.feed(audio(10.0))  # Limit deaktiviert: NIE melden
+        assert off.take_live_paused() is False
+
 
 class TestFinalizeCached:
     """STUFE 1: finalize_mode="cached" spart den doppelten Engine-Call.
