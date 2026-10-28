@@ -153,7 +153,7 @@ class Config:
     #: Verhalten - unstabile Partials werden live getippt und per Backspace
     #: korrigiert; "committed" = nur der gesicherte Praefix-Zuwachs wird
     #: live getippt, das finale Suffix kommt beim Loslassen in einem Paste.
-    live_typing_mode: str = "full"
+    live_typing_mode: str = "committed"
     #: Live-ASR nach dieser Pufferlaenge (Sekunden) einstellen (STUFE 3):
     #: der Whole-Buffer-Ansatz wird pro Tick teurer; ab hier liefert nur
     #: noch finalize() den Text. 0.0 (Default) = Live-Ticks immer aktiv.

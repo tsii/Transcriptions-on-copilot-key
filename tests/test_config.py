@@ -28,6 +28,7 @@ class TestDefaults:
         assert cfg.max_record_s == 300
         assert cfg.key_codes == ["KEY_F24"]
         assert cfg.input_device_name == "keyd virtual keyboard"
+        assert cfg.live_typing_mode == "committed"
 
     def test_defaults_have_sane_audio_source(self) -> None:
         cfg = Config()
@@ -265,12 +266,12 @@ class TestLatencyStage1Keys:
 
 
 class TestLiveTypingModeKeys:
-    """STUFE 2: live_typing_mode 'full' (Default) | 'committed'."""
+    """STUFE 2: live_typing_mode 'committed' (Default) | 'full' (Opt-in)."""
 
-    def test_default_is_full(self) -> None:
-        """Ohne Config gilt exakt das bisherige Verhalten."""
+    def test_default_is_committed(self) -> None:
+        """Ohne Config gilt der Produktiv-Default (Kimi-Entscheidung)."""
         cfg = Config()
-        assert cfg.live_typing_mode == "full"
+        assert cfg.live_typing_mode == "committed"
 
     def test_parse_committed(self, tmp_path: Path) -> None:
         p = write_config(tmp_path, 'live_typing_mode = "committed"\n')

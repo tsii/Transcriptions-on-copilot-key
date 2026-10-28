@@ -151,9 +151,18 @@ class TestLiveModeWiring:
         app._build_controller()
         assert DeltaStub.created[-1].kwargs["live_typing_mode"] == "committed"
 
-    def test_live_typing_mode_default_full(self, monkeypatch) -> None:
+    def test_live_typing_mode_default_committed(self, monkeypatch) -> None:
         monkeypatch.setattr("stt_button.app.DeltaTyper", DeltaStub)
         app = Application(Config())
+        app._build_controller()
+        assert DeltaStub.created[-1].kwargs["live_typing_mode"] == "committed"
+
+    def test_live_typing_mode_explicit_full_passed_to_delta_typer(
+        self, monkeypatch
+    ) -> None:
+        """Opt-in-Schutz: explizit 'full' muss den Durchgriff erreichen."""
+        monkeypatch.setattr("stt_button.app.DeltaTyper", DeltaStub)
+        app = Application(Config(live_typing_mode="full"))
         app._build_controller()
         assert DeltaStub.created[-1].kwargs["live_typing_mode"] == "full"
 

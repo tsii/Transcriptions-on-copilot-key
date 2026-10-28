@@ -60,12 +60,12 @@ audio_dump_mode = "sync"
 latency_trace = false
 
 # --- Live-Vorschau-Modi (STUFE 2/3) ----------------------------------------
-# live_typing_mode: "full" (Default) tippt unstabile Partials live und
-# korrigiert sie per Backspace (bisheriges Verhalten); "committed" tippt
-# nur den gesicherten Praefix-Zuwachs - der Partial wird nie zurueckgetippt,
-# das finale Suffix kommt beim Loslassen als EIN Paste (null Backspaces).
-# Spart Rueckbau-Zeit, aendert nichts am finalen Text.
-live_typing_mode = "full"
+# live_typing_mode: "committed" (Default) tippt nur den gesicherten
+# Praefix-Zuwachs - der unstabile Partial wird nie zurueckgetippt, das
+# finale Suffix kommt beim Loslassen als EIN Paste (null Backspaces).
+# "full" (Opt-in) tippt unstabile Partials live und korrigiert sie per
+# Backspace (bisheriges Verhalten, lebendige Vorschau).
+live_typing_mode = "committed"
 # live_asr_until_s: Live-Ticks nach dieser Pufferlaenge (Sekunden)
 # einstellen - der Whole-Buffer-Ansatz wird pro Tick teurer. feed()
 # sammelt weiter, finalize() transkribiert den kompletten Puffer.

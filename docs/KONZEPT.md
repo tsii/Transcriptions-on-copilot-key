@@ -705,22 +705,23 @@ Differenz `stop entered` → `paste` ist die gefühlte Latenz.
 ## 11. Live-Vorschau-Modi (STUFE 2/3)
 
 Zwei unabhängige Schalter steuern, wie viel Arbeit **während** der Aufnahme
-passiert. Beide Defaults halten das bisherige Verhalten; der finale Text ist
-in allen Kombinationen identisch.
+passiert. `live_typing_mode` hat den Default "committed"; "full" ist
+der dokumentierte Opt-in für das bisherige Zeichen-für-Zeichen-Verhalten.
+Der finale Text ist in allen Kombinationen identisch.
 
 ### 11.1 `live_typing_mode` — was live getippt wird
 
-* **`"full"` (Default, bisher):** Jeder Live-Tick tippt das ganze aktuelle
-  Transkript als Delta — inklusive unstabiler Partials, die spätere Ticks
-  per Backspace zurücknehmen. Lebendige Vorschau, aber sichtbare
-  Rückbau-Kosten (jedes Zeichen ≈ 35 ms Tippen + Backspaces).
-* **`"committed"`:** Live getippt wird **nur der gesicherte Zuwachs**
+* **`"committed"` (Default):** Live getippt wird **nur der gesicherte Zuwachs**
   (LocalAgreement-Präfix). Der unstabile Partial wird intern
   weitergeführt, aber nie getippt und nie zurückgetippt — keine
   Live-Backspaces, kein Flackern. `finalize()` rechnet das finale Delta
   gegen den effektiv getippten Stand: `to_remove == 0`, das Suffix kommt
   als **ein** Paste (bzw. ein `type_text`). Null Live-Commits ⇒ der
   komplette Finaltext wird genau einmal gepastet.
+* **`"full"` (Opt-in, bisheriges Verhalten):** Jeder Live-Tick tippt das
+  ganze aktuelle Transkript als Delta — inklusive unstabiler Partials, die
+  spätere Ticks per Backspace zurücknehmen. Lebendige Vorschau, aber
+  sichtbare Rückbau-Kosten (jedes Zeichen ≈ 35 ms Tippen + Backspaces).
 
 ### 11.2 `live_asr_until_s` — wie lange live transkribiert wird
 
