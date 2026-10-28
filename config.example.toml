@@ -58,3 +58,16 @@ audio_dump_mode = "sync"
 # latency_trace: true loggt Debug-Zeiten an den Messpunkten Release -> Ausgabe
 # (stop entered / source stopped / dump / finalize start / finalize end / paste).
 latency_trace = false
+
+# --- Live-Vorschau-Modi (STUFE 2/3) ----------------------------------------
+# live_typing_mode: "full" (Default) tippt unstabile Partials live und
+# korrigiert sie per Backspace (bisheriges Verhalten); "committed" tippt
+# nur den gesicherten Praefix-Zuwachs - der Partial wird nie zurueckgetippt,
+# das finale Suffix kommt beim Loslassen als EIN Paste (null Backspaces).
+# Spart Rueckbau-Zeit, aendert nichts am finalen Text.
+live_typing_mode = "full"
+# live_asr_until_s: Live-Ticks nach dieser Pufferlaenge (Sekunden)
+# einstellen - der Whole-Buffer-Ansatz wird pro Tick teurer. feed()
+# sammelt weiter, finalize() transkribiert den kompletten Puffer.
+# 0.0 (Default) = Live-Ticks immer aktiv (bisheriges Verhalten).
+live_asr_until_s = 0.0

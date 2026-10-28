@@ -110,6 +110,8 @@ class Application:
             append_space=cfg.append_space,
             max_revision_chars=cfg.max_revision_chars,
             final_paster=final_paster,
+            latency_trace=cfg.latency_trace,
+            live_typing_mode=cfg.live_typing_mode,
         )
 
         def make_source() -> PwRecordSource:
@@ -154,6 +156,9 @@ class Application:
                 # STUFE 1: "cached" ueberspringt den finalen Engine-Call bei
                 # unveraendertem Puffer; "full" = bisheriges Verhalten.
                 finalize_mode=cfg.finalize_mode,
+                # STUFE 3: Live-Ticks nach dieser Pufferlaenge einstellen
+                # (0.0 = immer aktiv, bisheriges Verhalten).
+                live_asr_until_s=cfg.live_asr_until_s,
             )
 
         return PushToTalkController(

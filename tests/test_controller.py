@@ -704,6 +704,64 @@ class InstantTranscriber:
         return TranscriptionResult(text="fertig")
 
 
+class TestLiveAsrUntilController:
+    """STUFE 3: live_asr_until_s im Controller (Config durchgereicht).
+
+    Nach dem Limit liefern run_once()-Ticks keinen Text mehr; der Finaltext
+    kommt vollstaendig aus finalize().
+    """
+
+    def test_ticks_stop_after_limit_final_text_complete(self) -> None:
+        from stt_button.config import Config
+
+        typer = FakeTyper()
+        # FakeEngine: 0.5s -> 1 Wort; Text waechst mit dem Puffer.
+        class GrowingEngine:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def transcribe(self, data, initial_prompt=""):
+                self.calls += 1
+                words = max(1, len(data) // 16000)
+                return TranscriptionResult(
+                    text=" ".join(f"w{i}" for i in range(words))
+                )
+
+        engine = GrowingEngine()
+        ctrl = PushToTalkController(
+            config=Config(),
+            source_factory=lambda: FakeAudioSource([b"\x00" * 16000] * 12),
+            engine=engine,
+            delta_typer=DeltaTyper(typer, append_space=True),
+            min_audio_s=0.1,
+            asr_interval_s=0.1,
+        )
+        # Limit 1.5s: nach 3 Chunks (1.5s) sind die Live-Ticks aus.
+        ctrl.start_recording()
+        ctrl._transcriber.live_asr_until_s = 1.5  # nachtraeglich enger stellen
+        # Queue entleeren + Live-Tick erzwingen: 6 Chunks = 3s im Puffer.
+        for _ in range(6):
+            ctrl.run_once()
+        calls_before = engine.calls
+        # Weitere Ticks mit weiter gewachsenem Puffer -> KEIN Engine-Call.
+        for _ in range(3):
+            ctrl.run_once()
+        assert engine.calls == calls_before, (
+            "Live-Ticks liefen trotz live_asr_until_s weiter"
+        )
+        ctrl.stop_recording()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and ctrl.state != ControllerState.IDLE:
+            time.sleep(0.005)
+
+        typed = "".join(c[1] for c in typer.calls if c[0] == "type")
+        # Der Finaltext umfasst ALLE 12 Chunks (6s, w0..w11) - feed() hat
+        # ungeachtet des Live-Limits weitergesammelt, finalize() sah alles.
+        assert typed.endswith("w0 w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11"), (
+            typer.calls
+        )
+
+
 class TestAudioDumpModes:
     """STUFE 1: audio_dump_mode steuert den WAV-Dump (sync|async|off)."""
 
@@ -757,9 +815,9 @@ class TestAudioDumpModes:
 
 
 class TestLatencyTrace:
-    """latency_trace=True loggt die 6 Debug-Messpunkte (Default: aus)."""
+    """latency_trace=True loggt die Debug-Messpunkte (Default: aus)."""
 
-    def test_six_measurement_points_logged(self, tmp_path, caplog) -> None:
+    def test_measurement_points_logged(self, tmp_path, caplog) -> None:
         import logging
 
         from stt_button.config import Config
@@ -783,7 +841,8 @@ class TestLatencyTrace:
                 time.sleep(0.005)
 
         logged = [r.getMessage() for r in caplog.records]
-        for point in ("stop entered", "source stopped", "dump",
+        for point in ("stop entered", "source stopped", "dump start",
+                      "dump end", "finalizer exec acquired",
                       "finalize start", "finalize end", "paste"):
             assert any(f"latency[{point}]" in m for m in logged), (
                 f"Messpunkt {point!r} fehlt - geloggt: {logged}"
@@ -813,3 +872,236 @@ class TestLatencyTrace:
                 time.sleep(0.005)
 
         assert not [r for r in caplog.records if "latency[" in r.getMessage()]
+
+
+class BlockingLiveTickTranscriber:
+    """StreamTranscriber-Fake: maybe_transcribe() blockiert steuerbar.
+
+    Der Live-Tick hält ``_exec_lock`` (wie die echte Engine-Inferenz). Das
+    Freigeben des Resultats simuliert das Ende der Inferenz - NACH einem
+    Release im Key-Thread. Genau dann darf das Live-Ergebnis nicht mehr
+    getippt werden (STUFE 2: Post-Release-Discard).
+    """
+
+    def __init__(self, release: threading.Event) -> None:
+        self._release = release
+        self.entered = threading.Event()
+        self._buffer = b"\x00" * 16000
+        self.sample_rate = 16000
+        self.finalized = threading.Event()
+
+    def feed(self, data: bytes) -> None:
+        pass
+
+    def maybe_transcribe(self):
+        self.entered.set()
+        self._release.wait(timeout=5.0)
+        return TranscriptionResult(text="live wort0 wort1 wort2")
+
+    def finalize(self):
+        self.finalized.set()
+        return TranscriptionResult(text="finale wort0 wort1 wort2")
+
+
+class TwoPhaseLiveTranscriber:
+    """Zwei Live-Ticks + Finalize: committed-Praefix-Szenario.
+
+    Tick 1 liefert "live wort0 wort1" (committed_len=6) und wird VOR dem
+    Release getippt. Tick 2 blockiert über den Release hinweg und liefert
+    danach einen abweichenden Text - genau dieses Ergebnis muss verworfen
+    werden. finalize() liefert die vollstaendige Fassung.
+    """
+
+    def __init__(self) -> None:
+        self._tick = 0
+        self.tick1_release = threading.Event()
+        self.tick2_release = threading.Event()
+        self.tick2_entered = threading.Event()
+        self._buffer = b"\x00" * 16000
+        self.sample_rate = 16000
+
+    def feed(self, data: bytes) -> None:
+        pass
+
+    def maybe_transcribe(self):
+        self._tick += 1
+        if self._tick == 1:
+            self.tick1_release.wait(timeout=5.0)
+            return TranscriptionResult(text="live wort0 wort1", committed_len=6)
+        self.tick2_entered.set()
+        self.tick2_release.wait(timeout=5.0)
+        # Wuerde dieser Text NACH dem Release getippt, entstuende Muell;
+        # der Finalizer muesste ihn per Backspace korrigieren.
+        return TranscriptionResult(text="live ganz anderer Muell", committed_len=6)
+
+    def finalize(self):
+        return TranscriptionResult(text="live wort0 wort1 wort2")
+
+
+class TestPostReleaseDiscard:
+    """STUFE 2: Nach dem Release getippte Live-Ergebnisse verwerfen.
+
+    Szenario: Der Nutzer lässt die Taste los, während eine Live-Inferenz
+    (unter ``_exec_lock``) noch läuft. Deren Ergebnis darf NIE mehr
+    getippt werden - es würde sonst dem Finaltext vorgreifen und der
+    Finalizer müsste ihn per Backspace zurücknehmen (fühlbare Latenz).
+    """
+
+    def _make_ctrl(
+        self, tmp_path
+    ) -> tuple[PushToTalkController, BlockingLiveTickTranscriber,
+               FakeTyper, threading.Event]:
+        live_release = threading.Event()
+        transcriber = BlockingLiveTickTranscriber(live_release)
+        source = FakeAudioSource([b"\x00" * 16000] * 6)
+        typer = FakeTyper()
+        ctrl = PushToTalkController(
+            config=None,
+            source_factory=lambda: source,
+            engine=FakeEngine(),
+            delta_typer=DeltaTyper(typer, append_space=True),
+            transcriber_factory=lambda *a, **kw: transcriber,
+            dump_path=str(tmp_path / "last.wav"),
+        )
+        return ctrl, transcriber, typer, live_release
+
+    def _start_live_tick(
+        self, ctrl: PushToTalkController, transcriber: BlockingLiveTickTranscriber
+    ) -> threading.Thread:
+        """Startet einen Live-Tick und wartet, bis er in der Inferenz hängt."""
+        ticker = threading.Thread(target=ctrl.run_once, daemon=True)
+        ticker.start()
+        assert transcriber.entered.wait(timeout=5.0), (
+            "Live-Tick erreichte maybe_transcribe() nicht"
+        )
+        return ticker
+
+    def _wait_idle(self, ctrl: PushToTalkController, timeout: float = 5.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and ctrl.state != ControllerState.IDLE:
+            time.sleep(0.005)
+        assert ctrl.state == ControllerState.IDLE, (
+            f"IDLE nicht erreicht (ist {ctrl.state})"
+        )
+
+    def test_live_result_after_release_is_not_typed(self, tmp_path) -> None:
+        """Release während blockierendem Live-Tick: kein type/backspace danach."""
+        ctrl, transcriber, typer, live_release = self._make_ctrl(tmp_path)
+        ctrl.start_recording()
+        ticker = self._start_live_tick(ctrl, transcriber)
+
+        ctrl.stop_recording()  # Release: FINALIZING, Quelle stoppt sofort
+        calls_at_release = list(typer.calls)
+
+        # Live-Inferenz "kommt zurueck" - ihr Ergebnis muss verworfen werden.
+        live_release.set()
+        self._wait_idle(ctrl)
+        ticker.join(timeout=5.0)
+
+        # KEIN Live-Ergebnis nach dem Release: Einziger type-Call ist der
+        # Finaltext aus dem Finalizer; keine Backspaces, kein "live ...".
+        typed = [c for c in typer.calls if c[0] == "type"]
+        assert typed == [("type", "finale wort0 wort1 wort2")], (
+            f"Nach dem Release wurde getippt: {typer.calls}"
+        )
+        assert not any(c[0] == "backspace" for c in typer.calls)
+        assert ("key", "space") in typer.calls
+
+    def test_final_text_is_typed_exactly_once_by_finalizer(self, tmp_path) -> None:
+        """Der Finaltext kommt vollstaendig und genau einmal (aus finalize())."""
+        ctrl, transcriber, typer, live_release = self._make_ctrl(tmp_path)
+        ctrl.start_recording()
+        ticker = self._start_live_tick(ctrl, transcriber)
+        ctrl.stop_recording()
+        live_release.set()
+        self._wait_idle(ctrl)
+        ticker.join(timeout=5.0)
+
+        typed = "".join(c[1] for c in typer.calls if c[0] == "type")
+        assert typed == "finale wort0 wort1 wort2", (
+            f"Finaltext unvollstaendig: {typer.calls}"
+        )
+        # Kein Backspace: der Live-Tick hat nie etwas getippt.
+        assert not any(c[0] == "backspace" for c in typer.calls)
+
+    def test_final_text_with_committed_prefix_is_complete(self, tmp_path) -> None:
+        """Fortgeschrittener committed-Praefix: Finaltext bleibt vollstaendig.
+
+        Vor dem Release wurde bereits live getippt ("live wort0 wort1" mit
+        committed-Praefix "live "); ein zweiter Live-Tick haengt ueber den
+        Release hinweg. Sein abweichendes Ergebnis muss verworfen werden;
+        der Finalizer rechnet das finale Delta gegen den effektiven Stand
+        und ergaenzt nur " wort2". Kein Backspace, kein Muell am Cursor.
+        """
+        transcriber = TwoPhaseLiveTranscriber()
+        source = FakeAudioSource([b"\x00" * 16000] * 6)
+        typer = FakeTyper()
+        ctrl = PushToTalkController(
+            config=None,
+            source_factory=lambda: source,
+            engine=FakeEngine(),
+            delta_typer=DeltaTyper(typer, append_space=True),
+            transcriber_factory=lambda *a, **kw: transcriber,
+            dump_path=str(tmp_path / "last.wav"),
+        )
+        # Tick 1: Ergebnis wird VOR dem Release getippt (committed "live ").
+        ctrl.start_recording()
+        tick1 = threading.Thread(target=ctrl.run_once, daemon=True)
+        tick1.start()
+        transcriber.tick1_release.set()  # Tick 1 sofort freigeben
+        tick1.join(timeout=5.0)
+        assert "".join(c[1] for c in typer.calls if c[0] == "type") == (
+            "live wort0 wort1"
+        )
+
+        # Tick 2 haengt in der Inferenz - jetzt loslassen (Release).
+        tick2 = threading.Thread(target=ctrl.run_once, daemon=True)
+        tick2.start()
+        assert transcriber.tick2_entered.wait(timeout=5.0)
+        ctrl.stop_recording()
+
+        # Tick 2 kommt NACH dem Release zurueck -> Ergebnis verwerfen.
+        transcriber.tick2_release.set()
+        self._wait_idle(ctrl)
+        tick2.join(timeout=5.0)
+
+        typed = "".join(c[1] for c in typer.calls if c[0] == "type")
+        assert typed == "live wort0 wort1 wort2", (
+            f"Finaltext am Cursor unvollstaendig: {typer.calls}"
+        )
+        assert not any(c[0] == "backspace" for c in typer.calls), typer.calls
+        assert not any("Muell" in c[1] for c in typer.calls if c[0] == "type")
+
+
+class TestLiveLatencyTrace:
+    """latency_trace: Live-Tick-Messpunkte (live asr/live typing)."""
+
+    def test_live_tick_points_logged(self, tmp_path, caplog) -> None:
+        import logging
+
+        from stt_button.config import Config
+
+        with caplog.at_level(logging.DEBUG, logger="stt_button.controller"):
+            source = FakeAudioSource([b"\x00" * 16000] * 6)
+            typer = FakeTyper()
+            ctrl = PushToTalkController(
+                config=Config(latency_trace=True),
+                source_factory=lambda: source,
+                engine=FakeEngine(),
+                delta_typer=DeltaTyper(typer, append_space=True),
+                dump_path=str(tmp_path / "last.wav"),
+            )
+            ctrl.start_recording()
+            for _ in range(3):
+                ctrl.run_once()
+            ctrl.stop_recording()
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and ctrl.state != ControllerState.IDLE:
+                time.sleep(0.005)
+
+        logged = [r.getMessage() for r in caplog.records]
+        for point in ("live asr start", "live asr end",
+                      "live typing start", "live typing end"):
+            assert any(f"latency[{point}]" in m for m in logged), (
+                f"Messpunkt {point!r} fehlt - geloggt: {logged}"
+            )

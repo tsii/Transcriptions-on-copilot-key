@@ -29,6 +29,10 @@ VALID_FINALIZE_MODES = ("full", "cached")
 #: WAV-Dump der letzten Aufnahme: "sync" = im Finalizer-Thread (bewährt),
 #: "async" = eigener Thread mit Bytes-Snapshot, "off" = kein Dump.
 VALID_AUDIO_DUMP_MODES = ("sync", "async", "off")
+#: Live-Vorschau-Modus: "full" (Default) tippt unstabile Partials live
+#: (mit Backspace-Korrekturen); "committed" tippt nur den gesicherten
+#: Zuwachs (STUFE 2, Latenz-Optimierung ohne Qualitaetsaenderung).
+VALID_LIVE_TYPING_MODES = ("full", "committed")
 
 
 class ConfigError(ValueError):
@@ -140,6 +144,15 @@ class Config:
     audio_dump_mode: str = "sync"
     #: Loggt Debug-Zeiten an den Latenz-Messpunkten (Release -> Ausgabe).
     latency_trace: bool = False
+    #: Live-Vorschau-Modus (STUFE 2): "full" (Default) = bisheriges
+    #: Verhalten - unstabile Partials werden live getippt und per Backspace
+    #: korrigiert; "committed" = nur der gesicherte Praefix-Zuwachs wird
+    #: live getippt, das finale Suffix kommt beim Loslassen in einem Paste.
+    live_typing_mode: str = "full"
+    #: Live-ASR nach dieser Pufferlaenge (Sekunden) einstellen (STUFE 3):
+    #: der Whole-Buffer-Ansatz wird pro Tick teurer; ab hier liefert nur
+    #: noch finalize() den Text. 0.0 (Default) = Live-Ticks immer aktiv.
+    live_asr_until_s: float = 0.0
 
     def validate(self) -> None:
         """Wirft :class:`ConfigError` bei unbrauchbaren Werten."""
@@ -171,6 +184,14 @@ class Config:
                 f"audio_dump_mode muss eines von {VALID_AUDIO_DUMP_MODES} sein, "
                 f"nicht {self.audio_dump_mode!r}"
             )
+        if self.live_typing_mode not in VALID_LIVE_TYPING_MODES:
+            raise ConfigError(
+                f"live_typing_mode muss eines von "
+                f"{VALID_LIVE_TYPING_MODES} sein, "
+                f"nicht {self.live_typing_mode!r}"
+            )
+        if self.live_asr_until_s < 0:
+            raise ConfigError("live_asr_until_s darf nicht negativ sein")
         if self.asr_interval_s <= 0:
             raise ConfigError("asr_interval_s muss groesser als 0 sein")
         if self.min_audio_s <= 0:

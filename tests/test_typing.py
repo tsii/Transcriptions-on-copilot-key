@@ -371,6 +371,171 @@ class TestClipboardPaster:
         assert t.calls == []
 
 
+class TestFinalizeTrace:
+    """latency_trace-Tracepunkte in DeltaTyper.finalize() (Debug-Stufe).
+
+    Die Meldungen muessen auf DEBUG erscheinen und die Domino-Groessen
+    (zu loeschende/zu tippende Zeichen) nennen, damit die gefuehlte
+    Release-Latenz ohne Raten zerlegbar ist.
+    """
+
+    def test_finalize_logs_rev_and_backspace(self, caplog) -> None:
+        import logging as _l
+
+        t = FakeTyper()
+        d = DeltaTyper(t, append_space=False, latency_trace=True)
+        d.update("Hallo Weld")
+        t.calls.clear()
+        with caplog.at_level(_l.DEBUG, logger="stt_button.typing"):
+            d.finalize("Hallo Welt")
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("latency[rev" in m for m in messages), messages
+        assert any("latency[backspace" in m for m in messages), messages
+
+    def test_finalize_logs_paste_and_space(self, caplog) -> None:
+        import logging as _l
+
+        class Recorder:
+            def paste(self, text: str) -> None:
+                pass
+
+        t = FakeTyper()
+        d = DeltaTyper(t, append_space=True, final_paster=Recorder(),
+                       latency_trace=True)
+        d.update("Hallo Welt", committed_len=0)
+        t.calls.clear()
+        with caplog.at_level(_l.DEBUG, logger="stt_button.typing"):
+            d.finalize("Hallo Welt und mehr", committed_len=11)
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("latency[paste" in m for m in messages), messages
+        assert any("latency[space" in m for m in messages), messages
+
+    def test_trace_disabled_by_default(self, caplog) -> None:
+        import logging as _l
+
+        t = FakeTyper()
+        d = DeltaTyper(t, append_space=False)
+        with caplog.at_level(_l.DEBUG, logger="stt_button.typing"):
+            d.update("Hallo")
+            d.finalize("Hallo Welt")
+        assert not [r for r in caplog.records if "latency[" in r.getMessage()]
+
+
+class TestCommittedLiveMode:
+    """live_typing_mode='committed': Live nur den gesicherten Zuwachs tippen.
+
+    Der unstabile Partial wird intern weitergefuehrt, aber NIE getippt oder
+    zurueckgetippt: kein Flackern, keine Live-Backspaces. finalize() rechnet
+    gegen den effektiv getippten Stand - to_remove==0, das Suffix kommt als
+    ein Paste (null Backspaces).
+    """
+
+    def _committed(self, typer, **kwargs):
+        return DeltaTyper(typer, append_space=False, live_typing_mode="committed",
+                          **kwargs)
+
+    def test_partial_without_commit_types_nothing(self) -> None:
+        """(1) Partial ohne Commit -> keine Ausgabe."""
+        t = FakeTyper()
+        d = self._committed(t)
+        d.update("Hallo Welt", committed_len=0)
+        assert t.calls == []
+
+    def test_correction_before_commit_is_silent(self) -> None:
+        """(2) Korrektur vor Commit -> keine Ausgabe, keine Backspaces."""
+        t = FakeTyper()
+        d = self._committed(t)
+        d.update("Hallo Weld", committed_len=0)
+        d.update("Hallo Welt", committed_len=0)
+        assert t.calls == []
+
+    def test_commit_types_exactly_once(self) -> None:
+        """(3) Commit -> genau einmal tippen (bis zum committeten Praefix)."""
+        t = FakeTyper()
+        d = self._committed(t)
+        d.update("Hallo Welt und", committed_len=11)
+        assert t.calls == [("type", "Hallo Welt ")]
+
+    def test_next_commit_types_only_increment(self) -> None:
+        """(4) Naechster Commit -> nur der Zuwachs wird getippt."""
+        t = FakeTyper()
+        d = self._committed(t)
+        d.update("Hallo Welt und", committed_len=11)
+        t.calls.clear()
+        d.update("Hallo Welt und mehr", committed_len=15)
+        assert t.calls == [("type", "und ")]
+
+    def test_finalize_pastes_suffix_without_backspaces(self) -> None:
+        """(5) Finaltext 'Hallo Welt und mehr' -> null Backspaces, paste(' und mehr')."""
+        t = FakeTyper()
+        pastes: list[str] = []
+
+        class Recorder:
+            def paste(self, text: str) -> None:
+                pastes.append(text)
+
+        d = self._committed(t, final_paster=Recorder())
+        d.update("Hallo Welt und", committed_len=10)
+        t.calls.clear()
+        d.finalize("Hallo Welt und mehr")
+        assert pastes == [" und mehr"]
+        assert not any(c[0] == "backspace" for c in t.calls), t.calls
+
+    def test_no_live_commits_pastes_full_final_once(self) -> None:
+        """(6) Null Live-Commits -> kompletter Finaltext genau einmal gepastet."""
+        t = FakeTyper()
+        pastes: list[str] = []
+
+        class Recorder:
+            def paste(self, text: str) -> None:
+                pastes.append(text)
+
+        d = self._committed(t, final_paster=Recorder())
+        d.update("Hallo Welt", committed_len=0)   # nie committet
+        d.update("Hallo Welt und", committed_len=0)
+        d.finalize("Hallo Welt und mehr")
+        assert pastes == ["Hallo Welt und mehr"]
+        assert not any(c[0] == "backspace" for c in t.calls), t.calls
+        assert not any(c[0] == "type" for c in t.calls), t.calls
+
+    def test_empty_final_and_committed_change_protections_stay(self) -> None:
+        """(7) Schutz: leerer Finaltext loescht nichts; weicht das Modell im
+        committeten Bereich ab, gewinnt die alte Fassung (kein Zuruecktippen)."""
+        t = FakeTyper()
+        d = self._committed(t)
+        d.update("Hallo Welt und", committed_len=10)
+        t.calls.clear()
+        d.finalize("")
+        assert t.calls == []
+
+        # committed-Praefix-Abweichung im Finaltext: alter getippter Praefix
+        # gewinnt, nur das Suffix wird als Delta gepastet - null Backspaces.
+        pastes: list[str] = []
+
+        class Recorder:
+            def paste(self, text: str) -> None:
+                pastes.append(text)
+
+        t2 = FakeTyper()
+        d2 = self._committed(t2, final_paster=Recorder())
+        d2.update("Hallo Welt und", committed_len=10)
+        t2.calls.clear()
+        d2.finalize("Hallo Weld und mehr")
+        assert pastes == [" und mehr"]
+        assert not any(c[0] == "backspace" for c in t2.calls), t2.calls
+
+    def test_default_full_is_previous_behaviour(self) -> None:
+        """(8) Default 'full' = exakt bisheriges Verhalten (Partial live tippen)."""
+        t = FakeTyper()
+        d = DeltaTyper(t, append_space=False)  # kein live_typing_mode -> full
+        d.update("Hallo Weld")
+        assert t.calls == [("type", "Hallo Weld")]
+        t.calls.clear()
+        d.update("Hallo Welt")
+        assert t.calls == [("backspace", "1"), ("type", "t")]
+
+
+
 class TestReset:
     def test_reset_clears_state(self) -> None:
         t = FakeTyper()

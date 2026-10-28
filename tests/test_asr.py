@@ -402,6 +402,117 @@ class TestTokenBudget:
         assert _token_budget(10000.0) <= 4096
 
 
+class TestLiveAsrUntilLimit:
+    """STUFE 3: live_asr_until_s stoppt Live-Ticks nach Pufferlaenge.
+
+    Ab ``live_asr_until_s`` Sekunden Puffer-Audio liefert maybe_transcribe()
+    kein Ergebnis mehr (keine Engine-Aufrufe) - der Whole-Buffer-Ansatz wird
+    pro Tick teurer. feed() sammelt weiter, finalize() transkribiert den
+    VOLLSTaendigen Puffer, reset() reaktiviert die Live-Ticks.
+    """
+
+    def test_below_limit_ticks_normally(self) -> None:
+        """(1) Unter dem Limit laufen normale Live-Ticks."""
+        engine = FakeEngine(["Hallo Welt", "Hallo Welt und"])
+        t = StreamTranscriber(
+            engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=10.0
+        )
+        t.feed(audio(0.5))
+        result = t.maybe_transcribe()
+        assert result is not None
+        assert result.text == "Hallo Welt"
+
+    def test_above_limit_no_engine_calls(self) -> None:
+        """(2) Ueber dem Limit: maybe_transcribe() ruft die Engine NICHT."""
+        engine = FakeEngine(["Hallo Welt"])
+        t = StreamTranscriber(
+            engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0
+        )
+        t.feed(audio(0.5))
+        assert t.maybe_transcribe() is not None  # unter dem Limit
+        t.feed(audio(1.0))  # jetzt 1.5s > 1.0s Limit
+        assert t.maybe_transcribe() is None
+        assert len(engine.calls) == 1, (
+            "Engine wurde trotz Live-Limit erneut gerufen"
+        )
+        # Noch mehr Audio aendert daran nichts.
+        t.feed(audio(1.0))
+        assert t.maybe_transcribe() is None
+        assert len(engine.calls) == 1
+
+    def test_feed_keeps_collecting(self) -> None:
+        """(3) feed() nimmt Audio vollstaendig auf, auch ueber dem Limit."""
+        engine = FakeEngine(["Hallo Welt"])
+        t = StreamTranscriber(
+            engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0
+        )
+        t.feed(audio(0.5))
+        t.maybe_transcribe()
+        t.feed(audio(2.0))
+        assert t.audio_seconds == pytest.approx(2.5)
+        assert t.maybe_transcribe() is None  # Live gestoppt
+
+    def test_finalize_transcribes_full_buffer(self) -> None:
+        """(4) finalize() transkribiert den VOLLSTaendigen Puffer (Cache aus).
+        """
+        engine = FakeEngine(["kurz", "alles da"])
+        t = StreamTranscriber(
+            engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0
+        )
+        t.feed(audio(0.5))
+        t.maybe_transcribe()
+        t.feed(audio(2.0))  # ueber Limit -> keine Live-Ticks mehr
+        result = t.finalize()
+        assert result.text == "alles da"
+        # Engine sah den kompletten 2.5s-Puffer:
+        assert engine.calls[-1][0] == int(2.5 * BYTES_PER_SECOND)
+
+    def test_reset_reactivates_live_ticks(self) -> None:
+        """(5) reset() setzt den Zaehler zurueck - Live-Ticks laufen wieder."""
+        engine = FakeEngine(["eins", "zwei", "drei"])
+        t = StreamTranscriber(
+            engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0
+        )
+        t.feed(audio(0.5))
+        t.maybe_transcribe()
+        t.feed(audio(1.0))
+        assert t.maybe_transcribe() is None  # Limit erreicht
+        t.reset()
+        t.feed(audio(0.5))
+        result = t.maybe_transcribe()
+        assert result is not None
+        assert result.text == "zwei"  # FakeEngine: 2. Call -> texts[1]
+        assert len(engine.calls) == 2
+
+    def test_release_after_limit_finalize_starts_immediately(self) -> None:
+        """(6) Release nach Limit ohne laufenden Tick: Finalize startet sofort.
+
+        Der Finalizer nimmt ``_exec_lock``; ohne aktiven Live-Tick (die
+        Live-Ticks sind ja ueber dem Limit ausgesetzt) steht das Lock frei -
+        finalize() beginnt ohne Wartezeit.
+        """
+        engine = FakeEngine(["Hallo Welt"])
+        t = StreamTranscriber(
+            engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0
+        )
+        t.feed(audio(0.5))
+        t.maybe_transcribe()
+        t.feed(audio(2.0))
+        assert t.maybe_transcribe() is None  # kein Tick mehr -> Lock frei
+        result = t.finalize()
+        assert result.text == "Hallo Welt"
+
+    def test_zero_means_no_limit(self) -> None:
+        """Default 0.0: Live-Ticks bleiben immer aktiv (bisheriges Verhalten)."""
+        engine = FakeEngine(["eins", "zwei", "drei", "vier"])
+        t = StreamTranscriber(
+            engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=0.0
+        )
+        for _ in range(4):
+            t.feed(audio(0.5))
+            assert t.maybe_transcribe() is not None
+
+
 class TestFinalizeCached:
     """STUFE 1: finalize_mode="cached" spart den doppelten Engine-Call.
 

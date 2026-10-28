@@ -264,6 +264,49 @@ class TestLatencyStage1Keys:
             load_config(p)
 
 
+class TestLiveTypingModeKeys:
+    """STUFE 2: live_typing_mode 'full' (Default) | 'committed'."""
+
+    def test_default_is_full(self) -> None:
+        """Ohne Config gilt exakt das bisherige Verhalten."""
+        cfg = Config()
+        assert cfg.live_typing_mode == "full"
+
+    def test_parse_committed(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, 'live_typing_mode = "committed"\n')
+        cfg = load_config(p)
+        assert cfg.live_typing_mode == "committed"
+
+    @pytest.mark.parametrize("mode", ["partiell", "instant", 3])
+    def test_invalid_mode_is_rejected(self, tmp_path: Path, mode) -> None:
+        p = write_config(tmp_path, f'live_typing_mode = {mode!r}\n')
+        if isinstance(mode, int):
+            p.write_text("live_typing_mode = 3\n", encoding="utf-8")
+        with pytest.raises(ConfigError, match="live_typing_mode"):
+            load_config(p)
+
+
+class TestLiveAsrUntilKeys:
+    """STUFE 3: live_asr_until_s (Default 0.0 = aus)."""
+
+    def test_default_is_off(self) -> None:
+        assert Config().live_asr_until_s == 0.0
+
+    def test_parse_value(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, "live_asr_until_s = 6.5\n")
+        assert load_config(p).live_asr_until_s == 6.5
+
+    def test_negative_is_rejected(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, "live_asr_until_s = -1.0\n")
+        with pytest.raises(ConfigError, match="live_asr_until_s"):
+            load_config(p)
+
+    def test_wrong_type_is_rejected(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, 'live_asr_until_s = "spaeter"\n')
+        with pytest.raises(ConfigError, match="live_asr_until_s"):
+            load_config(p)
+
+
 class TestBufferedMode:
     """STUFE 3: streaming_mode='buffered' + buffered_* Felder (Default AUS)."""
 

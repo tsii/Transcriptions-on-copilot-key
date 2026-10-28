@@ -25,6 +25,30 @@ class ControllerStub:
         self.kwargs = kwargs
 
 
+class DeltaStub:
+    """DeltaTyper-Stub: zeichnet alle Konstruktor-Argumente auf."""
+
+    created: list["DeltaStub"] = []
+
+    def __init__(self, typer, **kwargs) -> None:
+        self.kwargs = kwargs
+        self.typer = typer
+        DeltaStub.created.append(self)
+
+    def reset(self) -> None:
+        pass
+
+    def update(self, text: str, committed_len: int = 0, *, force_revision: bool = False) -> None:
+        pass
+
+    def finalize(self, final_text: str, committed_len: int = 0) -> None:
+        pass
+
+    @property
+    def last_text(self) -> str:
+        return ""
+
+
 def _application(monkeypatch, **config_kwargs) -> tuple[Application, ControllerStub]:
     monkeypatch.setattr("stt_button.app.DotoolTyper", TyperStub)
     monkeypatch.setattr("stt_button.app.SileroVadGate", VadStub)
@@ -116,6 +140,22 @@ class TestFinalizeModeWiring:
         factory = controller.kwargs["transcriber_factory"]
         transcriber = factory(engine=object(), interval_s=1.0, min_audio_s=0.8)
         assert transcriber.finalize_mode == "full"
+
+
+class TestLiveModeWiring:
+    """STUFE 2: Application reicht live_typing_mode an den DeltaTyper weiter."""
+
+    def test_live_typing_mode_passed_to_delta_typer(self, monkeypatch) -> None:
+        monkeypatch.setattr("stt_button.app.DeltaTyper", DeltaStub)
+        app = Application(Config(live_typing_mode="committed"))
+        app._build_controller()
+        assert DeltaStub.created[-1].kwargs["live_typing_mode"] == "committed"
+
+    def test_live_typing_mode_default_full(self, monkeypatch) -> None:
+        monkeypatch.setattr("stt_button.app.DeltaTyper", DeltaStub)
+        app = Application(Config())
+        app._build_controller()
+        assert DeltaStub.created[-1].kwargs["live_typing_mode"] == "full"
 
 
 class TestBufferedWiring:

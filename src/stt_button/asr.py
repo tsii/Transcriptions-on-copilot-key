@@ -386,6 +386,12 @@ class StreamTranscriber:
     #: Meldet es im NEUEN Audio-Bereich keine Sprache, wird nicht transkribiert
     #: (verhindert Halluzinationen auf Stille -> Phantom-Backspaces).
     vad: object | None = None
+    #: STUFE 3: Live-Ticks nach dieser Pufferlaenge (Sekunden) einstellen.
+    #: Der Whole-Buffer-Ansatz wird pro Tick teurer (RTF wachst mit dem
+    #: Puffer); ab hier liefern nur noch finalize() den Text. feed()
+    #: sammelt weiter, finalize() transkribiert den kompletten Puffer,
+    #: reset() reaktiviert die Live-Ticks. 0.0 (Default) = immer aktiv.
+    live_asr_until_s: float = 0.0
 
     _buffer: bytearray = field(default_factory=bytearray, init=False, repr=False)
     _last_transcribed_at: float = field(default=0.0, init=False, repr=False)
@@ -467,6 +473,10 @@ class StreamTranscriber:
             Das Ergebnis oder ``None``, wenn noch nicht transkribiert wurde.
         """
         if self.audio_seconds < self.min_audio_s:
+            return None
+        # STUFE 3: Live-ASR-Limit erreicht -> keine Live-Engine-Calls mehr.
+        # Der Puffer wachst weiter (feed()); finalize() transkribiert alles.
+        if self.live_asr_until_s > 0.0 and self.audio_seconds >= self.live_asr_until_s:
             return None
         # Die erste Transkription darf sofort erfolgen, danach wird nur
         # neu hinzugekommene Audio beruecksichtigt.

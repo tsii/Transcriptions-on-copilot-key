@@ -262,14 +262,34 @@ class PushToTalkController:
                 return
 
         try:
+            self._trace("live asr start")
             result = transcriber.maybe_transcribe()
+            self._trace("live asr end")
         except Exception as exc:  # noqa: BLE001 - ASR-Fehler -> sauberer Abbruch
             log.error("Transkription fehlgeschlagen: %s", exc)
             self.abort()
             return
 
+        # STUFE 2: Post-Release-Discard. Der Live-Tick kann Sekunden in der
+        # Engine geblockt haben; ein Release in dieser Zeit hat die Aufnahme
+        # bereits an den Finalizer uebergeben. Das jetzt vorliegende Live-
+        # Ergebnis waere ueberholt: Es wuerde dem Finaltext vorgreifen und
+        # der Finalizer muesste es per Backspace zuruecknehmen (gefuelte
+        # Latenz). Verwerfen statt tippen - der Finalizer liefert den
+        # vollstaendigen Text gegen den effektiven Stand.
+        with self._lock:
+            stale = (
+                self.state != ControllerState.RECORDING
+                or self._transcriber is not transcriber
+            )
+        if stale:
+            log.info("Livetick verwerfen: Aufnahme bereits abgeschlossen")
+            return
+
         if result is not None:
+            self._trace("live typing start")
             self._delta_typer.update(result.text, result.committed_len)
+            self._trace("live typing end")
 
     def _capture_loop(
         self, source: AudioSource, audio_queue: "queue.Queue[bytes]"
@@ -368,6 +388,7 @@ class PushToTalkController:
         """
         try:
             with self._exec_lock:
+                self._trace("finalizer exec acquired")
                 # 1) Queue in zeitlicher Reihenfolge drainen (aeltere
                 #    Bytes zuerst), 2) stop()-Rest ans Ende.
                 while True:
@@ -382,8 +403,9 @@ class PushToTalkController:
                     transcriber.feed(rest)
 
                 # Vollstaendige Aufnahme zu Debug-Zwecken abspeichern.
+                self._trace("dump start")
                 self._dump_audio(transcriber)
-                self._trace("dump")
+                self._trace("dump end")
 
                 self._trace("finalize start")
                 result = transcriber.finalize()

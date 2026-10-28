@@ -691,9 +691,57 @@ Finalisierung. `audio_dump_mode` macht ihn konfigurierbar: `"sync"` (Default,
 bisher), `"async"` (Bytes-Snapshot + eigener Thread, nie eine Referenz auf den
 Puffer), `"off"`.
 
-**Messen.** `latency_trace = true` loggt auf Debug-Ebene sechs Messpunkte:
-`stop entered`, `source stopped`, `dump`, `finalize start`, `finalize end`,
+**Messen.** `latency_trace = true` loggt auf Debug-Ebene die Messpunkte:
+`stop entered`, `capture stopped`, `source stopped`, `dump start`,
+`dump end`, `finalizer exec acquired`, `finalize start`, `finalize end`,
 `paste` — jeweils als `latency[<punkt>] +<sekunden>` seit dem Release.
-Anleitung: `journalctl --user -u stt-button -f` (bzw. manuellen Lauf mit
-`-v`) beobachten, Diktat sprechen, loslassen, die Differenz
-`stop entered` → `paste` ist die gespürte Latenz.
+Zusätzlich pro Live-Tick `live asr start/end` und `live typing start/end`
+sowie in `finalize()` die Domino-Größen `latency[rev n/m]`,
+`latency[backspace x.xxxs]`, `latency[paste]`/`latency[type]` und
+`latency[space x.xxxs]`. Anleitung: `journalctl --user -u stt-button -f`
+(bzw. manuellen Lauf mit `-v`) beobachten, Diktat sprechen, loslassen, die
+Differenz `stop entered` → `paste` ist die gefühlte Latenz.
+
+## 11. Live-Vorschau-Modi (STUFE 2/3)
+
+Zwei unabhängige Schalter steuern, wie viel Arbeit **während** der Aufnahme
+passiert. Beide Defaults halten das bisherige Verhalten; der finale Text ist
+in allen Kombinationen identisch.
+
+### 11.1 `live_typing_mode` — was live getippt wird
+
+* **`"full"` (Default, bisher):** Jeder Live-Tick tippt das ganze aktuelle
+  Transkript als Delta — inklusive unstabiler Partials, die spätere Ticks
+  per Backspace zurücknehmen. Lebendige Vorschau, aber sichtbare
+  Rückbau-Kosten (jedes Zeichen ≈ 35 ms Tippen + Backspaces).
+* **`"committed"`:** Live getippt wird **nur der gesicherte Zuwachs**
+  (LocalAgreement-Präfix). Der unstabile Partial wird intern
+  weitergeführt, aber nie getippt und nie zurückgetippt — keine
+  Live-Backspaces, kein Flackern. `finalize()` rechnet das finale Delta
+  gegen den effektiv getippten Stand: `to_remove == 0`, das Suffix kommt
+  als **ein** Paste (bzw. ein `type_text`). Null Live-Commits ⇒ der
+  komplette Finaltext wird genau einmal gepastet.
+
+### 11.2 `live_asr_until_s` — wie lange live transkribiert wird
+
+Der Whole-Buffer-Ansatz re-transkribiert alle `asr_interval_s` Sekunden den
+**kompletten** Puffer — die Inferenzkosten wachsen mit der Diktatlänge
+(RTF ≈ 0,12 ⇒ 30 s Diktat ≈ 3,6 s pro Tick). `live_asr_until_s = 20.0`
+stellt die Live-Ticks nach 20 s Puffer-Audio ein:
+
+* `maybe_transcribe()` liefert `None` (keine Engine-Aufrufe mehr),
+* `feed()` sammelt weiter (nichts geht verloren),
+* `finalize()` transkribiert den **vollständigen** Puffer,
+* `reset()` reaktiviert die Live-Ticks für die nächste Aufnahme,
+* `0.0` (Default) = Live-Ticks immer aktiv (bisheriges Verhalten).
+
+Release nach dem Limit ohne laufenden Tick ⇒ der Finalizer nimmt
+`_exec_lock` ohne Wartezeit — die Finalisierung startet sofort.
+
+### 11.3 Zusammenspiel mit dem Post-Release-Discard
+
+Kommt ein Live-Tick **nach** dem Release zurück (Inferenz blockierte über
+das Loslassen hinweg), wird sein Ergebnis verworfen statt getippt: Es
+würde dem Finaltext vorgeifen und der Finalizer müsste es per Backspace
+zurücknehmen. Der Finalizer liefert den vollständigen Text gegen den
+effektiven Cursor-Stand — der committete Präfix bleibt erhalten.

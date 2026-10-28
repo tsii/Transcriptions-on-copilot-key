@@ -509,6 +509,8 @@ class DeltaTyper:
         append_space: bool = True,
         max_revision_chars: int = 60,
         final_paster: FinalPaster | None = None,
+        latency_trace: bool = False,
+        live_typing_mode: str = "full",
     ) -> None:
         self._typer = typer
         self._append_space = append_space
@@ -516,8 +518,22 @@ class DeltaTyper:
         # Optional: pastet das finale Delta per Zwischenablage statt es zu
         # tippen. Live-Updates bleiben immer beim normalen Typer (dotool).
         self._final_paster = final_paster
+        # Latenz-Trace (config.latency_trace): loggt in finalize() auf
+        # Debug-Stufe die Domino-Groessen (rev/backspace/paste/space).
+        self._latency_trace = latency_trace
+        # Live-Vorschau-Modus: "full" (Default) tippt auch unstabile Partials
+        # (mit Backspace-Korrekturen); "committed" tippt nur den gesicherten
+        # (committeten) Zuwachs - der Partial wird intern weitergefuehrt,
+        # aber nie getippt oder zurueckgetippt (STUFE 2).
+        self._live_typing_mode = live_typing_mode
         self._last_text = ""
         self._last_committed = 0
+
+    def _trace(self, point: str) -> None:
+        """Debug-Messpunkt der Finalisierung (nur bei latency_trace)."""
+        if not self._latency_trace:
+            return
+        log.debug("latency[%s]", point)
 
     @property
     def last_text(self) -> str:
@@ -546,6 +562,29 @@ class DeltaTyper:
         # Wuerde der committete Bereich verloren gehen, ignorieren wir die
         # neue Fassung komplett - der bereits getippte Text bleibt stehen.
         if len(text) < committed_len:
+            return
+
+        # STUFE 2 (live_typing_mode='committed'): Nur der gesicherte Zuwachs
+        # wird getippt. Der interne Stand fuehrt ausschliesslich den effektiv
+        # getippten Text - der unstabile Partial wird nie getippt und nie
+        # zurueckgetippt (keine Live-Backspaces, kein Flackern). finalize()
+        # rechnet dadurch gegen den effektiven Cursor-Stand: to_remove==0,
+        # das Suffix kommt als ein Paste.
+        if self._live_typing_mode == "committed":
+            stable = text[:committed_len]
+            if stable.startswith(old):
+                to_add = stable[len(old):]
+                if to_add:
+                    self._typer.type_text(to_add)
+                self._last_text = stable
+                self._last_committed = len(stable)
+            else:
+                # Gesicherter Bereich widerspricht dem Getippten (per
+                # LocalAgreement praktisch ausgeschlossen): Live nichts
+                # anfassen, finalize() korrigiert abschliessend.
+                log.debug(
+                    "committed-Live: Praefix-Widerspruch - update verworfen"
+                )
             return
 
         committed = min(committed_len, len(old), len(text))
@@ -621,19 +660,28 @@ class DeltaTyper:
             # final_paste-Modus. Die finale Korrektur ist voll korrigierend:
             # keine max_revision_chars-Schutzgrenze (force_revision im alten
             # Pfad).
+            self._trace(f"rev {to_remove}/{len(to_add)}")
             if to_remove:
+                t0 = time.monotonic()
                 self._typer.backspace(to_remove)
+                self._trace(f"backspace {time.monotonic() - t0:.3f}s")
             if to_add:
+                t0 = time.monotonic()
                 if self._final_paster is not None:
                     self._final_paster.paste(to_add)
+                    self._trace("paste")
                 else:
                     self._typer.type_text(to_add)
+                    self._trace("type")
+                self._trace(f"output {time.monotonic() - t0:.3f}s")
 
             self._last_text = old[:committed] + new_tail
             self._last_committed = committed
 
         if self._append_space:
+            t0 = time.monotonic()
             self._typer.key("space")
+            self._trace(f"space {time.monotonic() - t0:.3f}s")
         self._last_text = final_text
 
 
