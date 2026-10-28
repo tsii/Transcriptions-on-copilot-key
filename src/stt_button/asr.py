@@ -691,3 +691,126 @@ class StreamTranscriber:
         if common_str.startswith(self._committed_text):
             self._committed_text = common_str
             self._committed_len = len(common_str)
+
+
+def _completes(incomplete: str, word: str) -> bool:
+    """Prueft, ob ``word`` das unvollstaendige Wort ``incomplete`` fortsetzt.
+
+    Ein unvollstaendiges Wort wird mit BUCHSTABEN fortgeschrieben
+    ('de' -> 'deutlich'); reine Interpunktion dahinter ('Welt' -> 'Welt,')
+    zaehlt nicht als Wortfortsetzung (kein Fuzzy ueber Komma).
+    """
+    if len(incomplete) >= len(word):
+        return False
+    return word.startswith(incomplete) and word[len(incomplete)].isalnum()
+
+
+def stitch_word_overlap(
+    previous: str,
+    window: str,
+    *,
+    protected_prefix: str = "",
+    min_anchor_words: int = 2,
+) -> str | None:
+    """Haengt das Fenster-Transkript ``window`` an die Arbeitshypothese ``previous`` an.
+
+    Genaeht wird NUR an exakten Wortankern; ist nichts eindeutig sicher,
+    wird ``None`` geliefert. Phase 1, isoliert: diese Funktion wird NICHT
+    im Produktivpfad aufgerufen (nur Test-Importe).
+
+    Regel 1 (Woerter): zusammenhaengende Nicht-Whitespace-Folgen
+    (``str.split``); Grossschreibung und Interpunktion werden EXAKT
+    verglichen -- keine Normalisierung, kein Fuzzy. Alle Ergebnisse werden
+    mit genau EINEM Leerzeichen zwischen Woertern rekonstruiert, weil nur
+    so die Wortgrenzen des Ankers deterministisch erhalten bleiben.
+
+    Kandidaten (Regel 2, 4, 5): Der Fensterkopf deckt eine previous-Region
+    ``P[m0:m0+t]``; alle Deckungspositionen ``m0`` werden geprueft:
+
+    * exakt: ``W[:t] == P[m0:m0+t]``; Anker sind die letzten
+      ``min_anchor_words`` Woerter der Folge (zeichengleich, in Folge).
+      Im kanonischen Fall (``m0 + t == n``) liegt der Anker am ENDE von
+      previous.
+    * Fragment (Regel 4): nur das ALLERERSTE Fensterwort darf echtes
+      SUFFIX-Fragment des previous-Wortes ``P[m0]`` sein ('unkte' zu
+      'Punkte'); ein Praefix-Fragment ('punkt' fuer 'Punkte') ist
+      ungueltig und liefert keinen Kandidaten. Previous behaelt das
+      volle Wort, das Fragment faellt weg; uebersprungene Woerter sind
+      nicht erlaubt (Kontext deckt zusammenhaengend).
+    * Vervollstaendigung (Regel 3, AUSNAHME ohne Anker-Mindestgroesse):
+      der Kontext deckt ``P[m0:n-1]`` exakt, und das Fensterwort ``W[t]``
+      ersetzt genau das LETZTE previous-Wort, sofern dieses
+      unvollstaendig war (echtes Praefix von ``W[t]`` mit
+      Buchstabenfortsetzung, 'de' -> 'deutlich'). Zwei oder mehr
+      abweichende alte Woerter ergeben daher keinen Kandidaten.
+
+    Ergebnis je Kandidat (Regel 5): previous bis zum Ankerende plus
+    Fenster nach dem Ankerende -- Wortgrenzen exakt, genau ein
+    Leerzeichen zwischen Woertern.
+
+    Regel 6: Kandidaten, die nicht zeichengleich mit ``protected_prefix``
+    beginnen, werden verworfen.
+
+    Regel 7: Bleibt von allen Kandidaten genau EIN unterschiedliches
+    Ergebnis uebrig, wird es geliefert; keins oder mehrere unterschiedliche
+    ergeben ``None``.
+
+    Regel 8: ``previous == ''`` liefert ``window`` (sofern die
+    ``protected_prefix``-Pflicht erfuellt ist, sonst ``None``);
+    ``window == ''`` liefert ``previous``.
+    """
+    # Regel 8: Randfaelle.
+    if previous == "":
+        return window if window.startswith(protected_prefix) else None
+    if window == "":
+        return previous
+
+    prev_words: list[str] = previous.split()
+    win_words: list[str] = window.split()
+    n = len(prev_words)
+    m = len(win_words)
+
+    if n == 0:
+        # previous besteht nur aus Whitespace: wie previous == "" (Regel 8).
+        joined = " ".join(win_words)
+        return joined if joined.startswith(protected_prefix) else None
+    if m == 0:
+        # Fenster ohne Woerter: wie window == "" (Regel 8).
+        return previous
+
+    candidates: set[tuple[str, ...]] = set()
+
+    # Exakte und Fragment-Deckungen (Regel 2/4/5): Fensterkopf deckt P[m0:...].
+    for m0 in range(n):
+        # Exakte Folge: Anker = letzte >= min_anchor_words Woerter der Folge.
+        t = 0
+        while t < m and m0 + t < n and win_words[t] == prev_words[m0 + t]:
+            t += 1
+        if t >= min_anchor_words:
+            candidates.add(tuple(prev_words[: m0 + t]) + tuple(win_words[t:]))
+
+        # Suffix-Fragment am ALLERERSTEN Fensterwort (Regel 4).
+        if len(win_words[0]) < len(prev_words[m0]) and prev_words[m0].endswith(win_words[0]):
+            t = 0
+            while 1 + t < m and m0 + 1 + t < n and win_words[1 + t] == prev_words[m0 + 1 + t]:
+                t += 1
+            if 1 + t >= min_anchor_words:
+                candidates.add(
+                    tuple(prev_words[: m0 + 1 + t]) + tuple(win_words[1 + t :])
+                )
+
+    # Regel 3 (AUSNAHME): genau EIN letztes unvollstaendiges previous-Wort
+    # wird durch das Fensterwort ersetzt ('de' -> 'deutlich').
+    for m0 in range(n):
+        t = n - 1 - m0  # Kontextlaenge: deckt P[m0 : n-1] exakt.
+        if t >= m:
+            continue
+        if win_words[:t] == prev_words[m0 : n - 1] and _completes(prev_words[-1], win_words[t]):
+            candidates.add(tuple(prev_words[: n - 1]) + tuple(win_words[t:]))
+
+    # Regel 6 (protected_prefix) + Regel 7 (Eindeutigkeit).
+    results = {" ".join(candidate) for candidate in candidates}
+    surviving = [result for result in results if result.startswith(protected_prefix)]
+    if len(surviving) == 1:
+        return surviving[0]
+    return None

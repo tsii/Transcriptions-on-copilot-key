@@ -733,3 +733,88 @@ class TestFinalizeCached:
         calls_before = len(engine.calls)
         t.finalize()
         assert len(engine.calls) == calls_before + 1
+
+
+# ---------------------------------------------------------------------------
+# stitch_word_overlap -- Phase 1, isoliert (wird NICHT im Produktivpfad genutzt)
+# ---------------------------------------------------------------------------
+
+from stt_button.asr import stitch_word_overlap  # noqa: E402
+
+
+class TestStitchWordOverlap:
+    """Tests fuer stitch_word_overlap: haengt ein Fenster an exakte Wortanker."""
+
+    def test_a_klassischer_anker(self):
+        """Regel 2/5: exakter Anker 'geht es dir' am previous-Ende, neu 'gut heute'."""
+        assert (
+            stitch_word_overlap("Hallo wie geht es dir", "geht es dir gut heute")
+            == "Hallo wie geht es dir gut heute"
+        )
+
+    def test_b_suffixfragment_kein_duplikat(self):
+        """Regression: Fenster beginnt mit 'unkte' (SUFFIX-Fragment von 'Punkte').
+
+        Selbst abgeleitete Erwartung aus Regel 4/5: Nur das ALLERERSTE
+        Fensterwort darf echtes SUFFIX-Fragment sein; previous behaelt das
+        volle Wort 'Punkte', das Fragment faellt ersatzlos weg. Anker sind
+        'Punkte' (fragmentiert) + 'hier' (zeichengleich) als letzte zwei
+        previous-Woerter, neu dahinter: 'sind schon'. Ergebnis also
+        previous + 'sind schon' -- KEIN 'Punkte Punkte'-Duplikat und kein
+        Fragmentrest 'unkte' im Ergebnis.
+        """
+        assert (
+            stitch_word_overlap("das sind rote Punkte hier", "unkte hier sind schon")
+            == "das sind rote Punkte hier sind schon"
+        )
+
+    def test_c1_ein_letztes_wort_ersetzt(self):
+        """Regel 3: genau EIN letztes unvollstaendiges previous-Wort ('de')
+        wird durch das Fensterwort ('deutlich') ersetzt."""
+        assert stitch_word_overlap("das ist de", "deutlich besser") == "das ist deutlich besser"
+
+    def test_c2_zwei_abweichende_alte_woerter(self):
+        """Regel 3: 'gut' vs 'total' UND 'echt' vs 'daneben' -- zwei abweichende
+        alte Woerter -> None."""
+        assert stitch_word_overlap("das war echt gut", "total daneben") is None
+
+    def test_d1_protected_prefix_verwirft_kandidaten(self):
+        """Regel 6: Kandidat 'wie geht es dir' beginnt nicht mit 'Hallo wie'."""
+        assert stitch_word_overlap("wie geht es", "geht es dir", protected_prefix="Hallo wie") is None
+        # ohne Schutzpraefix liefert derselbe Fall den Kandidaten:
+        assert stitch_word_overlap("wie geht es", "geht es dir") == "wie geht es dir"
+
+    def test_d2_protected_prefix_konsistent(self):
+        """Regel 6 erfuellt: Ergebnis beginnt zeichengleich mit 'Hallo wie'."""
+        assert (
+            stitch_word_overlap(
+                "Hallo wie geht es", "wie geht es dir", protected_prefix="Hallo wie"
+            )
+            == "Hallo wie geht es dir"
+        )
+
+    def test_e_kein_fuzzy_ueber_komma(self):
+        """Regel 1: 'Welt' != 'Welt,' -- Interpunktion exakt; ein angehaengtes
+        Komma ist keine Wortvervollstaendigung -> None."""
+        assert stitch_word_overlap("Ich sage Welt", "Welt, wie") is None
+
+    def test_f_mehrdeutigkeit_zwei_anker(self):
+        """Regel 7: 'b c ende neu' deckt zwei Anker mit UNTERSCHIEDLICHEN Ergebnissen.
+
+        Anker 'b c' auf previous[1:3] schneidet previous ab -> 'a b c ende neu';
+        Anker 'b c ende' auf previous[3:6] (previous-Ende) -> 'a b c b c ende neu'.
+        Zwei unterschiedliche Kandidaten -> None.
+        """
+        assert stitch_word_overlap("a b c b c ende", "b c ende neu") is None
+
+    def test_g_randfaelle(self):
+        """Regel 8: previous='' -> window; window='' -> previous;
+        previous='' mit nicht erfuelltem protected_prefix -> None."""
+        assert stitch_word_overlap("", "hallo welt") == "hallo welt"
+        assert stitch_word_overlap("hallo welt", "") == "hallo welt"
+        assert stitch_word_overlap("", "hallo welt", protected_prefix="xyz") is None
+
+    def test_h_praefixfragment_statt_suffix(self):
+        """Regel 4: 'punkt' waere PRAEFIX-Fragment von 'Punkte' -- nur echte
+        SUFFIX-Fragmente sind erlaubt -> None."""
+        assert stitch_word_overlap("das sind rote Punkte hier", "punkt hier sind schon") is None
