@@ -1374,3 +1374,347 @@ class TestLiveLatencyTrace:
             assert any(f"latency[{point}]" in m for m in logged), (
                 f"Messpunkt {point!r} fehlt - geloggt: {logged}"
             )
+
+
+class WaitProbe:
+    """Fuehrt wait_for_work() in einem Daemon-Thread aus.
+
+    assert_returned() prueft mit begrenzter Frist, dass der Aufruf
+    sauber zurueckgekehrt ist - und dabei KEIN Fehler auftrat
+    (ROT-Phase: fehlende Methode schlaegt fehl, kein Vakuum-Gruen).
+    assert_blocked() stellt das Gegenteil fest: kein Rueckkehr ohne
+    Ereignis (sonst wuerde der Worker wieder pollen statt zu blocken).
+    """
+
+    def __init__(self, ctrl: PushToTalkController) -> None:
+        self._ctrl = ctrl
+        self.returned = threading.Event()
+        self.error: BaseException | None = None
+        self._thread = threading.Thread(
+            target=self._run, name="wait-for-work-test", daemon=True
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            self._ctrl.wait_for_work()
+        except BaseException as exc:  # noqa: BLE001 - Fehler protokollieren
+            self.error = exc
+        self.returned.set()
+
+    def assert_returned(self, timeout: float = 2.0) -> None:
+        assert self.returned.wait(timeout=timeout), (
+            "wait_for_work() ist nicht zurueckgekehrt (Deadline abgelaufen)"
+        )
+        assert self.error is None, (
+            f"wait_for_work() warf {self.error!r} statt sauber "
+            "zurueckzukehren"
+        )
+
+    def assert_blocked(self, timeout: float = 0.3) -> None:
+        """Stellt fest, dass wait_for_work() noch blockt (kein Fail-Pass).
+
+        Achtung: nur nach ausreichender Einschwingzeit aufrufen - der
+        Daemon-Thread muss erst in wait() hineinlaufen.
+        """
+        assert not self.returned.wait(timeout=timeout), (
+            "wait_for_work() ist ohne Ereignis zurueckgekehrt - der "
+            "Worker wuerde wieder pollen statt zu blocken"
+        )
+
+
+class FeedCountingTranscriber:
+    """StreamTranscriber-Fake: zaehlt feed()-Aufrufe, maybe_transcribe=None.
+
+    Fuer Wait-Tests: deterministisch zaehlen, welche Chunks ein Live-Tick
+    konsumiert - ohne echte ASR-Intervall- oder VAD-Logik.
+    """
+
+    def __init__(self) -> None:
+        self.feed_count = 0
+        self._buffer = b"\x00" * 16000
+        self.sample_rate = 16000
+
+    def feed(self, data: bytes) -> None:
+        self.feed_count += 1
+
+    def maybe_transcribe(self):
+        return None
+
+    def finalize(self):
+        return TranscriptionResult(text="fertig")
+
+
+class EmptyAudioSource:
+    """Liefert nie Audio (read() -> b""): Capture-Thread bleibt still.
+
+    Fuer Wait-Tests: Die Queue bleibt leer bis auf die vom Test selbst
+    gesteuerten puts - der Capture-Thread der FakeAudioSource wuerde
+    sie sonst unkontrolliert fuellen.
+    """
+
+    def __init__(self) -> None:
+        self.started = 0
+        self.stopped = 0
+
+    def start(self) -> None:
+        self.started += 1
+
+    def stop(self) -> bytes:
+        self.stopped += 1
+        return b""
+
+    def read(self, block: bool = True) -> bytes:
+        return b""
+
+
+def make_wait_controller(
+    source: FakeAudioSource | EmptyAudioSource | None = None,
+    engine=None,
+    **kwargs,
+) -> PushToTalkController:
+    """Controller fuer Wait-Tests: ruhige Quelle, keine Wild-Chunks.
+
+    Ohne engine wird ein FeedCountingTranscriber injiziert (zaehlt
+    konsumierte Chunks). VAD bleibt aus (StreamTranscriber-Default:
+    vad=None - nur wenn eine engine gegeben ist, siehe Test 7).
+    """
+    if engine is not None:
+        # Echter StreamTranscriber: Intervall-Semantik der asr.py testen.
+        return PushToTalkController(
+            config=None,
+            source_factory=lambda: (source or EmptyAudioSource()),
+            engine=engine,
+            delta_typer=DeltaTyper(FakeTyper(), append_space=True),
+            **kwargs,
+        )
+    return PushToTalkController(
+        config=None,
+        source_factory=lambda: (source or EmptyAudioSource()),
+        engine=FakeEngine(),
+        delta_typer=DeltaTyper(FakeTyper(), append_space=True),
+        transcriber_factory=lambda *a, **kw: FeedCountingTranscriber(),
+        **kwargs,
+    )
+
+
+class TestWaitForWork:
+    """Feature 4: Event-gesteuertes Aufwecken statt 20-ms-Polling.
+
+    wait_for_work() ersetzt time.sleep(0.02) in Application.run_forever():
+    In IDLE/FINALIZING blockt es bis zum naechsten Ereignis (Notify), in
+    RECORDING maximal bis zur naechsten Frist (neuer Chunk, No-Audio-
+    Timeout, Max-Dauer, Release/Finalisierung). Alle Tests arbeiten mit
+    begrenzten Deadlines und threading.Events - kein Pollen, kein Raten.
+    """
+
+    def test_idle_blocks_until_start(self) -> None:
+        """Test 1: In IDLE blockt wait_for_work bis start_recording()."""
+        ctrl = make_wait_controller()
+        probe = WaitProbe(ctrl)
+        probe.assert_blocked(timeout=0.5)
+        ctrl.start_recording()
+        probe.assert_returned(timeout=2.0)
+        assert ctrl.state == ControllerState.RECORDING
+        ctrl.abort()
+
+    def test_capture_chunk_wakes_worker(self) -> None:
+        """Test 2: Nicht-leerer Queue-Put weckt den Worker (Capture-Pfad).
+
+        Der put ist das Pendant zu _capture_loop; der zurueckgekehrte
+        Worker konsumiert den Chunk via run_once() genau einmal
+        (feed_count am FeedCountingTranscriber).
+        """
+        ctrl = make_wait_controller()
+        ctrl.start_recording()
+        assert ctrl.state == ControllerState.RECORDING
+        ctrl._audio_queue.put(b"\x00" * 16000)  # simuliert Capture-put
+        probe = WaitProbe(ctrl)
+        probe.assert_returned(timeout=2.0)
+        ctrl.run_once()
+        transcriber = ctrl._transcriber
+        assert transcriber is not None
+        assert transcriber.feed_count == 1, (
+            f"Chunk nicht genau einmal konsumiert "
+            f"(feeds={transcriber.feed_count})"
+        )
+        assert ctrl._audio_queue.qsize() == 0
+        ctrl.abort()
+
+    def test_nonempty_queue_returns_without_notify(self) -> None:
+        """Test 3: Lost-Wakeup-Schutz - nicht-leere Queue vor dem Wait.
+
+        Das Notify zum put-Zeitpunkt ist bereits verstrichen: Die
+        Nicht-Leer-Pruefung VOR wait() macht die Rueckkehr trotzdem
+        sofort - ohne dieses Guard wuerde der Worker bis zur Frist
+        blocken (klassisches Lost-Wakeup).
+        """
+        ctrl = make_wait_controller()
+        ctrl.start_recording()
+        ctrl._audio_queue.put(b"\x00" * 16000)  # Notify ist vorbei
+        probe = WaitProbe(ctrl)
+        probe.assert_returned(timeout=2.0)
+        ctrl.abort()
+
+    def test_no_audio_timeout_wakes_and_aborts(self) -> None:
+        """Test 4: No-Audio-Frist weckt; der folgende Tick bricht ab.
+
+        start_recording setzt _last_audio_at = now: Die Wartezeit muss
+        mindestens _no_audio_timeout_s betragen. Ein abgeschlossenes
+        Timeout endet in IDLE (Abort-Pfad) und weckt danach den Worker.
+        """
+        ctrl = make_wait_controller(no_audio_timeout_s=0.2)
+        ctrl.start_recording()
+        probe = WaitProbe(ctrl)
+        probe.assert_returned(timeout=2.0)
+        # Geweckt nicht frueher als die Frist (Toleranz 50 ms; das alte
+        # 20-ms-Polling waere bereits nach ~20 ms zurueckgekehrt).
+        woke_at = time.monotonic()
+        assert woke_at >= ctrl._last_audio_at + ctrl._no_audio_timeout_s - 0.05, (
+            f"wait_for_work() weckte nach {woke_at - ctrl._last_audio_at:.3f}s "
+            "- vor der No-Audio-Frist"
+        )
+        # Der naechste Live-Tick sieht die Ueberschreitung und bricht ab
+        # (Grenzfall: Wecken exakt zur Frist -> kurzer Nachtick erlaubt).
+        deadline = time.monotonic() + 2.0
+        while ctrl.state == ControllerState.RECORDING:
+            ctrl.run_once()
+            if ctrl.state == ControllerState.RECORDING:
+                ctrl.wait_for_work()  # Frist abgelaufen -> sofortige Rueckkehr
+            assert time.monotonic() < deadline, (
+                "Abbruch nach No-Audio-Timeout blieb aus"
+            )
+        assert ctrl.state == ControllerState.IDLE
+        # Nach dem Abbruch blockt ein frischer Worker wieder bis zum
+        # naechsten Ereignis (abort notifiziert).
+        probe2 = WaitProbe(ctrl)
+        probe2.assert_blocked(timeout=0.3)
+
+    def test_max_record_deadline_wakes(self) -> None:
+        """Test 5: Max-Dauer-Frist weckt den Worker termingerecht."""
+        ctrl = make_wait_controller(max_record_s=0.3)
+        ctrl.start_recording()
+        probe = WaitProbe(ctrl)
+        probe.assert_returned(timeout=2.0)
+        # Geweckt nicht frueher als die Frist (Toleranz 50 ms; das alte
+        # 20-ms-Polling waere bereits nach ~20 ms zurueckgekehrt).
+        woke_at = time.monotonic()
+        assert woke_at >= ctrl._started_at + ctrl._max_record_s - 0.05, (
+            f"wait_for_work() weckte nach {woke_at - ctrl._started_at:.3f}s "
+            "- vor der Max-Dauer-Frist"
+        )
+        # Taste loslassen (Release nach dem Wecken): Die Finalisierung
+        # schliesst ab, OHNE automatischen Neustart (kein Geisterlauf).
+        ctrl.stop_recording()
+        _wait_state(ctrl, ControllerState.IDLE, timeout=5.0)
+        assert ctrl._key_down is False
+        assert ctrl.state == ControllerState.IDLE, "Geisteraufnahme gestartet"
+        probe2 = WaitProbe(ctrl)
+        probe2.assert_blocked(timeout=0.3)
+
+    def test_stop_recording_wakes_and_no_ghost_restart(self) -> None:
+        """Test 6: Release weckt; kein Autostart bei losgelassener Taste."""
+        ctrl = make_wait_controller()
+        ctrl.start_recording()
+        probe = WaitProbe(ctrl)
+        probe.assert_blocked(timeout=0.3)
+        ctrl.stop_recording()
+        probe.assert_returned(timeout=2.0)
+        _wait_state(ctrl, ControllerState.IDLE, timeout=5.0)
+        assert ctrl._key_down is False
+        assert ctrl.state == ControllerState.IDLE, "Geisteraufnahme gestartet"
+        # In IDLE ohne weiteres Ereignis blockt der Worker weiter.
+        probe2 = WaitProbe(ctrl)
+        probe2.assert_blocked(timeout=0.3)
+
+    def test_asr_interval_gating_intact(self) -> None:
+        """Test 7: Das interval_s-Gating der asr.py bleibt wirksam.
+
+        Das Gate zaehlt PUFFERsekunden (audio_seconds - _last_transcribed_at
+        < interval_s -> kein Engine-Call), nicht Wandzeit. Mehrere Wakeups
+        mit < interval_s NEUEM Audio loesen keinen zusaetzlichen Call aus,
+        danach (>= interval_s Pufferanteil) GENAU EINEN weiteren. Echter
+        StreamTranscriber + FakeEngine, 32000 Bytes = 1.0 s Audio.
+        """
+        engine = FakeEngine()
+        ctrl = make_wait_controller(
+            engine=engine,
+            asr_interval_s=0.15,
+            min_audio_s=0.5,
+        )
+        ctrl.start_recording()
+        try:
+            chunk = b"\x00" * 32000  # 1.0 s Audio
+            # Phase 1: Ersttranskription feuert sofort (min_audio_s reicht).
+            ctrl._audio_queue.put(chunk)
+            WaitProbe(ctrl).assert_returned(timeout=2.0)
+            ctrl.run_once()
+            assert engine.calls == 1, (
+                f"Erste Transkription fehlt (calls={engine.calls})"
+            )
+            # Phase 2: < interval_s NEUES Audio -> Wakeup + Tick, aber
+            # KEIN weiterer Engine-Call (Gate haelt).
+            ctrl._audio_queue.put(b"\x00" * 3200)  # 0.1 s < 0.15 s
+            WaitProbe(ctrl).assert_returned(timeout=2.0)
+            ctrl.run_once()
+            assert engine.calls == 1, (
+                f"Intervall-Gating verletzt: {engine.calls} statt 1 "
+                "Calls bei < interval_s neuem Audio"
+            )
+            # Phase 3: >= interval_s neues Audio -> GENAU EIN weiterer
+            # Call (auch mehrfaches Wecken darf nicht uebertranskribieren).
+            ctrl._audio_queue.put(b"\x00" * 8000)  # 0.25 s > 0.15 s
+            WaitProbe(ctrl).assert_returned(timeout=2.0)
+            ctrl.run_once()
+            assert engine.calls == 2, (
+                f"Nach Intervall-Ablauf {engine.calls} statt genau 2 "
+                "Calls"
+            )
+        finally:
+            ctrl.abort()
+
+    def test_release_responsive_during_live_inference(self) -> None:
+        """Test 8: Release bleibt bei blockierender Live-Inferenz ansprechbar.
+
+        wait_for_work() darf nie unter _exec_lock laufen: Der wartende
+        Worker haelt sonst die Live-Inferenz (und damit jeden Release)
+        gefangen. BlockingEngine im Live-Tick; stop_recording() muss ohne
+        Warten auf die Inferenz zurueckkehren und die Quelle stoppen.
+        """
+        engine = BlockingEngine()
+        ctrl = make_wait_controller(
+            engine=engine,
+            min_audio_s=0.5,
+        )
+        ctrl.start_recording()
+        ctrl._audio_queue.put(b"\x00" * 16000)
+        worker = threading.Thread(
+            target=ctrl.run_once, name="live-tick-worker", daemon=True
+        )
+        worker.start()
+        assert engine.entered.wait(timeout=2.0), (
+            "Live-Inferenz nicht gestartet"
+        )
+        # Release im Key-Thread: ohne Warten auf die Inferenz (STUFE 1).
+        t0 = time.monotonic()
+        ctrl.stop_recording()
+        elapsed = time.monotonic() - t0
+        assert elapsed < 0.5, (
+            f"stop_recording() wartete {elapsed:.3f}s - Release blockiert "
+            "an der laufenden Inferenz"
+        )
+        # Quelle wurde sofort gestoppt (obwohl die Inferenz noch laeuft).
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and ctrl._source is not None:
+            time.sleep(0.005)
+        assert ctrl._source is None, "Quelle nicht gestoppt"
+        # Inferenz freigeben: Live-Ergebnis wird verworfen (Post-Release-
+        # Discard), der Finalizer schliesst ab (fuettert Rest + finalize).
+        engine.release.set()
+        _wait_state(ctrl, ControllerState.IDLE, timeout=5.0)
+        assert engine.calls >= 1
+        worker.join(timeout=2.0)
+        # Nach Abschluss blockt ein frischer Worker wieder sauber bis
+        # zum naechsten Ereignis (Finalizer-Ende notifiziert).
+        probe = WaitProbe(ctrl)
+        probe.assert_blocked(timeout=0.3)

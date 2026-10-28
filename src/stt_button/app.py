@@ -8,7 +8,6 @@ from __future__ import annotations
 import logging
 import signal
 import threading
-import time
 
 from .audio import PwRecordSource
 from .asr import ParakeetEngine, QwenEngine, StreamTranscriber, WhisperEngine
@@ -225,7 +224,7 @@ class Application:
         try:
             while True:
                 self._controller.run_once()
-                time.sleep(0.02)
+                self._controller.wait_for_work()
         finally:
             self.shutdown()
 

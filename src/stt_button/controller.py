@@ -76,6 +76,12 @@ class PushToTalkController:
         # Inferenz gehalten - sonst wartet der Release (stop_recording)
         # auf die laufende Live-Inferenz (Latenz STUFE 1).
         self._lock = threading.RLock()
+        # Weckt den Worker (Application.run_forever) gezielt auf, statt
+        # alle 20 ms blind zu pollen: notified wird bei jedem Zustands-
+        # wechsel und jedem nicht-leeren Capture-put. Teilt _lock - damit
+        # ist die Nicht-Leer-Pruefung der Queue und das wait() atomar
+        # gegen den Notify-Pfad (kein Lost-Wakeup).
+        self._work_cv = threading.Condition(self._lock)
         # Serialisiert die Live-/Final-Ausfuehrungskette (Transcriber +
         # DeltaTyper): der Live-Tick und der Finalizer nehmen dieses Lock,
         # der Key-Thread NIE. Verschachtelung immer: _exec_lock -> _lock.
@@ -114,6 +120,45 @@ class PushToTalkController:
                 log.info("Taste gehalten - Start nach Finalisierung")
                 return
             self._start_now()
+            self._notify_work()
+
+    def _notify_work(self) -> None:
+        """Weckt wartende Worker auf (Condition-Notify unter ``_lock``).
+
+        Muss unter ``_lock`` bzw. ``_work_cv`` gehalten werden; nach dem
+        Weckruf prueft wait_for_work() seine Bedingungen erneut (kein
+        Lost-Wakeup, spurious Wakeups unschaedlich).
+        """
+        self._work_cv.notify_all()
+
+    def wait_for_work(self) -> None:
+        """Blockt, bis neue Arbeit ansteht (statt 20-ms-Polling).
+
+        Ersetzt ``time.sleep(0.02)`` in ``Application.run_forever()``.
+        Wird NIE unter ``_exec_lock`` aufgerufen (der wartende Worker
+        darf keine Live-/Final-Inferenz festhalten).
+
+        * IDLE/FINALIZING: bedingungslos blocken, bis ein Notify
+          (Tastendruck, Finalisierungsende, Abbruch) den Worker weckt.
+        * RECORDING mit leerer Capture-Queue: blocken bis zur naechsten
+          Frist - neues Audio (Notify vom Capture-Pfad), No-Audio-Timeout
+          oder maximale Aufnahmedauer, je nachdem was zuerst faellig ist.
+        * RECORDING mit nicht-leerer Queue: sofort zurueckkehren
+          (Lost-Wakeup-Schutz: Die Pruefung erfolgt VOR dem wait(); ein
+          bereits verstrichenes Notify verpasst dadurch nichts).
+        """
+        with self._work_cv:
+            if self.state != ControllerState.RECORDING:
+                self._work_cv.wait()
+                return
+            if not self._audio_queue.empty():
+                return
+            now = time.monotonic()
+            timeout = min(
+                self._started_at + self._max_record_s - now,
+                self._last_audio_at + self._no_audio_timeout_s - now,
+            )
+            self._work_cv.wait(timeout=max(0.0, timeout))
 
     def _start_now(self) -> None:
         """Startet die Aufnahme sofort (Zustand bereits geprueft)."""
@@ -190,6 +235,7 @@ class PushToTalkController:
                 self._source = None
             self._transcriber = None
             self.state = ControllerState.IDLE
+            self._notify_work()
             log.info("Aufnahme abgebrochen")
 
     def shutdown(self) -> None:
@@ -319,6 +365,11 @@ class PushToTalkController:
                 break
             if chunk:
                 audio_queue.put(chunk)
+                # Worker wecken: NUR das Notify - keine ASR-/Typer-
+                # Operationen im Capture-Thread (sie laufen exklusiv
+                # unter _exec_lock im Worker).
+                with self._lock:
+                    self._notify_work()
             else:
                 time.sleep(0.02)
 
@@ -353,6 +404,7 @@ class PushToTalkController:
             audio_queue = self._audio_queue
             capture_thread = self._capture_thread
             self._capture_thread = None
+            self._notify_work()
 
         # RC-B2/B3: Erst den Capture-Thread beenden (er prueft den Zustand,
         # der bereits FINALIZING ist, und endet praktisch sofort), DANN
@@ -454,6 +506,7 @@ class PushToTalkController:
                 if self._key_down:
                     log.info("Taste gehalten - neue Aufnahme starten")
                     self._start_now()
+                self._notify_work()
 
     def _dump_audio(self, transcriber) -> None:
         """Speichert die komplette Aufnahme als Debug-WAV.
