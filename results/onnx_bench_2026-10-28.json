@@ -1,0 +1,12 @@
+{
+ "korpus": "tests/fixtures/corpus_fix_01.wav",
+ "dur_s": 2.24,
+ "laeufe": 3,
+ "hf_median_s": 0.395,
+ "hf_rtf": 0.177,
+ "hf_text": "Ich sehe keine Aktivität.",
+ "onnx_median_s": 0.667,
+ "onnx_rtf": 0.298,
+ "onnx_text": "Ich sehe keine Aktivität.",
+ "gain": 0.59
+}

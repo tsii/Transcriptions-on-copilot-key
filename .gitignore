@@ -8,3 +8,6 @@ dist/
 .coverage
 htmlcov/
 models/
+
+# lokale Modell-Snapshots (ONNX-Benchmark), nicht versionieren
+.models/
