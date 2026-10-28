@@ -20,7 +20,7 @@ DEFAULT_CONFIG_PATH = CONFIG_DIR / "config.toml"
 VALID_LANGUAGES = ("de", "en", "auto")
 VALID_TYPERS = ("wtype", "clipboard", "dotool")
 VALID_BACKENDS = ("whisper", "parakeet", "qwen")
-VALID_STREAMING_MODES = ("windowed", "whole_buffer")
+VALID_STREAMING_MODES = ("windowed", "whole_buffer", "buffered")
 VALID_PASTE_KEYS = ("ctrl+v", "ctrl+shift+v")
 #: Finalisierungs-Modus: "full" = Puffer neu transkribieren (bewährt),
 #: "cached" = unveraenderten Puffer aus dem letzten erfolgreichen Tick
@@ -60,8 +60,10 @@ class Config:
     compute_type: str = "int8"
     cpu_threads: int = field(default_factory=lambda: os.cpu_count() or 4)
     # --- Streaming ---------------------------------------------------------
-    #: Streaming-Modus: "windowed" (Fenster + Zeitstempel-Commit) oder
-    #: "whole_buffer" (alter Ansatz, ganzer Puffer re-transkribiert).
+    #: Streaming-Modus: "windowed" (Fenster + Zeitstempel-Commit),
+    #: "whole_buffer" (alter Ansatz, ganzer Puffer re-transkribiert) oder
+    #: "buffered" (STUFE 3: Hybrid Volllpuffer -> bounded Fenster).
+    #: Default bleibt "whole_buffer" - der neue Modus ist ein Feature-Flag.
     streaming_mode: str = "whole_buffer"
     #: Mindest-Audiolaenge (Sekunden), bevor ueberhaupt transkribiert wird.
     #: Zu kurze Chunks lassen den Transducer Satzanfaenge falsch gross
@@ -75,6 +77,18 @@ class Config:
     #: Anzahl aufeinanderfolgender identischer Praefixe, bis ein Praefix
     #: als "committed" gilt und nie mehr zurueckgenommen wird.
     commit_agreements: int = 2
+
+    # --- Buffered-Modus (STUFE 3, nur bei streaming_mode="buffered") ----
+    #: Bis zu dieser Pufferlaenge wird der ganze Puffer transkribiert.
+    buffered_whole_buffer_until_s: float = 8.0
+    #: Links-Kontext des Fensters in Sekunden (Qualitaetsanker).
+    buffered_left_context_s: float = 8.0
+    #: Neues stabiles Segment pro Tick in Sekunden.
+    buffered_chunk_s: float = 2.0
+    #: Rechts-Kontext (Lookahead) nach dem Commit-Horizont in Sekunden.
+    buffered_right_context_s: float = 2.0
+    #: Hartes Budget fuer Finalisierungs-/Catch-up-Fenster in Sekunden.
+    buffered_max_final_window_s: float = 18.0
 
     # --- Ausgabe ---------------------------------------------------------
     #: Typ-Ausgabe-Adapter: "dotool" (Default, funktioniert unter GNOME/Wayland),
@@ -173,6 +187,11 @@ class Config:
             raise ConfigError("typehold_ms darf nicht negativ sein")
         if self.commit_agreements < 1:
             raise ConfigError("commit_agreements muss mindestens 1 sein")
+        for name in ("buffered_whole_buffer_until_s", "buffered_left_context_s",
+                     "buffered_chunk_s", "buffered_right_context_s",
+                     "buffered_max_final_window_s"):
+            if getattr(self, name) <= 0:
+                raise ConfigError(f"{name} muss groesser als 0 sein")
         if self.sample_rate < 8000:
             raise ConfigError("sample_rate muss mindestens 8000 sein")
         if not self.key_codes:

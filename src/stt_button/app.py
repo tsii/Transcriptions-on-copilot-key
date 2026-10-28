@@ -12,6 +12,7 @@ import time
 
 from .audio import PwRecordSource
 from .asr import ParakeetEngine, QwenEngine, StreamTranscriber, WhisperEngine
+from .buffered import BufferedTranscriber
 from .config import Config
 from .controller import PushToTalkController
 from .keys import KeyListener, resolve_device
@@ -125,6 +126,22 @@ class Application:
                     min_audio_s=min_audio_s,
                     sample_rate=cfg.sample_rate,
                     commit_agreements=cfg.commit_agreements,
+                    vad=SileroVadGate(),
+                )
+            if cfg.streaming_mode == "buffered":
+                # STUFE 3: Hybrid Volllpuffer (<= whole_buffer_until_s) ->
+                # bounded Fenster. NUR bei explizitem Flag aktiv.
+                return BufferedTranscriber(
+                    engine,
+                    interval_s=interval_s,
+                    min_audio_s=min_audio_s,
+                    whole_buffer_until_s=cfg.buffered_whole_buffer_until_s,
+                    left_context_s=cfg.buffered_left_context_s,
+                    chunk_s=cfg.buffered_chunk_s,
+                    right_context_s=cfg.buffered_right_context_s,
+                    commit_agreements=cfg.commit_agreements,
+                    max_final_window_s=cfg.buffered_max_final_window_s,
+                    sample_rate=cfg.sample_rate,
                     vad=SileroVadGate(),
                 )
             return StreamTranscriber(

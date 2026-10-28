@@ -143,6 +143,89 @@ class TestAgreement:
         assert "OKAY" not in commit
 
 
+class TestRequireAgreementAlways:
+    """STUFE 3: require_agreement_always erzwingt 2 Agreements bei JEDEM Commit."""
+
+    def test_windowed_behaviour_unchanged_by_default(self) -> None:
+        """Default False: ab dem 2. Commit wird direkt committet (wie bisher)."""
+        c = TimestampCommitter(commit_agreements=2)
+        seg1 = _tokens([("Ein", 0.0, 0.3), (" Satz", 0.3, 0.6),
+                        (" mit", 0.6, 0.9), (" Worten", 0.9, 1.2)])
+        c.update(Transcription(seg1), commit_horizon=0.9)
+        c.update(Transcription(seg1), commit_horizon=0.9)  # 1. Commit (Agreement)
+        assert c.committed_s > 0.0
+        # Zweites Segment: bisheriges Verhalten = Direkt-Commit im ersten Fenster
+        seg2 = seg1 + [Token(" mehr", 1.2, 1.5)]
+        commit, partial = c.update(Transcription(seg2), commit_horizon=1.2)
+        assert commit.strip() != ""
+
+    def test_always_requires_two_matches_for_every_commit(self) -> None:
+        """Mit require_agreement_always darf NIE ein einzelnes Fenster committen."""
+        c = TimestampCommitter(commit_agreements=2, require_agreement_always=True)
+        seg1 = _tokens([("Ein", 0.0, 0.3), (" Satz", 0.3, 0.6),
+                        (" mit", 0.6, 0.9), (" Worten", 0.9, 1.2)])
+        c.update(Transcription(seg1), commit_horizon=0.9)
+        c.update(Transcription(seg1), commit_horizon=0.9)  # 1. Commit
+        assert c.committed_s > 0.0
+        before_text = c.committed_text
+        seg2 = seg1 + [Token(" mehr", 1.2, 1.5)]
+        commit1, _ = c.update(Transcription(seg2), commit_horizon=1.2)
+        assert commit1 == "", "einzelnes Fenster darf nicht committen"
+        assert c.committed_text == before_text
+        commit2, _ = c.update(Transcription(seg2), commit_horizon=1.2)
+        assert commit2.strip() != "", "nach 2 Agreements muss committet werden"
+        # Mit grossem Horizont kommt das naechste Wort dazu (wieder 2 Agreements).
+        for _ in range(2):
+            c.update(Transcription(seg2), commit_horizon=1.5)
+        assert "Worten" in c.committed_text
+
+    def test_committed_s_monotonic_with_always(self) -> None:
+        """committed_s darf auch mit Agreement-Zwang nie schrumpfen."""
+        c = TimestampCommitter(commit_agreements=2, require_agreement_always=True)
+        seg = _tokens([("a", 0.0, 0.2), (" b", 0.2, 0.4), (" c", 0.4, 0.6)])
+        for _ in range(4):
+            c.update(Transcription(seg), commit_horizon=0.6)
+        first = c.committed_s
+        assert first > 0.0
+        longer = seg + [Token(" d", 0.6, 0.8)]
+        for _ in range(4):
+            c.update(Transcription(longer), commit_horizon=0.8)
+        assert c.committed_s >= first
+
+    def test_no_commit_without_right_context_candidate(self) -> None:
+        """Kein Commit, wenn der Kandidat noch nicht zweimal identical war."""
+        c = TimestampCommitter(commit_agreements=2, require_agreement_always=True)
+        tr = Transcription(_tokens([("Das", 0.0, 0.3), (" ist", 0.3, 0.6),
+                                    (" ein", 0.6, 0.9), (" Test", 0.9, 1.2)]))
+        commit, _ = c.update(tr, commit_horizon=1.2)
+        assert commit == ""
+        assert c.committed_s == 0.0
+
+    def test_changed_candidate_resets_agreement(self) -> None:
+        """Aendert sich der Kandidat, beginnt die Zaehlung von vorn."""
+        c = TimestampCommitter(commit_agreements=2, require_agreement_always=True)
+        common = [("a", 0.0, 0.2), (" b", 0.3, 0.5), (" c", 0.6, 0.8),
+                  (" d", 0.9, 1.1)]
+        var_a = common + [(" schnell", 1.2, 1.4), ("erei", 1.4, 1.6)]
+        var_b = common + [(" langsam", 1.2, 1.4), ("er", 1.4, 1.6)]
+
+        # 1. Commit nach zwei Identischen: "a b c" (" d" bleibt Wortgrenze).
+        assert c.update(Transcription(_tokens(var_a)), 1.1)[0] == ""
+        commit = c.update(Transcription(_tokens(var_a)), 1.1)[0]
+        assert commit == "a b c"
+        before = c.committed_text
+
+        # Naechster Kandidat taucht einmal auf ... (Kandidat A)
+        assert c.update(Transcription(_tokens(var_a)), 1.6)[0] == ""
+        # ... wird dann durch Kandidaten B verdraengt -> Zaehlung startet neu.
+        assert c.update(Transcription(_tokens(var_b)), 1.6)[0] == ""
+        assert c.committed_text == before
+        # Erst zwei Identische von B committen.
+        commit = c.update(Transcription(_tokens(var_b)), 1.6)[0]
+        assert commit.strip() != ""
+        assert "langsam" in commit
+
+
 class TestWordBoundaryEdgeCases:
     def test_two_single_token_words_commits_first(self) -> None:
         """P1-Fix: 'das jetzt' (2 Einzelwörter) -> 'das' committet, 'jetzt' partial."""

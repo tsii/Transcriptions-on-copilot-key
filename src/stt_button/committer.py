@@ -21,13 +21,23 @@ class TimestampCommitter:
     nicht unwiderruflich eingefroren werden.
     """
 
-    def __init__(self, eps: float = 1e-3, commit_agreements: int = 2) -> None:
+    def __init__(
+        self,
+        eps: float = 1e-3,
+        commit_agreements: int = 2,
+        require_agreement_always: bool = False,
+    ) -> None:
         self.committed_s = 0.0
         self.committed_text = ""
         self.committed_tokens: list[Token] = []
         self.last_partial = ""
         self._eps = eps
         self.commit_agreements = commit_agreements
+        #: STUFE 3: True => JEDER Kandidat braucht ``commit_agreements``
+        #: aufeinanderfolgende Identische am selben committed_s (kein
+        #: Direkt-Commit ab dem zweiten Commit). Default False laesst das
+        #: bisherige windowed-Verhalten unveraendert.
+        self.require_agreement_always = require_agreement_always
         # Kandidaten-Cache: (committed_s, text) des letzten Fensters.
         self._candidate_key: tuple = (0.0, "")
         self._agreement_count = 0
@@ -90,7 +100,7 @@ class TimestampCommitter:
         candidate_text = new_commit_text
         already_started = bool(self.committed_text.strip())
 
-        if already_started:
+        if already_started and not self.require_agreement_always:
             # Ab dem 2. Commit: direkt committen (kein Agreement mehr noetig).
             if new_commit_text:
                 self.committed_tokens.extend(commit_tokens)

@@ -262,3 +262,75 @@ class TestLatencyStage1Keys:
         p = write_config(tmp_path, "latency_trace = 1\n")
         with pytest.raises(ConfigError, match="latency_trace"):
             load_config(p)
+
+
+class TestBufferedMode:
+    """STUFE 3: streaming_mode='buffered' + buffered_* Felder (Default AUS)."""
+
+    def test_buffered_is_valid_streaming_mode(self) -> None:
+        cfg = Config(streaming_mode="buffered")
+        cfg.validate()
+        assert cfg.streaming_mode == "buffered"
+
+    def test_default_streaming_mode_stays_whole_buffer(self) -> None:
+        """Feature-Flag bleibt Default AUS - kein Produktiv-Umschalten."""
+        assert Config().streaming_mode == "whole_buffer"
+
+    def test_buffered_defaults_match_transcriber_signature(self) -> None:
+        """Config-Defaults == BufferedTranscriber-Defaults (Kimi-Plan)."""
+        import inspect
+
+        from stt_button.buffered import BufferedTranscriber
+
+        params = inspect.signature(BufferedTranscriber.__init__).parameters
+        cfg = Config()
+        assert cfg.buffered_whole_buffer_until_s == params["whole_buffer_until_s"].default
+        assert cfg.buffered_left_context_s == params["left_context_s"].default
+        assert cfg.buffered_chunk_s == params["chunk_s"].default
+        assert cfg.buffered_right_context_s == params["right_context_s"].default
+        assert cfg.buffered_max_final_window_s == params["max_final_window_s"].default
+
+    def test_parse_from_toml(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, """
+            streaming_mode = "buffered"
+            buffered_whole_buffer_until_s = 6.0
+            buffered_left_context_s = 5.0
+            buffered_chunk_s = 1.5
+            buffered_right_context_s = 1.0
+            buffered_max_final_window_s = 12.0
+            """,
+        )
+        cfg = load_config(p)
+        assert cfg.streaming_mode == "buffered"
+        assert cfg.buffered_whole_buffer_until_s == 6.0
+        assert cfg.buffered_left_context_s == 5.0
+        assert cfg.buffered_chunk_s == 1.5
+        assert cfg.buffered_right_context_s == 1.0
+        assert cfg.buffered_max_final_window_s == 12.0
+
+    @pytest.mark.parametrize("key", [
+        "buffered_whole_buffer_until_s",
+        "buffered_left_context_s",
+        "buffered_chunk_s",
+        "buffered_right_context_s",
+        "buffered_max_final_window_s",
+    ])
+    def test_nonpositive_values_rejected(self, tmp_path: Path, key: str) -> None:
+        p = write_config(tmp_path, f'{key} = 0\n')
+        with pytest.raises(ConfigError, match=key):
+            load_config(p)
+
+    def test_right_context_larger_than_chunk_allowed(self) -> None:
+        """Nur positive Werte sind Pflicht; Groessenverhaeltnisse sind frei."""
+        cfg = Config(buffered_chunk_s=0.5, buffered_right_context_s=4.0)
+        cfg.validate()
+
+    def test_wrong_type_rejected(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, 'buffered_chunk_s = "zwei"\n')
+        with pytest.raises(ConfigError, match="buffered_chunk_s"):
+            load_config(p)
+
+    def test_unknown_streaming_mode_still_rejected(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, 'streaming_mode = "pufferlos"\n')
+        with pytest.raises(ConfigError, match="streaming_mode"):
+            load_config(p)

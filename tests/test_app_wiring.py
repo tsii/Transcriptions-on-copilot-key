@@ -116,3 +116,56 @@ class TestFinalizeModeWiring:
         factory = controller.kwargs["transcriber_factory"]
         transcriber = factory(engine=object(), interval_s=1.0, min_audio_s=0.8)
         assert transcriber.finalize_mode == "full"
+
+
+class TestBufferedWiring:
+    """STUFE 3: Application waehlt BufferedTranscriber NUR bei streaming_mode."""
+
+    def test_buffered_mode_selects_buffered_transcriber(self, monkeypatch) -> None:
+        from stt_button.buffered import BufferedTranscriber
+
+        _app, controller = _application(monkeypatch, streaming_mode="buffered")
+        factory = controller.kwargs["transcriber_factory"]
+        transcriber = factory(engine=object(), interval_s=1.0, min_audio_s=3.0)
+        assert isinstance(transcriber, BufferedTranscriber)
+        assert transcriber.interval_s == 1.0
+        assert transcriber.min_audio_s == 3.0
+        assert transcriber.vad is not None  # SileroVadGate wie in den anderen Modi
+
+    def test_buffered_config_values_reach_transcriber(self, monkeypatch) -> None:
+        from stt_button.buffered import BufferedTranscriber
+
+        _app, controller = _application(
+            monkeypatch, streaming_mode="buffered",
+            buffered_chunk_s=1.5, buffered_left_context_s=6.0,
+            buffered_right_context_s=3.0, buffered_whole_buffer_until_s=10.0,
+            buffered_max_final_window_s=20.0, commit_agreements=3,
+        )
+        factory = controller.kwargs["transcriber_factory"]
+        t = factory(engine=object(), interval_s=1.0, min_audio_s=3.0)
+        assert isinstance(t, BufferedTranscriber)
+        assert t.chunk_s == 1.5
+        assert t.left_context_s == 6.0
+        assert t.right_context_s == 3.0
+        assert t.whole_buffer_until_s == 10.0
+        assert t.max_final_window_s == 20.0
+        assert t.commit_agreements == 3
+
+    def test_default_mode_still_stream_transcriber(self, monkeypatch) -> None:
+        """Default (whole_buffer) liefert unveraendert den StreamTranscriber."""
+        from stt_button.asr import StreamTranscriber
+        from stt_button.buffered import BufferedTranscriber
+
+        _app, controller = _application(monkeypatch)
+        factory = controller.kwargs["transcriber_factory"]
+        t = factory(engine=object(), interval_s=1.0, min_audio_s=3.0)
+        assert isinstance(t, StreamTranscriber)
+        assert not isinstance(t, BufferedTranscriber)
+
+    def test_windowed_mode_untouched(self, monkeypatch) -> None:
+        from stt_button.windowed import WindowedTranscriber
+
+        _app, controller = _application(monkeypatch, streaming_mode="windowed")
+        factory = controller.kwargs["transcriber_factory"]
+        t = factory(engine=object(), interval_s=1.0, min_audio_s=3.0)
+        assert isinstance(t, WindowedTranscriber)
