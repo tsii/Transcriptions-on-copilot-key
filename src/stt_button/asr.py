@@ -414,6 +414,13 @@ class StreamTranscriber:
     _feed_epoch: int = field(default=0, init=False, repr=False)
     #: feed-Zaehler-Stand zum Zeitpunkt der letzten erfolgreichen Inferenz.
     _completed_feed_epoch: int = field(default=-1, init=False, repr=False)
+    # --- STUFE 4: Pausen-Indikator (live_asr_until_s) ---------------------
+    #: Live-Limit wurde (seit dem letzten reset()) bereits erreicht und
+    #: gemeldet - verhindert eine zweite Meldung bei weiteren Limit-Ticks.
+    _live_paused_seen: bool = field(default=False, init=False, repr=False)
+    #: Live-Limit wurde erreicht, aber die Meldung noch nicht abgeholt
+    #: (take_live_paused()).
+    _live_paused_pending: bool = field(default=False, init=False, repr=False)
 
     # ------------------------------------------------------------------
     # Zustand
@@ -442,7 +449,12 @@ class StreamTranscriber:
     # Steuerung
     # ------------------------------------------------------------------
     def reset(self) -> None:
-        """Verwirft den Puffer und den Commit-Zustand (entwertet den Cache)."""
+        """Verwirft den Puffer und den Commit-Zustand (entwertet den Cache).
+
+        Setzt auch die Live-Limit-Meldung (Pausen-Indikator) zurueck: Die
+        naechste Aufnahme kann das Limit erneut und damit wieder genau
+        einmal melden.
+        """
         self._buffer.clear()
         self._last_transcribed_at = 0.0
         self._has_transcribed = False
@@ -451,7 +463,29 @@ class StreamTranscriber:
         self._history = []
         self._last_text = ""
         self._vad_checked_at = 0.0
+        self._live_paused_seen = False
+        self._live_paused_pending = False
         self._invalidate_cache()
+
+    def take_live_paused(self) -> bool:
+        """Holt die Limit-Meldung der Live-ASR ab (genau einmal pro Aufnahme).
+
+        Minimale Signatur (bewusst kein Callback, kein extra Property):
+        ``take_live_paused() -> bool``. Liefert ``True`` genau einmal - beim
+        ersten Abruf, nachdem ``maybe_transcribe()`` erstmals das Live-Limit
+        erreicht hat (``live_asr_until_s > 0`` und Puffer >= Limit) - und
+        konsumiert die Meldung. Weitere Aufrufe liefern ``False``, bis ein
+        ``reset()`` gefolgt von einem erneuten Limit-Erreichen folgt.
+
+        Mit ``live_asr_until_s=0.0`` (Default) liefert die Methode NIE
+        ``True`` - das Limit ist dann deaktiviert.
+
+        Returns:
+            ``True`` gdw. die Limit-Meldung noch nicht abgeholt war.
+        """
+        pending = self._live_paused_pending
+        self._live_paused_pending = False
+        return pending
 
     def _invalidate_cache(self) -> None:
         """Entwertet den Finalize-Cache (nach reset() oder Fehlerfall)."""
@@ -476,7 +510,13 @@ class StreamTranscriber:
             return None
         # STUFE 3: Live-ASR-Limit erreicht -> keine Live-Engine-Calls mehr.
         # Der Puffer wachst weiter (feed()); finalize() transkribiert alles.
+        # STUFE 4: Der ersten Ueberschreitung wird GENAU EINMAL als Meldung
+        # vermerkt (take_live_paused()) - der Controller tippt darauf den
+        # Pausen-Indikator.
         if self.live_asr_until_s > 0.0 and self.audio_seconds >= self.live_asr_until_s:
+            if not self._live_paused_seen:
+                self._live_paused_seen = True
+                self._live_paused_pending = True
             return None
         # Die erste Transkription darf sofort erfolgen, danach wird nur
         # neu hinzugekommene Audio beruecksichtigt.

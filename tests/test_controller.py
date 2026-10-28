@@ -762,6 +762,135 @@ class TestLiveAsrUntilController:
         )
 
 
+class TestPauseIndicatorController:
+    """STUFE 4: Pausen-Indikator im Controller (live_asr_until_s > 0).
+
+    Erreicht die Live-ASR das Limit, tippt der Controller den Indikator
+    GENAU EINMAL an den DeltaTyper; beim Release entfernt finalize() ihn
+    ueber die normale Differenz, und der finale Volltext enthaelt KEINEN
+    Indikator. Mit live_asr_until_s=0.0 (Default) erscheint NIE ein
+    Indikator.
+    """
+
+    def _make(self, live_asr_until_s: float, *, mode: str = "full"):
+        from stt_button.asr import StreamTranscriber
+
+        engine = FakeEngine()
+        typer = FakeTyper()
+        delta = DeltaTyper(typer, append_space=True, live_typing_mode=mode)
+
+        def make_transcriber(engine_, interval_s, min_audio_s):
+            return StreamTranscriber(
+                engine_,
+                interval_s=interval_s,
+                min_audio_s=min_audio_s,
+                live_asr_until_s=live_asr_until_s,
+            )
+
+        ctrl = PushToTalkController(
+            config=None,
+            source_factory=lambda: FakeAudioSource([b"\x00" * 16000] * 8),
+            engine=engine,
+            delta_typer=delta,
+            min_audio_s=0.1,
+            asr_interval_s=0.1,
+            transcriber_factory=make_transcriber,
+        )
+        return ctrl, typer
+
+    def _wait_idle(self, ctrl: PushToTalkController, timeout: float = 5.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and ctrl.state != ControllerState.IDLE:
+            time.sleep(0.005)
+        assert ctrl.state == ControllerState.IDLE, (
+            f"IDLE nicht erreicht (ist {ctrl.state})"
+        )
+
+    def _indicator_calls(self, typer: FakeTyper) -> list[tuple[str, ...]]:
+        from stt_button.typing import PAUSE_INDICATOR
+
+        return [c for c in typer.calls if c == ("type", PAUSE_INDICATOR)]
+
+    def test_limit_types_indicator_once_and_final_without_it(self) -> None:
+        """(6) Nach dem Limit EIN Indikator; Release -> Volltext ohne '…'."""
+        from stt_button.typing import PAUSE_INDICATOR
+
+        ctrl, typer = self._make(live_asr_until_s=1.5)
+        ctrl.start_recording()
+        # Live-Ticks laufen lassen, bis das Limit (1.5s Puffer) greift:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            ctrl.run_once()
+            if self._indicator_calls(typer):
+                break
+            time.sleep(0.02)
+        assert self._indicator_calls(typer), (
+            "Pausen-Indikator wurde nach dem Live-Limit nicht getippt"
+        )
+        # Weitere Ticks tippen den Indikator NICHT noch einmal:
+        for _ in range(5):
+            time.sleep(0.02)
+            ctrl.run_once()
+        assert len(self._indicator_calls(typer)) == 1, typer.calls
+
+        # Release: finalize() entfernt den Indikator per Backspace (1
+        # Zeichen U+2026) und liefert den VOLLSTAENDIGEN Text ohne Indikator.
+        ctrl.stop_recording()
+        self._wait_idle(ctrl)
+        assert ("backspace", str(len(PAUSE_INDICATOR))) in typer.calls, typer.calls
+        typed = "".join(
+            c[1] for c in typer.calls
+            if c[0] == "type" and c != ("type", PAUSE_INDICATOR)
+        )
+        assert PAUSE_INDICATOR not in typed
+        assert typed == "wort0 wort1 wort2 wort3 wort4 wort5 wort6 wort7", (
+            typer.calls
+        )
+
+    def test_committed_mode_shows_indicator_too(self) -> None:
+        """(6b) live_typing_mode='committed': Indikator nach letztem Live-Commit."""
+        from stt_button.typing import PAUSE_INDICATOR
+
+        ctrl, typer = self._make(live_asr_until_s=1.5, mode="committed")
+        ctrl.start_recording()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            ctrl.run_once()
+            if self._indicator_calls(typer):
+                break
+            time.sleep(0.02)
+        assert len(self._indicator_calls(typer)) == 1, typer.calls
+        ctrl.stop_recording()
+        self._wait_idle(ctrl)
+        assert ("backspace", str(len(PAUSE_INDICATOR))) in typer.calls, typer.calls
+        typed = "".join(
+            c[1] for c in typer.calls
+            if c[0] == "type" and c != ("type", PAUSE_INDICATOR)
+        )
+        assert typed == "wort0 wort1 wort2 wort3 wort4 wort5 wort6 wort7", (
+            typer.calls
+        )
+
+    def test_default_limit_zero_never_shows_indicator(self) -> None:
+        """(7) Default live_asr_until_s=0: NIE ein Indikator (bisheriges Verhalten)."""
+        from stt_button.typing import PAUSE_INDICATOR
+
+        ctrl, typer = self._make(live_asr_until_s=0.0)
+        ctrl.start_recording()
+        for _ in range(10):
+            time.sleep(0.02)
+            ctrl.run_once()
+        assert not self._indicator_calls(typer), typer.calls
+        ctrl.stop_recording()
+        self._wait_idle(ctrl)
+        assert not self._indicator_calls(typer), typer.calls
+        typed = "".join(c[1] for c in typer.calls if c[0] == "type")
+        assert PAUSE_INDICATOR not in typed
+        assert typed == "wort0 wort1 wort2 wort3 wort4 wort5 wort6 wort7", (
+            typer.calls
+        )
+
+
 class TestAudioDumpModes:
     """STUFE 1: audio_dump_mode steuert den WAV-Dump (sync|async|off)."""
 
@@ -806,8 +935,10 @@ class TestAudioDumpModes:
         ctrl, dump = self._ctrl(tmp_path, "async")
         self._run(ctrl)
         # Der async-Thread darf den Prozess nicht blockieren; bis zum
-        # Testende muss die Datei aber geschrieben sein (knapp bemessen).
-        deadline = time.monotonic() + 2.0
+        # Testende muss die Datei aber geschrieben sein. Deadline 5 s:
+        # unter nice -n 19/Last darf ein Scheduler-Slot laenger brauchen
+        # (frueher 2 s -> sporadischer Last-Flaker).
+        deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and not dump.exists():
             time.sleep(0.01)
         assert dump.exists(), "async-Dump fehlt"

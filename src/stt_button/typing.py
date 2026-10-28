@@ -29,6 +29,14 @@ BACKSPACE_BATCH = 20
 #: Timeout schliessen beide Angriffspfade.
 COMMAND_TIMEOUT_S = 2.0
 
+#: Pausen-Indikator (STUFE 4): wird GENAU EINMAL getippt, wenn die Live-ASR
+#: wegen ``live_asr_until_s`` abschaltet ("ich hoere noch zu, schreibe aber
+#: gerade nicht mit"). Bewusst das EINE Unicode-Zeichen U+2026 statt drei
+#: ASCII-Punkten: es liegt im aktiven Layout de/nodeadkeys auf Level 3 der
+#: Punkt-Taste (AltGr+., keysym U2026) und braucht deshalb beim Entfernen
+#: nur EINEN Backspace statt drei.
+PAUSE_INDICATOR = "\u2026"
+
 
 def _capslock_leds() -> dict[str, str]:
     """Liest den CapsLock-LED-Zustand pro Device (Diagnose).
@@ -528,6 +536,9 @@ class DeltaTyper:
         self._live_typing_mode = live_typing_mode
         self._last_text = ""
         self._last_committed = 0
+        # STUFE 4: Pausen-Indikator bereits getippt? Wird nur in
+        # show_paused() gesetzt und nur in reset() zurueckgenommen.
+        self._pause_shown = False
 
     def _trace(self, point: str) -> None:
         """Debug-Messpunkt der Finalisierung (nur bei latency_trace)."""
@@ -541,9 +552,40 @@ class DeltaTyper:
         return self._last_text
 
     def reset(self) -> None:
-        """Vergisst den bisherigen Zustand (z.B. nach einer neuen Aufnahme)."""
+        """Vergisst den bisherigen Zustand (z.B. nach einer neuen Aufnahme).
+
+        Setzt auch die Pausen-Indikator-Markierung zurueck: die naechste
+        Aufnahme beginnt sauber (der Indikator der vorherigen Aufnahme bleibt
+        ggf. physisch am Cursor stehen - abort() tippt bewusst nichts).
+        """
         self._last_text = ""
         self._last_committed = 0
+        self._pause_shown = False
+
+    def show_paused(self) -> None:
+        """Tippt den Pausen-Indikator GENAU EINMAL ("ich hoere noch zu").
+
+        Aufgerufen vom Controller, wenn die Live-ASR wegen des
+        ``live_asr_until_s``-Limits abschaltet. Der Indikator wird als
+        ECHTER getippter Stand gefuehrt (``_last_text`` wird verlaengert),
+        damit ihn die bestehende finalize()-Differenz automatisch wieder
+        entfernt (to_remove == len(PAUSE_INDICATOR) == 1 Backspace):
+        Backspace loescht in der Ziel-App genau einen Codepoint.
+
+        Ist der finale Text leer (Modell-Ausfall), bleibt der Indikator
+        bewusst stehen (ehrlicher Zustand). Wird die Aufnahme ABGEBROCHEN,
+        nachdem der Indikator getippt wurde, bleibt er ebenfalls am
+        Cursor - abort() tippt grundsaetzlich nichts (kein Sonderfall).
+
+        Erneute Aufrufe sind No-Ops: der Indikator wird pro Aufnahme
+        genau einmal getippt (ein einziger type_text-Aufruf, kein
+        Unterbuchstaben-Timing).
+        """
+        if self._pause_shown:
+            return
+        self._typer.type_text(PAUSE_INDICATOR)
+        self._last_text += PAUSE_INDICATOR
+        self._pause_shown = True
 
     def update(self, text: str, committed_len: int = 0, *, force_revision: bool = False) -> None:
         """Gibt die Differenz zwischen dem letzten und dem neuen Text aus.

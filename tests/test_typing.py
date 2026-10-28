@@ -536,6 +536,116 @@ class TestCommittedLiveMode:
 
 
 
+class TestPauseIndicator:
+    """STUFE 4: Pausen-Indikator, wenn die Live-ASR wegen des Limits abschaltet.
+
+    ``show_paused()`` tippt den Indikator (``PAUSE_INDICATOR``) GENAU EINMAL
+    als echten getippten Stand (``_last_text`` wird verlaengert), sodass
+    die bestehende finalize()-Differenz ihn automatisch wieder entfernt.
+    """
+
+    def test_show_paused_types_indicator_exactly_once(self) -> None:
+        """(1) Indikator genau einmal tippen, erneuter Aufruf ist No-Op."""
+        from stt_button.typing import PAUSE_INDICATOR
+
+        t = FakeTyper()
+        d = DeltaTyper(t, append_space=False)
+        d.update("Hallo Welt")
+        t.calls.clear()
+        d.show_paused()
+        d.show_paused()  # idempotent: kein Doppeltippen
+        assert t.calls == [("type", PAUSE_INDICATOR)], t.calls
+        # Ein einzelnes Zeichen (U+2026) statt drei ASCII-Punkten.
+        assert len(PAUSE_INDICATOR) == 1
+
+    def test_finalize_removes_indicator_and_pastes_suffix(self) -> None:
+        """(2) finalize: Diff entfernt den Indikator (1 Backspace), Suffix ohne Rest."""
+        from stt_button.typing import PAUSE_INDICATOR
+
+        t = FakeTyper()
+        pastes: list[str] = []
+
+        class Recorder:
+            def paste(self, text: str) -> None:
+                pastes.append(text)
+
+        d = DeltaTyper(t, append_space=False, final_paster=Recorder())
+        d.update("Hallo Welt", committed_len=0)  # Modus 'full'
+        d.show_paused()
+        t.calls.clear()
+        d.finalize("Hallo Welt und mehr")
+        # Nur der Indikator (1 Zeichen U+2026) wird zurueckgenommen:
+        assert t.calls == [("backspace", str(len(PAUSE_INDICATOR)))], t.calls
+        assert pastes == [" und mehr"]
+        assert all(PAUSE_INDICATOR not in p for p in pastes)
+
+    def test_finalize_without_paster_types_suffix_after_backspace(self) -> None:
+        """(2b) Ohne final_paster: Backspace(1), dann Suffix zeichenweise tippen."""
+        from stt_button.typing import PAUSE_INDICATOR
+
+        t = FakeTyper()
+        d = DeltaTyper(t, append_space=False)
+        d.update("Hallo Welt")
+        d.show_paused()
+        t.calls.clear()
+        d.finalize("Hallo Welt und mehr")
+        assert t.calls == [
+            ("backspace", str(len(PAUSE_INDICATOR))),
+            ("type", " und mehr"),
+        ], t.calls
+
+    def test_finalize_empty_keeps_indicator(self) -> None:
+        """(3) Leerer final_text: Indikator bleibt stehen, keine Ausgabe."""
+        from stt_button.typing import PAUSE_INDICATOR
+
+        t = FakeTyper()
+        d = DeltaTyper(t, append_space=False)
+        d.update("Hallo Welt")
+        d.show_paused()
+        t.calls.clear()
+        d.finalize("")
+        assert t.calls == [], t.calls
+        # Ehrlicher Zustand: Indikator bleibt am Cursor (und im Stand).
+        assert d.last_text.endswith(PAUSE_INDICATOR)
+
+    def test_reset_clears_pause_state(self) -> None:
+        """(4) reset() loescht die Indikator-Markierung (naechste Aufnahme sauber)."""
+        from stt_button.typing import PAUSE_INDICATOR
+
+        t = FakeTyper()
+        d = DeltaTyper(t, append_space=False)
+        d.show_paused()
+        d.reset()
+        t.calls.clear()
+        d.show_paused()
+        assert t.calls == [("type", PAUSE_INDICATOR)], t.calls
+
+    def test_committed_mode_same_mechanics(self) -> None:
+        """(6) live_typing_mode='committed': gleiche Mechanik, 1 Backspace."""
+        from stt_button.typing import PAUSE_INDICATOR
+
+        t = FakeTyper()
+        pastes: list[str] = []
+
+        class Recorder:
+            def paste(self, text: str) -> None:
+                pastes.append(text)
+
+        d = DeltaTyper(
+            t, append_space=False, final_paster=Recorder(),
+            live_typing_mode="committed",
+        )
+        d.update("Hallo Welt und", committed_len=10)
+        t.calls.clear()
+        d.show_paused()
+        t.calls.clear()
+        d.finalize("Hallo Welt und mehr")
+        assert t.calls == [("backspace", str(len(PAUSE_INDICATOR)))], t.calls
+        # Der Indikator haengt direkt an "Hallo Welt" (kein Leerzeichen
+        # dazwischen) -> gemeinsamer Praefix leer, ganzes Suffix gepastet.
+        assert pastes == [" und mehr"]
+
+
 class TestReset:
     def test_reset_clears_state(self) -> None:
         t = FakeTyper()

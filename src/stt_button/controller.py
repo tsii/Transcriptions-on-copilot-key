@@ -286,6 +286,18 @@ class PushToTalkController:
             log.info("Livetick verwerfen: Aufnahme bereits abgeschlossen")
             return
 
+        # STUFE 4 (Pausen-Indikator): Meldet der Transkriber, dass die
+        # Live-ASR das live_asr_until_s-Limit erreicht hat, tippt der
+        # DeltaTyper GENAU EINMAL den Indikator ("ich hoere noch zu,
+        # schreibe aber gerade nicht mit"). finalize() entfernt ihn ueber
+        # die normale Differenz wieder. Nur StreamTranscriber hat ein
+        # Live-Limit (windowed/buffered/Fakes nicht) -> getattr-Guard.
+        # Mit live_asr_until_s=0.0 (Default) wird NIE gemeldet.
+        take_live_paused = getattr(transcriber, "take_live_paused", None)
+        if take_live_paused is not None and take_live_paused():
+            self._trace("live paused")
+            self._delta_typer.show_paused()
+
         if result is not None:
             self._trace("live typing start")
             self._delta_typer.update(result.text, result.committed_len)

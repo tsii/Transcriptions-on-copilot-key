@@ -513,6 +513,75 @@ class TestLiveAsrUntilLimit:
             assert t.maybe_transcribe() is not None
 
 
+class TestLivePausedSignal:
+    """STUFE 4: Limit-Erreichung genau einmal melden (take_live_paused).
+
+    Signatur (minimal, dokumentiert): ``take_live_paused() -> bool`` —
+    liefert ``True`` genau einmal, nachdem ``maybe_transcribe()`` erstmals
+    das Live-Limit erreicht hat (nur bei ``live_asr_until_s > 0``), und
+    konsumiert die Meldung. Weitere Aufrufe liefern ``False`` bis ein
+    ``reset()`` + erneutes Limit-Erreichen folgt.
+    """
+
+    def test_pending_true_exactly_once_after_limit(self) -> None:
+        """(5a) Nach dem Limit genau EINE Meldung, spaeter keine mehr."""
+        engine = FakeEngine(["Hallo Welt"])
+        t = StreamTranscriber(
+            engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0
+        )
+        t.feed(audio(0.5))
+        assert t.maybe_transcribe() is not None
+        assert t.take_live_paused() is False  # Limit noch nicht erreicht
+        t.feed(audio(1.0))  # 1.5s Puffer > 1.0s Limit
+        assert t.maybe_transcribe() is None
+        assert t.take_live_paused() is True
+        # Weitere Ticks ueber dem Limit melden NICHTS Neues mehr:
+        t.feed(audio(1.0))
+        assert t.maybe_transcribe() is None
+        assert t.take_live_paused() is False
+
+    def test_below_limit_never_pending(self) -> None:
+        """(5b) Unter dem Limit: keine Meldung, Ticks laufen normal."""
+        engine = FakeEngine(["Hallo Welt", "Hallo Welt und"])
+        t = StreamTranscriber(
+            engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=10.0
+        )
+        t.feed(audio(0.5))
+        assert t.maybe_transcribe() is not None
+        t.feed(audio(0.5))
+        assert t.maybe_transcribe() is not None
+        assert t.take_live_paused() is False
+
+    def test_default_zero_never_pending(self) -> None:
+        """(7/5c) Default live_asr_until_s=0.0: NIE eine Limit-Meldung."""
+        engine = FakeEngine(["Hallo Welt", "Hallo Welt und", "Hallo Welt und mehr"])
+        t = StreamTranscriber(
+            engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=0.0
+        )
+        for _ in range(3):
+            t.feed(audio(0.5))
+            assert t.maybe_transcribe() is not None
+            assert t.take_live_paused() is False
+
+    def test_reset_rearms_the_signal(self) -> None:
+        """(5d) reset() setzt das Signal zurueck: naechstes Limit meldet wieder."""
+        engine = FakeEngine(["eins", "zwei"])
+        t = StreamTranscriber(
+            engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0
+        )
+        t.feed(audio(0.5))
+        t.maybe_transcribe()
+        t.feed(audio(1.0))
+        assert t.maybe_transcribe() is None
+        assert t.take_live_paused() is True
+        t.reset()
+        t.feed(audio(0.5))
+        t.maybe_transcribe()
+        t.feed(audio(1.0))
+        assert t.maybe_transcribe() is None
+        assert t.take_live_paused() is True  # wieder genau eine Meldung
+
+
 class TestFinalizeCached:
     """STUFE 1: finalize_mode="cached" spart den doppelten Engine-Call.
 
