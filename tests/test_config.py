@@ -221,3 +221,44 @@ class TestCapslockAutocorrect:
 
     def test_config_has_led_inverted_attribute_default_true(self) -> None:
         assert Config().capslock_led_inverted is True
+
+
+class TestLatencyStage1Keys:
+    """STUFE 1: finalize_mode / audio_dump_mode / latency_trace."""
+
+    def test_defaults_are_previous_behaviour(self) -> None:
+        """Ohne Config gilt genau das bisherige Verhalten."""
+        cfg = Config()
+        assert cfg.finalize_mode == "full"
+        assert cfg.audio_dump_mode == "sync"
+        assert cfg.latency_trace is False
+
+    def test_parse_all_valid_values(self, tmp_path: Path) -> None:
+        p = write_config(
+            tmp_path,
+            """
+            finalize_mode = "cached"
+            audio_dump_mode = "async"
+            latency_trace = true
+            """,
+        )
+        cfg = load_config(p)
+        assert cfg.finalize_mode == "cached"
+        assert cfg.audio_dump_mode == "async"
+        assert cfg.latency_trace is True
+
+    @pytest.mark.parametrize("mode", ["instant", "volldampf"])
+    def test_invalid_finalize_mode_is_rejected(self, tmp_path: Path, mode: str) -> None:
+        p = write_config(tmp_path, f'finalize_mode = "{mode}"\n')
+        with pytest.raises(ConfigError, match="finalize_mode"):
+            load_config(p)
+
+    def test_invalid_audio_dump_mode_is_rejected(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, 'audio_dump_mode = "sofort"\n')
+        with pytest.raises(ConfigError, match="audio_dump_mode"):
+            load_config(p)
+
+    def test_wrong_type_is_rejected(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, "latency_trace = 1\n")
+        with pytest.raises(ConfigError, match="latency_trace"):
+            load_config(p)

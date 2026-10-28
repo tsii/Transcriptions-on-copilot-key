@@ -400,3 +400,111 @@ class TestTokenBudget:
         from stt_button.asr import _token_budget
         # Deckel gegen Ausreisser
         assert _token_budget(10000.0) <= 4096
+
+
+class TestFinalizeCached:
+    """STUFE 1: finalize_mode="cached" spart den doppelten Engine-Call.
+
+    War der Puffer seit dem letzten ERFOLGREICHEN Live-Tick unveraendert,
+    ist das Finale ergebnislos: der Text kommt aus dem Cache, die Engine
+    wird nicht noch einmal gerufen (identische Eingabe -> identische
+    Ausgabe, da die Engine-Determinismus-Parameter fest sind).
+    """
+
+    def test_finalize_cached_unchanged_buffer_skips_engine(self) -> None:
+        engine = FakeEngine(["Hallo Welt"])
+        t = StreamTranscriber(
+            engine, interval_s=0.1, min_audio_s=0.1, finalize_mode="cached"
+        )
+        t.feed(audio(1.0))
+        live = t.maybe_transcribe()
+        assert live is not None
+        calls_before = len(engine.calls)
+
+        result = t.finalize()
+
+        assert len(engine.calls) == calls_before, (
+            "cached-Finalize rief die Engine trotz unveraendertem Puffer"
+        )
+        assert result.text == "Hallo Welt"
+        # Volle Korrekturfaehigkeit bleibt erhalten (wie beim vollen Pfad).
+        assert result.committed_len == 0
+
+    def test_cached_finalize_does_not_add_agreement(self) -> None:
+        """Die Agreement-History darf durch den Cache-Pfad nicht wachsen."""
+        engine = FakeEngine(["Hallo Welt", "Hallo Welt"])
+        t = StreamTranscriber(
+            engine, interval_s=0.1, min_audio_s=0.1, finalize_mode="cached"
+        )
+        t.feed(audio(0.5))
+        t.maybe_transcribe()
+        t.feed(audio(0.5))
+        t.maybe_transcribe()
+        history_before = list(t._history)
+
+        t.finalize()
+
+        assert t._history == history_before, (
+            "cached-Finalize veraendert die Agreement-History"
+        )
+
+    def test_cached_finalize_invalidated_by_feed_and_reset(self) -> None:
+        """Neues feed() oder reset() entwertet den Cache -> voller Engine-Call."""
+        engine = FakeEngine(["Hallo", "Hallo Welt"])
+        t = StreamTranscriber(
+            engine, interval_s=0.1, min_audio_s=0.1, finalize_mode="cached"
+        )
+        t.feed(audio(1.0))
+        t.maybe_transcribe()
+        # Neues Audio seit dem letzten erfolgreichen Tick -> Cache ungueltig.
+        t.feed(audio(0.5))
+        calls_before = len(engine.calls)
+        result = t.finalize()
+        assert len(engine.calls) == calls_before + 1
+        assert result.text == "Hallo Welt"
+
+        # Nach reset() gibt es keinen gueltigen Cache mehr.
+        engine2 = FakeEngine(["Neustext"])
+        t2 = StreamTranscriber(
+            engine2, interval_s=0.1, min_audio_s=0.1, finalize_mode="cached"
+        )
+        t2.feed(audio(1.0))
+        t2.maybe_transcribe()
+        t2.reset()
+        t2.feed(audio(1.0))
+        assert t2.finalize() is not None
+        assert len(engine2.calls) == 2  # 1 Live + 1 final (kein Treffer)
+
+    def test_cached_finalize_falls_back_after_failed_tick(self) -> None:
+        """Exception im Live-Tick setzt keinen Abgeschlossen-Vermerk."""
+        class FlakyEngine:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def transcribe(self, data, initial_prompt=""):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError(" Modell-Boom")
+                return TranscriptionResult(text="spaeter Text")
+
+        engine = FlakyEngine()
+        t = StreamTranscriber(
+            engine, interval_s=0.1, min_audio_s=0.1, finalize_mode="cached"
+        )
+        t.feed(audio(1.0))
+        with pytest.raises(RuntimeError):
+            t.maybe_transcribe()
+        # Kein erfolgreicher Tick -> Finalize MUSS die Engine rufen.
+        result = t.finalize()
+        assert engine.calls == 2
+        assert result.text == "spaeter Text"
+
+    def test_default_finalize_mode_is_full(self) -> None:
+        """Default bleibt "full": Finalize transkribiert wie bisher neu."""
+        engine = FakeEngine(["Hallo Welt"])
+        t = StreamTranscriber(engine, interval_s=0.1, min_audio_s=0.1)
+        t.feed(audio(1.0))
+        t.maybe_transcribe()
+        calls_before = len(engine.calls)
+        t.finalize()
+        assert len(engine.calls) == calls_before + 1

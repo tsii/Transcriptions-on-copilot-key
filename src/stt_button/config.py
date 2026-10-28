@@ -22,6 +22,13 @@ VALID_TYPERS = ("wtype", "clipboard", "dotool")
 VALID_BACKENDS = ("whisper", "parakeet", "qwen")
 VALID_STREAMING_MODES = ("windowed", "whole_buffer")
 VALID_PASTE_KEYS = ("ctrl+v", "ctrl+shift+v")
+#: Finalisierungs-Modus: "full" = Puffer neu transkribieren (bewährt),
+#: "cached" = unveraenderten Puffer aus dem letzten erfolgreichen Tick
+#: uebernehmen (spart einen kompletten Engine-Durchlauf).
+VALID_FINALIZE_MODES = ("full", "cached")
+#: WAV-Dump der letzten Aufnahme: "sync" = im Finalizer-Thread (bewährt),
+#: "async" = eigener Thread mit Bytes-Snapshot, "off" = kein Dump.
+VALID_AUDIO_DUMP_MODES = ("sync", "async", "off")
 
 
 class ConfigError(ValueError):
@@ -107,6 +114,19 @@ class Config:
     #: werden vermieden, um Nutzertext nicht zu zerstoeren.
     max_revision_chars: int = 60
 
+    # --- Latenz (STUFE 1) --------------------------------------------------
+    #: "full" (Default): Finalize transkribiert den ganzen Puffer neu.
+    #: "cached": unveraendertes Audio seit dem letzten erfolgreichen Tick
+    #: wird ohne Engine-Call aus dem Cache uebernommen (nur bei
+    #: deterministischen Engines wie Parakeet sinnvoll).
+    finalize_mode: str = "full"
+    #: WAV-Dump der Aufnahme nach /tmp/stt_last.wav: "sync" (Default,
+    #: bisheriges Verhalten), "async" (eigener Thread, kein Blockieren des
+    #: Finalizers) oder "off".
+    audio_dump_mode: str = "sync"
+    #: Loggt Debug-Zeiten an den Latenz-Messpunkten (Release -> Ausgabe).
+    latency_trace: bool = False
+
     def validate(self) -> None:
         """Wirft :class:`ConfigError` bei unbrauchbaren Werten."""
         if self.language not in VALID_LANGUAGES:
@@ -126,6 +146,16 @@ class Config:
             raise ConfigError(
                 f"streaming_mode muss eines von {VALID_STREAMING_MODES} sein, "
                 f"nicht {self.streaming_mode!r}"
+            )
+        if self.finalize_mode not in VALID_FINALIZE_MODES:
+            raise ConfigError(
+                f"finalize_mode muss eines von {VALID_FINALIZE_MODES} sein, "
+                f"nicht {self.finalize_mode!r}"
+            )
+        if self.audio_dump_mode not in VALID_AUDIO_DUMP_MODES:
+            raise ConfigError(
+                f"audio_dump_mode muss eines von {VALID_AUDIO_DUMP_MODES} sein, "
+                f"nicht {self.audio_dump_mode!r}"
             )
         if self.asr_interval_s <= 0:
             raise ConfigError("asr_interval_s muss groesser als 0 sein")

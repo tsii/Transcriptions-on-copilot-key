@@ -650,3 +650,50 @@ beim ersten Tastendruck).
 
 **Wichtig:** Bei Whisper `language` **explizit** setzen, wenn die Sprache bekannt ist —
 die Auto-Erkennung kippt bei gemischtem DE/EN in die falsche Sprache.
+
+## 10. Latenz: Release → Ausgabe (STUFE 1)
+
+Der Betreiber-Messwert war 5–7 s von loslassen bis eingefügtem Text. Zwei
+Ursachen waren strukturell, nicht rechnerisch:
+
+**(A) Ein Lock für alles.** `run_once()` hielt den Controller-`RLock` während
+der kompletten Live-Vollpuffer-Inferenz *und* beim Tippen. Der Release
+(`stop_recording()`) wollte dasselbe Lock und wartete damit die laufende
+Live-Inferenz ab, bevor er die Audioquelle überhaupt stoppen konnte.
+
+Neu: zwei Locks mit klarer Hierarchie (`_exec_lock` → `_lock`).
+
+* `_lock` (RLock): nur kurze Zustandswechsel — `state`, `_key_down`,
+  `_source`/`_transcriber`-Zeiger, Zähler. Wird nie während einer Inferenz gehalten.
+* `_exec_lock` (Lock): serialisiert die Ausführungskette Transcriber + DeltaTyper,
+  also Live-Tick **und** Finalisierung. Der Key-Thread nimmt dieses Lock nie.
+
+Damit gilt: Release → `state=FINALIZING` (kurz unter `_lock`) → `_finish()`
+**ohne** beide Locks → Capture-Thread enden, `source.stop()` sofort. Die
+Audioquelle stoppt in < 0,3 s, auch mitten in einer Live-Inferenz.
+Reihenfolge "Queue-drain vor `stop()`-Rest" (RC-B2/B3) bleibt erhalten: beide
+Feeds passieren im Finalizer unter `_exec_lock`, also nach dem letzten
+Live-Tick am selben Transcriber.
+
+**(B) Doppelte Inferenz beim Finale.** `finalize()` transkribierte den ganzen
+Puffer neu, obwohl der letzte Live-Tick genau denselben Puffer schon
+erfolgreich transkribiert hatte — bei festliegenden Decode-Parametern
+(temperature=0, beam_size=1) ein identisches Ergebnis für nichts.
+`finalize_mode = "cached"` überspringt den Engine-Call, wenn der Puffer seit
+der letzten **erfolgreichen** Inferenz unverändert ist (gleiche Byte-Länge,
+kein `feed()`/`reset()` seither). Der Vermerk wird erst *nach* erfolgreichem
+Durchlauf gesetzt, ein Exception-Tick entwertet den Cache. Der Cache-Text
+kommt mit `committed_len = 0` (volle Korrekturfähigkeit wie bisher) und rührt
+die Agreement-History nicht an. Default bleibt `"full"`.
+
+**(C) WAV-Dump auf dem kritischen Pfad.** Der Debug-Dump lief synchron vor der
+Finalisierung. `audio_dump_mode` macht ihn konfigurierbar: `"sync"` (Default,
+bisher), `"async"` (Bytes-Snapshot + eigener Thread, nie eine Referenz auf den
+Puffer), `"off"`.
+
+**Messen.** `latency_trace = true` loggt auf Debug-Ebene sechs Messpunkte:
+`stop entered`, `source stopped`, `dump`, `finalize start`, `finalize end`,
+`paste` — jeweils als `latency[<punkt>] +<sekunden>` seit dem Release.
+Anleitung: `journalctl --user -u stt-button -f` (bzw. manuellen Lauf mit
+`-v`) beobachten, Diktat sprechen, loslassen, die Differenz
+`stop entered` → `paste` ist die gespürte Latenz.

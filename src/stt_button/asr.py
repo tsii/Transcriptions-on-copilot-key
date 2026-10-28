@@ -374,6 +374,14 @@ class StreamTranscriber:
     min_audio_s: float = 0.8
     sample_rate: int = DEFAULT_SAMPLE_RATE
     commit_agreements: int = 2
+    #: Finalisierungs-Modus:
+    #: ``"full"`` (Default, bisheriges Verhalten): Finalize transkribiert
+    #: den kompletten Puffer neu.
+    #: ``"cached"``: war der Puffer seit der letzten ERFOLGREICHEN Inferenz
+    #: unveraendert (gleiche Laenge, kein feed()/reset() seitdem), liefert
+    #: Finalize den Cache-Text ohne Engine-Call. Nur fuer deterministische
+    #: Engines sinnvoll (Parakeet: festliegende Decode-Parameter).
+    finalize_mode: str = "full"
     #: Optionales VAD-Gate (z.B. :class:`~stt_button.vad.SileroVadGate`).
     #: Meldet es im NEUEN Audio-Bereich keine Sprache, wird nicht transkribiert
     #: (verhindert Halluzinationen auf Stille -> Phantom-Backspaces).
@@ -388,6 +396,18 @@ class StreamTranscriber:
     _last_text: str = field(default="", init=False, repr=False)
     #: Audio-Stand (Sekunden), zu dem das VAD zuletzt befragt wurde.
     _vad_checked_at: float = field(default=0.0, init=False, repr=False)
+    # --- Cache fuer finalize_mode="cached" -------------------------------
+    #: Puffergroesse (Bytes) nach der letzten ERFOLGREICHEN Inferenz.
+    _last_completed_nbytes: int = field(default=-1, init=False, repr=False)
+    #: Text der letzten ERFOLGREICHEN Inferenz.
+    _last_completed_text: str = field(default="", init=False, repr=False)
+    #: True nur nach erfolgreichem Engine-Durchlauf (nicht schon vor dem
+    #: Aufruf) - der Abgeschlossen-Nachweis fuer den Cache.
+    _last_completed_ok: bool = field(default=False, init=False, repr=False)
+    #: Zaehlt jedes nicht-leere feed(); entwertet den Cache.
+    _feed_epoch: int = field(default=0, init=False, repr=False)
+    #: feed-Zaehler-Stand zum Zeitpunkt der letzten erfolgreichen Inferenz.
+    _completed_feed_epoch: int = field(default=-1, init=False, repr=False)
 
     # ------------------------------------------------------------------
     # Zustand
@@ -416,7 +436,7 @@ class StreamTranscriber:
     # Steuerung
     # ------------------------------------------------------------------
     def reset(self) -> None:
-        """Verwirft den Puffer und den Commit-Zustand."""
+        """Verwirft den Puffer und den Commit-Zustand (entwertet den Cache)."""
         self._buffer.clear()
         self._last_transcribed_at = 0.0
         self._has_transcribed = False
@@ -425,11 +445,20 @@ class StreamTranscriber:
         self._history = []
         self._last_text = ""
         self._vad_checked_at = 0.0
+        self._invalidate_cache()
+
+    def _invalidate_cache(self) -> None:
+        """Entwertet den Finalize-Cache (nach reset() oder Fehlerfall)."""
+        self._last_completed_nbytes = -1
+        self._last_completed_text = ""
+        self._last_completed_ok = False
+        self._completed_feed_epoch = -1
 
     def feed(self, chunk: bytes) -> None:
-        """Legt Audiodaten in den Puffer."""
+        """Legt Audiodaten in den Puffer und entwertet den Finalize-Cache."""
         if chunk:
             self._buffer.extend(chunk)
+            self._feed_epoch += 1
 
     def maybe_transcribe(self) -> TranscriptionResult | None:
         """Transkribiert, wenn genug neue Audiodaten vorliegen.
@@ -480,7 +509,27 @@ class StreamTranscriber:
 
         Das Ergebnis ist bewusst voll korrigierend (``committed_len=0``):
         das Modell darf sein letztes Wort noch korrigieren.
+
+        Mit ``finalize_mode="cached"`` entfaellt der Engine-Aufruf, wenn
+        der Puffer seit der letzten ERFOLGREICHEN Inferenz unveraendert ist
+        (gleiche Bytes-Laenge, kein feed()/reset() seitdem): bei den
+        festliegenden Decode-Parameter (temperature=0, beam=1) waere die
+        Neutranskription ergebnislos. Der Text kommt aus dem Cache, die
+        Agreement-History bleibt unveraendert.
         """
+        if (
+            self.finalize_mode == "cached"
+            and self._last_completed_ok
+            and len(self._buffer) == self._last_completed_nbytes
+            and self._feed_epoch == self._completed_feed_epoch
+        ):
+            log.debug(
+                "Finalize aus Cache uebernommen (%d Bytes, kein Engine-Call)",
+                len(self._buffer),
+            )
+            return TranscriptionResult(
+                text=self._last_completed_text, committed_len=0
+            )
         result = self._transcribe()
         return TranscriptionResult(text=result.text, committed_len=0)
 
@@ -510,11 +559,23 @@ class StreamTranscriber:
         self._has_transcribed = True
         data = bytes(self._buffer)
 
+        # Abgeschlossen-Nachweis zuruecksetzen: erst NACH erfolgreichem
+        # Durchlauf wird er gesetzt - ein Exception werfender Tick darf
+        # den Cache NICHT gueltig setzen.
+        self._invalidate_cache()
+
         result = self.engine.transcribe(data, initial_prompt=self._committed_text)
         text = result.text.strip()
         self._last_text = text
 
         self._update_commit(text)
+
+        # Abgeschlossen-Nachweis ERST nach erfolgreichem Durchlauf; wirft
+        # der Engine-Aufruf eine Exception, bleibt ok=False (Cache ungueltig).
+        self._last_completed_nbytes = len(data)
+        self._last_completed_text = text
+        self._last_completed_ok = True
+        self._completed_feed_epoch = self._feed_epoch
 
         log.debug(
             "Transkription %.1fs Audio -> %r (committed=%d)",

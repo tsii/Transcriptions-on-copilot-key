@@ -309,6 +309,11 @@ class TestStreaming:
         for _ in range(3):
             ctrl.run_once()
         ctrl.stop_recording()
+        # Die Finalisierung laeuft bewusst im Hintergrund-Thread; auf deren
+        # Abschluss warten (begrenzt), statt aufThread-Scheduling zu wetten.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and ctrl.state != ControllerState.IDLE:
+            time.sleep(0.005)
         assert any(c[0] == "key" and c[1] == "space" for c in ctx["typer"].calls)
 
 
@@ -484,6 +489,204 @@ class TestFinalizePasteLockHierarchy:
         assert ctrl._key_down is False
 
 
+class RestAudioSource:
+    """Quelle, die beim stop() zusaetzlich den Pipe-Rest ``rest`` liefert.
+
+    Der Capture-Thread liest nur ``chunks``; die letzten Bytes des Pipes
+    (``rest``) erscheinen erst beim Drain in ``stop()`` - wie bei pw-record.
+    """
+
+    def __init__(self, chunks: list[bytes], rest: bytes) -> None:
+        self.chunks = list(chunks)
+        self.rest = rest
+        self.started = 0
+        self.stopped = 0
+
+    def start(self) -> None:
+        self.started += 1
+
+    def stop(self) -> bytes:
+        self.stopped += 1
+        out, self.chunks = b"".join(self.chunks), []
+        return out + self.rest
+
+    def read(self, block: bool = True) -> bytes:
+        if self.chunks:
+            return self.chunks.pop(0)
+        return b""
+
+
+class TestLatencyLockDecoupling:
+    """STUFE 1: Release darf nicht auf laufender Live-Inferenz warten.
+
+    Der Controller-Lock ``_lock`` schuetzt nur noch kurze Zustandswechsel;
+    die Live-/Final-Kette laeuft unter ``_exec_lock``. Dadurch stoppt ein
+    Release die Audioquelle sofort, auch wenn gerade eine mehrsekundige
+    Live-Inferenz laeuft.
+    """
+
+    def test_release_during_live_asr_stops_audio_before_inference_returns(
+        self,
+    ) -> None:
+        """Release bei blockierender Live-Inferenz: Audio stoppt < 0,3s."""
+        engine = BlockingEngine()
+        source = FakeAudioSource([b"\x00" * 16000] * 8)
+        typer = FakeTyper()
+        ctrl = PushToTalkController(
+            config=None,
+            source_factory=lambda: source,
+            engine=engine,
+            delta_typer=DeltaTyper(typer, append_space=True),
+            min_audio_s=0.1,
+            asr_interval_s=0.1,
+        )
+        ctrl.start_recording()
+        ticker = threading.Thread(target=ctrl.run_once, daemon=True)
+        ticker.start()
+        # Live-Inferenz laeuft (Engine blockiert bis zu 2s im transcribe()).
+        assert engine.entered.wait(timeout=5.0), "Live-Inferenz started nicht"
+
+        t0 = time.monotonic()
+        ctrl.stop_recording()
+        elapsed = time.monotonic() - t0
+
+        # Kern der STUFE 1: Die Quelle ist gestoppt, obwohl die Engine noch
+        # belegt ist, und stop_recording kehrte sofort zurueck.
+        assert not engine.release.is_set(), "Engine wurde vor Release freigegeben"
+        assert source.stopped == 1, "Audioquelle beim Release nicht gestoppt"
+        assert elapsed < 0.3, (
+            f"stop_recording blockierte {elapsed:.2f}s an der Live-Inferenz"
+        )
+
+        engine.release.set()
+        ticker.join(timeout=5.0)
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and ctrl.state != ControllerState.IDLE:
+            time.sleep(0.005)
+        assert ctrl.state == ControllerState.IDLE
+
+    def test_live_tick_and_finalize_are_serialized(self) -> None:
+        """Live-Tick und Finalize rufen die Engine nie gleichzeitig auf."""
+        engine = ConcurrencyCountingEngine()
+        source = FakeAudioSource([b"\x00" * 16000] * 8)
+        typer = FakeTyper()
+        delta = DeltaTyper(typer, append_space=True)
+        ctrl = PushToTalkController(
+            config=None,
+            source_factory=lambda: source,
+            engine=engine,
+            delta_typer=delta,
+            min_audio_s=0.1,
+            asr_interval_s=0.1,
+        )
+        ctrl.start_recording()
+        ticker = threading.Thread(
+            target=lambda: [
+                ctrl.run_once()
+                for _ in iter(lambda: ctrl.state == ControllerState.RECORDING, False)
+            ],
+            daemon=True,
+        )
+        ticker.start()
+        time.sleep(0.3)  # mehrere Live-Ticks
+        ctrl.stop_recording()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and ctrl.state != ControllerState.IDLE:
+            time.sleep(0.005)
+        ticker.join(timeout=5.0)
+
+        assert engine.max_active == 1, (
+            f"Engine {engine.max_active}x gleichzeitig aufgerufen - "
+            "_exec_lock serialisiert Live/Final nicht"
+        )
+        # Die finale Ausgabe stammt aus dem LETZTEN Engine-Aufruf (finalize),
+        # nicht aus einem spaeter fertig gewordenen Live-Tick.
+        assert delta.last_text == engine.last_text
+
+    def test_release_feeds_exactly_capture_queue_then_source_rest(self) -> None:
+        """RC-Reihenfolge: alle Queue-Chunks, dann der stop()-Rest - exakt einmal."""
+        recorder = RecordingTranscriber()
+        chunks = [bytes([i]) * 16000 for i in range(6)]
+        source = RestAudioSource(chunks, rest=b"REST")
+        ctrl = PushToTalkController(
+            config=None,
+            source_factory=lambda: source,
+            engine=FakeEngine(),
+            delta_typer=DeltaTyper(FakeTyper(), append_space=True),
+            transcriber_factory=lambda *a, **kw: recorder,
+        )
+        ctrl.start_recording()
+        time.sleep(0.3)  # Capture-Thread fuellt die Queue, KEIN run_once
+        ctrl.stop_recording()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and ctrl.state != ControllerState.IDLE:
+            time.sleep(0.005)
+
+        assert b"".join(recorder.feeds) == b"".join(chunks) + b"REST", (
+            "Queue-Chunks und stop()-Rest nicht exakt einmal in richtiger "
+            "Reihenfolge gefuettert"
+        )
+
+
+class BlockingEngine:
+    """Engine, deren transcribe() auf ein Event wartet (Live-Inferenz-Fake).
+
+    Die Wartezeit ist bewusst begrenzt (2s), damit ein fehlschlagender
+    Test (alt: stop_recording blockiert am Lock) nicht endlos haengt.
+    """
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.calls = 0
+
+    def transcribe(self, data: bytes, initial_prompt: str = "") -> TranscriptionResult:
+        self.calls += 1
+        self.entered.set()
+        self.release.wait(timeout=2.0)
+        words = max(1, len(data) // 16000)
+        return TranscriptionResult(text=" ".join(f"w{i}" for i in range(words)))
+
+
+class ConcurrencyCountingEngine:
+    """Engine, die Gleichzeitigkeit der Aufruefe zaehlt."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.active = 0
+        self.max_active = 0
+        self.last_text = ""
+
+    def transcribe(self, data: bytes, initial_prompt: str = "") -> TranscriptionResult:
+        self.calls += 1
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        time.sleep(0.05)
+        text = f"call{self.calls}"
+        self.active -= 1
+        self.last_text = text
+        return TranscriptionResult(text=text)
+
+
+class RecordingTranscriber:
+    """StreamTranscriber-Fake, der jedes feed()-Chunk protokolliert."""
+
+    def __init__(self) -> None:
+        self.feeds: list[bytes] = []
+        self._buffer = bytearray()
+        self.sample_rate = 16000
+
+    def feed(self, chunk: bytes) -> None:
+        self.feeds.append(bytes(chunk))
+        self._buffer.extend(chunk)
+
+    def maybe_transcribe(self):
+        return None
+
+    def finalize(self):
+        return TranscriptionResult(text="fertig")
+
+
 class InstantTranscriber:
     """StreamTranscriber-Fake mit sofortiger, deterministischer Finalisierung."""
 
@@ -499,3 +702,114 @@ class InstantTranscriber:
 
     def finalize(self):
         return TranscriptionResult(text="fertig")
+
+
+class TestAudioDumpModes:
+    """STUFE 1: audio_dump_mode steuert den WAV-Dump (sync|async|off)."""
+
+    def _ctrl(self, tmp_path, mode: str):
+        from stt_button.config import Config
+
+        recorder = RecordingTranscriber()
+        source = RestAudioSource([b"\x00" * 16000] * 4, rest=b"")
+        dump = tmp_path / "last.wav"
+        ctrl = PushToTalkController(
+            config=Config(audio_dump_mode=mode),
+            source_factory=lambda: source,
+            engine=FakeEngine(),
+            delta_typer=DeltaTyper(FakeTyper(), append_space=True),
+            transcriber_factory=lambda *a, **kw: recorder,
+            dump_path=str(dump),
+        )
+        return ctrl, dump
+
+    def _run(self, ctrl) -> None:
+        ctrl.start_recording()
+        time.sleep(0.2)  # Capture-Thread fuellt die Queue
+        ctrl.stop_recording()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and ctrl.state != ControllerState.IDLE:
+            time.sleep(0.005)
+
+    def test_sync_default_writes_wav_before_worker_done(self, tmp_path) -> None:
+        """sync (Default): Dump ist fertig, bevor der Finalizer den Zustand schliesst."""
+        ctrl, dump = self._ctrl(tmp_path, "sync")
+        self._run(ctrl)
+        assert dump.exists(), "sync-Dump fehlt nach Finalisierung"
+        assert dump.read_bytes().startswith(b"RIFF")
+
+    def test_off_writes_no_wav(self, tmp_path) -> None:
+        ctrl, dump = self._ctrl(tmp_path, "off")
+        self._run(ctrl)
+        assert not dump.exists(), "off darf keine WAV-Datei schreiben"
+
+    def test_async_writes_wav_from_snapshot(self, tmp_path) -> None:
+        """async: Dump laeuft im eigenen Thread und schreibt den Snapshot."""
+        ctrl, dump = self._ctrl(tmp_path, "async")
+        self._run(ctrl)
+        # Der async-Thread darf den Prozess nicht blockieren; bis zum
+        # Testende muss die Datei aber geschrieben sein (knapp bemessen).
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not dump.exists():
+            time.sleep(0.01)
+        assert dump.exists(), "async-Dump fehlt"
+        assert dump.read_bytes().startswith(b"RIFF")
+
+
+class TestLatencyTrace:
+    """latency_trace=True loggt die 6 Debug-Messpunkte (Default: aus)."""
+
+    def test_six_measurement_points_logged(self, tmp_path, caplog) -> None:
+        import logging
+
+        from stt_button.config import Config
+
+        with caplog.at_level(logging.DEBUG, logger="stt_button.controller"):
+            recorder = RecordingTranscriber()
+            source = RestAudioSource([b"\x00" * 16000] * 4, rest=b"")
+            ctrl = PushToTalkController(
+                config=Config(latency_trace=True),
+                source_factory=lambda: source,
+                engine=FakeEngine(),
+                delta_typer=DeltaTyper(FakeTyper(), append_space=True),
+                transcriber_factory=lambda *a, **kw: recorder,
+                dump_path=str(tmp_path / "last.wav"),
+            )
+            ctrl.start_recording()
+            time.sleep(0.2)
+            ctrl.stop_recording()
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and ctrl.state != ControllerState.IDLE:
+                time.sleep(0.005)
+
+        logged = [r.getMessage() for r in caplog.records]
+        for point in ("stop entered", "source stopped", "dump",
+                      "finalize start", "finalize end", "paste"):
+            assert any(f"latency[{point}]" in m for m in logged), (
+                f"Messpunkt {point!r} fehlt - geloggt: {logged}"
+            )
+
+    def test_disabled_by_default(self, tmp_path, caplog) -> None:
+        import logging
+
+        from stt_button.config import Config
+
+        with caplog.at_level(logging.DEBUG, logger="stt_button.controller"):
+            recorder = RecordingTranscriber()
+            source = RestAudioSource([b"\x00" * 16000] * 4, rest=b"")
+            ctrl = PushToTalkController(
+                config=Config(),
+                source_factory=lambda: source,
+                engine=FakeEngine(),
+                delta_typer=DeltaTyper(FakeTyper(), append_space=True),
+                transcriber_factory=lambda *a, **kw: recorder,
+                dump_path=str(tmp_path / "last.wav"),
+            )
+            ctrl.start_recording()
+            time.sleep(0.2)
+            ctrl.stop_recording()
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and ctrl.state != ControllerState.IDLE:
+                time.sleep(0.005)
+
+        assert not [r for r in caplog.records if "latency[" in r.getMessage()]

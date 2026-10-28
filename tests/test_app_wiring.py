@@ -97,3 +97,22 @@ class TestTyperWiring:
         app = Application(Config(capslock_autocorrect=True))
         app._build_typer()
         assert created[0].kwargs["capslock_autocorrect"] is True
+
+
+class TestFinalizeModeWiring:
+    """STUFE 1: Application reicht finalize_mode an den StreamTranscriber weiter."""
+
+    def test_finalize_mode_passed_to_transcriber(self, monkeypatch) -> None:
+        _app, controller = _application(
+            monkeypatch, streaming_mode="whole_buffer", finalize_mode="cached"
+        )
+        factory = controller.kwargs["transcriber_factory"]
+        transcriber = factory(engine=object(), interval_s=1.0, min_audio_s=0.8)
+        assert isinstance(transcriber, StreamTranscriber)
+        assert transcriber.finalize_mode == "cached"
+
+    def test_finalize_mode_default_full(self, monkeypatch) -> None:
+        _app, controller = _application(monkeypatch, streaming_mode="whole_buffer")
+        factory = controller.kwargs["transcriber_factory"]
+        transcriber = factory(engine=object(), interval_s=1.0, min_audio_s=0.8)
+        assert transcriber.finalize_mode == "full"

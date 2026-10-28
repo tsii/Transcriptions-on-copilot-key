@@ -49,6 +49,7 @@ class PushToTalkController:
         max_record_s: float = 60.0,
         no_audio_timeout_s: float = 5.0,
         transcriber_factory: Callable[..., StreamTranscriber] | None = None,
+        dump_path: str = "/tmp/stt_last.wav",
     ) -> None:
         self._source_factory = source_factory
         self._engine = engine
@@ -58,6 +59,11 @@ class PushToTalkController:
         self._max_record_s = max_record_s
         self._no_audio_timeout_s = no_audio_timeout_s
         self._transcriber_factory = transcriber_factory or StreamTranscriber
+        # Ziel fuer den Debug-WAV-Dump; Modi aus config.audio_dump_mode.
+        self._dump_path = dump_path
+        self._audio_dump_mode = str(
+            getattr(config, "audio_dump_mode", "sync") or "sync"
+        )
 
         self.state = ControllerState.IDLE
         self._source: AudioSource | None = None
@@ -65,8 +71,18 @@ class PushToTalkController:
         self._started_at = 0.0
         self._last_audio_at = 0.0
         self._total_bytes = 0
-        # Serialisiert Zugriffe aus dem Key-Thread und der ASR-Schleife.
+        # Serialisiert KURZE Zustandswechsel: state, _key_down, _source/
+        # _transcriber-Zeiger, Zaehler. Wird NIEMALS waehrend einer ASR-
+        # Inferenz gehalten - sonst wartet der Release (stop_recording)
+        # auf die laufende Live-Inferenz (Latenz STUFE 1).
         self._lock = threading.RLock()
+        # Serialisiert die Live-/Final-Ausfuehrungskette (Transcriber +
+        # DeltaTyper): der Live-Tick und der Finalizer nehmen dieses Lock,
+        # der Key-Thread NIE. Verschachtelung immer: _exec_lock -> _lock.
+        self._exec_lock = threading.Lock()
+        # Latenz-Messung (config.latency_trace); 0.0 = kein laufender Release.
+        self._latency_trace = bool(getattr(config, "latency_trace", False))
+        self._stop_entered_at = 0.0
         # Audio-Chunks, die der Capture-Thread kontinuierlich einliest.
         self._audio_queue: queue.Queue[bytes] = queue.Queue()
         self._capture_thread: threading.Thread | None = None
@@ -123,6 +139,7 @@ class PushToTalkController:
         self._audio_queue = queue.Queue()
         self._capture_thread = threading.Thread(
             target=self._capture_loop,
+            args=(self._source, self._audio_queue),
             name="audio-capture",
             daemon=True,
         )
@@ -136,12 +153,31 @@ class PushToTalkController:
         finalisiert wird. Sonst wuerde der Release-Edge verloren gehen und
         eine waehrend der Finalisierung gedrueckte Taste eine Geister-
         aufnahme ausloesen.
+
+        Latenz STUFE 1: Der Zustand wechselt nur kurz unter ``_lock`` auf
+        FINALIZING; das eigentliche Stoppen (``_finish``) laeuft OHNE beide
+        Locks, damit die Audioquelle auch bei laufender Live-Inferenz in
+        < 0,3 s stoppt.
         """
+        if self._latency_trace:
+            self._stop_entered_at = time.monotonic()
+        self._trace("stop entered")
         with self._lock:
             self._key_down = False
             if self.state != ControllerState.RECORDING:
                 return
-            self._finish()
+        self._finish()
+
+    def _trace(self, point: str) -> None:
+        """Debug-Messpunkt der Release->Ausgabe-Latenz (nur bei latency_trace).
+
+        Misst die monotone Zeit seit dem Betreten von ``stop_recording()``;
+        ohne Release (z.B. Max-Dauer) seit Aufnahmestart.
+        """
+        if not self._latency_trace:
+            return
+        base = self._stop_entered_at or self._started_at
+        log.debug("latency[%s] +%.3fs", point, time.monotonic() - base)
 
     def abort(self) -> None:
         """Bricht ab, ohne Text auszugeben (Fehlerfall)."""
@@ -164,18 +200,30 @@ class PushToTalkController:
     # Betrieb
     # ------------------------------------------------------------------
     def run_once(self) -> None:
-        """Verarbeitet einen Zeitschritt (liest Audio, transkribiert ggf.)."""
-        with self._lock:
-            self._run_once_locked()
+        """Verarbeitet einen Zeitschritt (liest Audio, transkribiert ggf.).
 
-    def _run_once_locked(self) -> None:
-        """run_once ohne Lock - wird aus run_once aufgerufen."""
-        if self.state != ControllerState.RECORDING:
-            return
-        source = self._source
-        transcriber = self._transcriber
+        Laeuft unter ``_exec_lock`` (NICHT unter ``_lock``): die Live-
+        Inferenz darf den Key-Thread (Press/Release) nie blockieren.
+        """
+        with self._exec_lock:
+            self._run_once_exec()
+
+    def _run_once_exec(self) -> None:
+        """Ein Live-Tick unter ``_exec_lock``; Zustand wird kurz unter ``_lock`` geprueft."""
+        with self._lock:
+            if self.state != ControllerState.RECORDING:
+                return
+            source = self._source
+            transcriber = self._transcriber
+            audio_queue = self._audio_queue
         if source is None or transcriber is None:
-            self.abort()
+            # Nur abbrechen, solange die Aufnahme noch laeuft: ein Release
+            # (FINALIZING) uebergibt an den Finalizer, abort wuerde dessen
+            # Zustand sloschen.
+            with self._lock:
+                live = self.state == ControllerState.RECORDING
+            if live:
+                self.abort()
             return
 
         # Chunks aus der Capture-Queue leeren (nicht direkt von source lesen,
@@ -183,23 +231,35 @@ class PushToTalkController:
         got_audio = False
         while True:
             try:
-                chunk = self._audio_queue.get_nowait()
+                chunk = audio_queue.get_nowait()
             except queue.Empty:
                 break
             got_audio = True
-            self._total_bytes += len(chunk)
+            with self._lock:
+                self._total_bytes += len(chunk)
             transcriber.feed(chunk)
 
+        now = time.monotonic()
         if got_audio:
-            self._last_audio_at = time.monotonic()
+            with self._lock:
+                self._last_audio_at = now
         else:
-            if time.monotonic() - self._last_audio_at > self._no_audio_timeout_s:
+            with self._lock:
+                stalled = now - self._last_audio_at > self._no_audio_timeout_s
+            if stalled:
                 log.warning("Keine Audiodaten seit %.0fs - Abbruch",
                             self._no_audio_timeout_s)
                 self.abort()
                 return
 
         self._enforce_max_duration()
+
+        # Kurzer Zustandstest VOR der Transkription: ein Release
+        # (FINALIZING) oder Abbruch laesst diesen Tick ins Leere laufen
+        # (Ergebnis waere ueberholt und wuerde den Finaltext overseizen).
+        with self._lock:
+            if self.state != ControllerState.RECORDING:
+                return
 
         try:
             result = transcriber.maybe_transcribe()
@@ -211,18 +271,22 @@ class PushToTalkController:
         if result is not None:
             self._delta_typer.update(result.text, result.committed_len)
 
-    def _capture_loop(self) -> None:
-        """Liest kontinuierlich Audio aus der Quelle in die Queue."""
-        source = self._source
-        if source is None:
-            return
+    def _capture_loop(
+        self, source: AudioSource, audio_queue: "queue.Queue[bytes]"
+    ) -> None:
+        """Liest kontinuierlich Audio aus der Quelle in die Queue.
+
+        Quelle und Queue sind als Argumente gebunden, damit ein verspaetet
+        endender Capture-Thread einer alten Aufnahme nie in die Queue
+        einer neuen Aufnahme legt.
+        """
         while self.state == ControllerState.RECORDING:
             try:
                 chunk = source.read(block=False)
             except AudioSourceError:
                 break
             if chunk:
-                self._audio_queue.put(chunk)
+                audio_queue.put(chunk)
             else:
                 time.sleep(0.02)
 
@@ -230,45 +294,52 @@ class PushToTalkController:
         """Bricht nach ``_max_record_s`` ab, wie beim Loslassen."""
         if self.state != ControllerState.RECORDING:
             return
-        if time.monotonic() - self._started_at >= self._max_record_s:
+        with self._lock:
+            expired = time.monotonic() - self._started_at >= self._max_record_s
+        if expired:
             log.info("Maximale Aufnahmedauer erreicht - Finalisierung")
             self._finish()
 
     def _finish(self) -> None:
-        """Stoppt die Quelle, transkribiert final und gibt den Text aus."""
-        self.state = ControllerState.FINALIZING
-        source = self._source
-        transcriber = self._transcriber
+        """Stoppt die Aufnahme sofort und stoesst die Finalisierung an.
 
-        # RC-B2/B3: Erst den Capture-Thread beenden (damit er keine Chunks
-        # mehr in die Queue legt), DANN die Queue in richtiger Reihenfolge
-        # drainen, DANN den stop()-Rest (neueste Bytes) feeden.
-        if self._capture_thread is not None:
-            self._capture_thread.join(timeout=1.0)
+        Laeuft OHNE _lock und OHNE _exec_lock (AUSSER dem kurzen
+        Zustandswechsel): der Release stoppt die Audioquelle auch dann in
+        < 0,3 s, wenn gerade eine mehrsekundige Live-Inferenz unter
+        _exec_lock laeuft.
+
+        Die RC-B2/B3-Reihenfolge 'Queue-drain vor stop()-Rest' bleibt
+        gewahrt: beide Feeds passieren im Finalizer UNTER _exec_lock, also
+        nach jedem noch laufenden Live-Tick am selben Transcriber.
+        """
+        with self._lock:
+            if self.state != ControllerState.RECORDING:
+                return
+            self.state = ControllerState.FINALIZING
+            source = self._source
+            transcriber = self._transcriber
+            audio_queue = self._audio_queue
+            capture_thread = self._capture_thread
             self._capture_thread = None
 
-        # 1) Queue in zeitlicher Reihenfolge drainen (aeltere Bytes zuerst).
-        if transcriber is not None:
-            while True:
-                try:
-                    chunk = self._audio_queue.get_nowait()
-                except queue.Empty:
-                    break
-                self._total_bytes += len(chunk)
-                transcriber.feed(chunk)
+        # RC-B2/B3: Erst den Capture-Thread beenden (er prueft den Zustand,
+        # der bereits FINALIZING ist, und endet praktisch sofort), DANN
+        # die Queue drainen, DANN den stop()-Rest feeden.
+        if capture_thread is not None:
+            capture_thread.join(timeout=1.0)
+        self._trace("capture stopped")
 
-        # 2) stop()-Rest (die neuesten Bytes vom Pipe-Drain) ans Ende.
+        # Audioquelle SOFORT stoppen; der Pipe-Rest (neueste Bytes) wird
+        # mitgenommen und erst im Finalizer ans Pufferende gefuettert.
+        rest = b""
         if source is not None:
             try:
                 rest = source.stop()
             except AudioSourceError:
                 rest = b""
-            self._source = None
-            if rest and transcriber is not None:
-                transcriber.feed(rest)
-
-        # Vollstaendige Aufnahme zu Debug-Zwecken abspeichern.
-        self._dump_audio(transcriber)
+            with self._lock:
+                self._source = None
+        self._trace("source stopped")
 
         # Die finale Transkription kann mehrere Sekunden dauern (CPU). Sie
         # laeuft deshalb im HINTERGRUND, damit der Key-Thread sofort wieder
@@ -277,25 +348,55 @@ class PushToTalkController:
         if transcriber is not None:
             finalizer = threading.Thread(
                 target=self._finalize_worker,
-                args=(transcriber,),
+                args=(transcriber, audio_queue, rest),
                 name="finalize",
                 daemon=True,
             )
             finalizer.start()
         else:
-            self.state = ControllerState.IDLE
+            with self._lock:
+                self.state = ControllerState.IDLE
 
-    def _finalize_worker(self, transcriber) -> None:
-        """Fuehrt die finale Transkription aus (Hintergrund-Thread)."""
+    def _finalize_worker(
+        self, transcriber, audio_queue: "queue.Queue[bytes]", rest: bytes
+    ) -> None:
+        """Fuehrt die finale Transkription aus (Hintergrund-Thread).
+
+        Laeuft unter ``_exec_lock``: keine Live-Inferenz und kein
+        DeltaTyper-Zugriff kann mehr parallel zum finalen Feed/finalize/
+        Ausgabe am selben Transcriber arbeiten. State/Log kurz unter _lock.
+        """
         try:
-            result = transcriber.finalize()
-            self._delta_typer.finalize(result.text, result.committed_len)
+            with self._exec_lock:
+                # 1) Queue in zeitlicher Reihenfolge drainen (aeltere
+                #    Bytes zuerst), 2) stop()-Rest ans Ende.
+                while True:
+                    try:
+                        chunk = audio_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    with self._lock:
+                        self._total_bytes += len(chunk)
+                    transcriber.feed(chunk)
+                if rest:
+                    transcriber.feed(rest)
+
+                # Vollstaendige Aufnahme zu Debug-Zwecken abspeichern.
+                self._dump_audio(transcriber)
+                self._trace("dump")
+
+                self._trace("finalize start")
+                result = transcriber.finalize()
+                self._trace("finalize end")
+                self._delta_typer.finalize(result.text, result.committed_len)
+                self._trace("paste")
         except Exception as exc:  # noqa: BLE001
             log.error("Schluss-Transkription fehlgeschlagen: %s", exc)
         finally:
             with self._lock:
                 self._transcriber = None
                 self.state = ControllerState.IDLE
+                self._stop_entered_at = 0.0
                 log.info("Aufnahme beendet (%d bytes Audio)", self._total_bytes)
                 self._total_bytes = 0
                 # Nachgeholt wird der Start nur, wenn die Taste noch
@@ -306,18 +407,48 @@ class PushToTalkController:
                     self._start_now()
 
     def _dump_audio(self, transcriber) -> None:
-        """Speichert die komplette Aufnahme nach /tmp/stt_last.wav (Debug)."""
+        """Speichert die komplette Aufnahme als Debug-WAV.
+
+        Modi (config.audio_dump_mode):
+        * ``"sync"`` (Default, bisheriges Verhalten): schreibt sofort im
+          Aufrufer-Thread (Finalizer).
+        * ``"async"``: Snapshot der Bytes, Schreiben in einem eigenen
+          Thread - der Finalizer wartet auf keinen File-I/O. Der Thread
+          haelt ausschliesslich das Immutables Snapshot, NIEMALS eine
+          Referenz auf den (ggf. weiter genutzten) Transcriber-Puffer.
+        * ``"off"``: kein Dump.
+        """
+        if self._audio_dump_mode == "off" or transcriber is None:
+            return
+        try:
+            if not transcriber._buffer:
+                return
+            snapshot = bytes(transcriber._buffer)
+            sample_rate = transcriber.sample_rate
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Audio-Dump fehlgeschlagen: %s", exc)
+            return
+
+        if self._audio_dump_mode == "async":
+            threading.Thread(
+                target=self._write_wav,
+                args=(snapshot, sample_rate),
+                name="audio-dump",
+                daemon=True,
+            ).start()
+        else:
+            self._write_wav(snapshot, sample_rate)
+
+    def _write_wav(self, pcm: bytes, sample_rate: int) -> None:
+        """Schreibt s16le-Mono-Bytes als WAV (Debug-Dump)."""
         try:
             import wave
 
-            if transcriber is None or not transcriber._buffer:
-                return
-            path = "/tmp/stt_last.wav"
-            with wave.open(path, "wb") as w:
+            with wave.open(self._dump_path, "wb") as w:
                 w.setnchannels(1)
                 w.setsampwidth(2)
-                w.setframerate(transcriber.sample_rate)
-                w.writeframes(bytes(transcriber._buffer))
-            log.info("Aufnahme gespeichert: %s", path)
+                w.setframerate(sample_rate)
+                w.writeframes(pcm)
+            log.info("Aufnahme gespeichert: %s", self._dump_path)
         except Exception as exc:  # noqa: BLE001
             log.debug("Audio-Dump fehlgeschlagen: %s", exc)

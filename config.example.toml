@@ -43,3 +43,18 @@ asr_interval_s = 1.0           # Re-Transkription alle X Sekunden Audio
 max_record_s = 300.0
 commit_agreements = 2          # Praefix-Bestaetigungen vor dem Commit
 sample_rate = 16000
+
+# --- Latenz (STUFE 1) ------------------------------------------------------
+# finalize_mode: "full" = Finalisierung transkribiert den ganzen Puffer neu
+# (bisheriges Verhalten); "cached" = unveraendertes Audio seit dem letzten
+# erfolgreichen Live-Tick wird ohne Engine-Call uebernommen (spart bei kurzem
+# Diktat einen kompletten Inferenz-Durchlauf; nur bei deterministischen
+# Engines wie Parakeet sinnvoll).
+finalize_mode = "full"
+# audio_dump_mode: "sync" = WAV-Debug-Dump im Finalizer (bisher),
+# "async" = Dump im eigenen Thread (Datei-I/O nicht auf dem kritischen Pfad),
+# "off" = kein Dump. Ziel bleibt /tmp/stt_last.wav.
+audio_dump_mode = "sync"
+# latency_trace: true loggt Debug-Zeiten an den Messpunkten Release -> Ausgabe
+# (stop entered / source stopped / dump / finalize start / finalize end / paste).
+latency_trace = false

@@ -134,6 +134,9 @@ class Application:
                 sample_rate=cfg.sample_rate,
                 commit_agreements=cfg.commit_agreements,
                 vad=SileroVadGate(),
+                # STUFE 1: "cached" ueberspringt den finalen Engine-Call bei
+                # unveraendertem Puffer; "full" = bisheriges Verhalten.
+                finalize_mode=cfg.finalize_mode,
             )
 
         return PushToTalkController(
