@@ -1331,3 +1331,165 @@ class TestPasteDebugLogs:
         assert "Streng geheim" not in joined
 
 
+
+
+# ---------------------------------------------------------------------------
+# OPT1 (Betreiber 29.10.): Finalize-Backspace + Paste-Chord in EINEM
+# dotool-Prozess — die ~0,7s Kosten sind der Prozessstart, nicht die
+# Tasten. Combined-Aufruf spart einen gesamten Round-Trip.
+# ---------------------------------------------------------------------------
+
+
+class TestOpt1CombinedBackspacePaste:
+    def test_dotool_backspace_and_key_single_process(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """backspace_and_key sendt Backspaces + Chord in EINEM _send."""
+        stdin = _capture_stdin(monkeypatch)
+        DotoolTyper().backspace_and_key(3, "ctrl+v")
+        assert len(stdin) == 1, "genau ein dotool-Prozess erwartet"
+        assert stdin[0] == (
+            "key backspace\nkey backspace\nkey backspace\nkey ctrl+v\n"
+        )
+
+    def test_dotool_backspace_and_key_zero_is_plain_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """n=0 verhaelt sich exakt wie key(name) — ein Prozess, nur Chord."""
+        stdin = _capture_stdin(monkeypatch)
+        DotoolTyper().backspace_and_key(0, "ctrl+v")
+        assert stdin == ["key ctrl+v\n"]
+
+    def test_paster_combined_copies_then_one_chord(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """paste_combined: erst wl-copy, dann EIN Combined-Aufruf (kein zweiter Chord)."""
+        calls: list[list[str]] = []
+        monkeypatch.setattr("stt_button.typing.shutil.which",
+                            lambda b: "/usr/bin/wl-copy")
+        monkeypatch.setattr("stt_button.typing._run",
+                            lambda cmd, *a, **k: calls.append(list(cmd)))
+
+        class Recorder:
+            def __init__(self):
+                self.key_calls: list[str] = []
+                self.combined: list[tuple[int, str]] = []
+
+            def key(self, name):
+                self.key_calls.append(name)
+
+            def backspace_and_key(self, n, name):
+                self.combined.append((n, name))
+
+            def type_text(self, text):
+                raise AssertionError("type_text unerwartet")
+
+        rec = Recorder()
+        p = ClipboardPaster(rec)  # type: ignore[arg-type]
+        ok = p.paste_combined("Hallo", backspaces=3)
+        assert ok is True
+        assert calls == [["wl-copy", "Hallo"]]
+        assert rec.combined == [(3, "ctrl+v")]
+        assert rec.key_calls == [], "zweiter separater Chord waere Doppel-Timing"
+
+    def test_paster_combined_never_double_inserts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Chord-Fehler NACH erfolgreichem Copy: TyperError (Zustand
+        unbekannt) — KEIN still-es False, kein Zurueckfallen auf
+        paste()/type_text (Doppel-Einfuege- bzw. Loesch-Gefahr)."""
+        monkeypatch.setattr("stt_button.typing.shutil.which",
+                            lambda b: "/usr/bin/wl-copy")
+        monkeypatch.setattr("stt_button.typing._run", lambda cmd, *a, **k: None)
+
+        class Boom:
+            def key(self, name):  # pragma: no cover
+                raise AssertionError("key darf nicht separat laufen")
+
+            def backspace_and_key(self, n, name):
+                raise TyperError("dotool tot")
+
+            def type_text(self, text):  # pragma: no cover
+                raise AssertionError("type_text darf nicht nachchlegen")
+
+        p = ClipboardPaster(Boom())  # type: ignore[arg-type]
+        with pytest.raises(TyperError):
+            p.paste_combined("Hallo", backspaces=3)
+
+    def test_paster_combined_empty_text_no_chord(self) -> None:
+        """Leerer Text: kein Copy, kein Chord, ok=False (Caller macht alt)."""
+
+        class Never:
+            def key(self, name):  # pragma: no cover
+                raise AssertionError("key bei leerem Text")
+
+            def backspace_and_key(self, n, name):  # pragma: no cover
+                raise AssertionError("combined bei leerem Text")
+
+        p = ClipboardPaster(Never())  # type: ignore[arg-type]
+        assert p.paste_combined("", backspaces=3) is False
+
+    def test_finalize_uses_combined_path(self) -> None:
+        """finalize() mit to_remove>0 und combined-faehigem Paster ruft
+        genau EINMAL combined — und kein separates backspace()/paste()."""
+
+        class TyperRec:
+            def __init__(self):
+                self.backspaces: list[int] = []
+
+            def backspace(self, n):
+                self.backspaces.append(n)
+
+            def type_text(self, t):
+                pass
+
+            def key(self, name):
+                pass
+
+        typer = TyperRec()
+
+        class CombinedPaster:
+            def __init__(self):
+                self.combined: list[tuple[str, int]] = []
+
+            def paste(self, text):
+                raise AssertionError("paste() darf im Combined-Pfad nicht rufen")
+
+            def paste_combined(self, text, backspaces):
+                self.combined.append((text, backspaces))
+                return True
+
+        paster = CombinedPaster()
+        d = DeltaTyper(typer, append_space=True, final_paster=paster)  # type: ignore[arg-type]
+        d.update("abcd efgh", committed_len=0, force_revision=True)
+        typer.backspaces.clear()
+        # Finale Fassung weicht an Position 0 ab -> to_remove=8, to_add neu
+        d.finalize("Xbcd efgh")
+        # old enthaelt das append_space-Leerzeichen: 8+1=9 Zeichen weg
+        assert paster.combined == [("Xbcd efgh ", 9)]
+        assert typer.backspaces == [], "separater backspace-Lauf waere ein zweiter Prozess"
+
+    def test_finalize_plain_paster_path_unchanged(self) -> None:
+        """Paster ohne paste_combined (z.B. Fake/Alter Paster): bisheriger
+        Pfad backspace() + paste() bleibt unveraendert in Kraft."""
+        events: list = []
+
+        class TyperRec:
+            def backspace(self, n):
+                events.append(("bs", n))
+
+            def type_text(self, t):
+                events.append(("type", t))
+
+            def key(self, name):
+                events.append(("key", name))
+
+        class OldPaster:
+            def paste(self, text):
+                events.append(("paste", text))
+
+        d = DeltaTyper(TyperRec(), append_space=True, final_paster=OldPaster())  # type: ignore[arg-type]
+        d.update("abcd efgh", committed_len=0, force_revision=True)
+        events.clear()
+        d.finalize("Xbcd efgh")
+        assert ("bs", 9) in events and ("paste", "Xbcd efgh ") in events

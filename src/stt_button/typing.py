@@ -282,6 +282,22 @@ class DotoolTyper:
         lines = "\n".join("key backspace" for _ in range(n)) + "\n"
         self._send(lines)
 
+    def backspace_and_key(self, n: int, name: str) -> None:
+        """Ruecknamen und Chord in EINEM dotool-Prozess (OPT1).
+
+        Die ~0,7s Kosten im Finalize-Pfad sind der dotool-Prozessstart,
+        nicht die Tasten: n Backspaces und der Paste-Chord (z.B. 'ctrl+v')
+        laufen in einem einzigen stdin-Stream. Reihenfolge bleibt
+        garantiert: erst zurueck, dann Chord.
+        """
+        if n <= 0:
+            self.key(name)
+            return
+        payload = (
+            "".join("key backspace\n" for _ in range(n)) + f"key {name}\n"
+        )
+        self._send(payload)
+
     def key(self, name: str) -> None:
         if not name:
             return
@@ -510,6 +526,61 @@ class ClipboardPaster:
                 self.paste_key, exc,
             )
 
+    def paste_combined(self, text: str, *, backspaces: int = 0) -> bool:
+        """OPT1: Copy + (Backspaces & Chord) in einem dotool-Prozess.
+
+        Wie :meth:`paste`, aber die ``backspaces`` Ruecknamen und der
+        Paste-Chord laufen — wenn der Typer ``backspace_and_key``
+        unterstuetzt (DotoolTyper) — in EINEM dotool-Aufruf. Spart den
+        zweiten Prozessstart (~0,7s im Finalize-Pfad).
+
+        Returns:
+            True  = Combined-Pfad komplett durchgefuehrt.
+            False = NICHT versucht (leerer Text, Typer ohne Support,
+            Copy-Binary fehlt, Copy fehlgeschlagen) — der Caller kann
+            sicher auf den bisherigen Pfad (backspace + paste)
+            zurueckfallen; es wurde nichts getippt oder geloescht.
+
+        Raises:
+            TyperError: Copy gelang, aber der Chord schlug fehl. Der
+            Zustand ist unbekannt (Backspaces/Chord koennen teilweise
+            gewirkt haben) — der Caller darf dann NICHT den alten Pfad
+            nachschieben (Doppel-Einfuege-Gefahr), sondern muss ruhen.
+        """
+        if not text:
+            return False
+        combined = getattr(self._typer, "backspace_and_key", None)
+        if combined is None:
+            return False
+        if shutil.which(self.copy_binary) is None:
+            log.warning(
+                "%s nicht verfuegbar - Combined-Pfad nicht moeglich",
+                self.copy_binary,
+            )
+            return False
+        try:
+            log.debug("final paste combined: copy start (%d Zeichen, %d bs)",
+                      len(text), backspaces)
+            _run([self.copy_binary, text])
+        except TyperError as exc:
+            log.warning(
+                "Copy nach %s fehlgeschlagen (%s) - Combined-Pfad abgesagt",
+                self.copy_binary, exc,
+            )
+            return False
+        try:
+            log.debug("final paste combined: %d bs + chord %s",
+                      backspaces, self.paste_key)
+            combined(backspaces, self.paste_key)
+            return True
+        except TyperError as exc:
+            log.error(
+                "Combined-Chord %r fehlgeschlagen (%s) - Zustand unbekannt, "
+                "kein Retry (Doppel-Einfuege-Gefahr)",
+                self.paste_key, exc,
+            )
+            raise
+
 
 class DeltaTyper:
     """Tippt nur die Differenz zwischen zwei Transkriptionen.
@@ -719,6 +790,36 @@ class DeltaTyper:
             # keine max_revision_chars-Schutzgrenze (force_revision im alten
             # Pfad).
             self._trace(f"rev {to_remove}/{len(to_add)}")
+            # OPT1: Backspace + Paste-Chord in EINEM dotool-Prozess, wenn
+            # ein paste_combined-Paster vorhanden ist und Ruecknamen
+            # anfallen. combined_pasted=True verbietet den alten
+            # backspace()-/paste()-Nachschlag.
+            combined_pasted = False
+            if to_remove and to_add and self._final_paster is not None:
+                paste_combined = getattr(
+                    self._final_paster, "paste_combined", None
+                )
+                if paste_combined is not None:
+                    combined_text = (
+                        to_add + " " if self._append_space else to_add
+                    )
+                    t0 = time.monotonic()
+                    try:
+                        combined_pasted = bool(
+                            paste_combined(combined_text, backspaces=to_remove)
+                        )
+                    except TyperError:
+                        # Zustand unbekannt (Backspaces koennen gewirkt
+                        # haben): nichts nachschieben, Textstand lassen.
+                        combined_pasted = True
+                    if combined_pasted:
+                        space_in_paste = self._append_space
+                        to_remove = 0
+                        to_add = ""
+                        self._trace(
+                            f"combined backspace+paste "
+                            f"{time.monotonic() - t0:.3f}s"
+                        )
             if to_remove:
                 t0 = time.monotonic()
                 self._typer.backspace(to_remove)
