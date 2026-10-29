@@ -54,6 +54,19 @@ Laden fehl: HF-FP32-Fallback, niemals Absturz. `transcribe()` und
 `transcribe_with_timestamps()` erkennen den int8-Zweig vor jeder
 HF-Verwendung.
 
+## OPT-Nachlese (29.10., nach Abschlussbericht)
+
+| Option | Ergebnis | Beweislage |
+|---|---|---|
+| OPT1 Combined Backspace+Paste (`48e7610`) | live nach Restart | 7 Tests, Suite 435 |
+| OPT2 Mid-Tail-Punktationsdrift (`3483d64`) | **verworfen** (Config `full`) | Gate 243 Clips: 2 Stitch-Drifts (16,2 s/17,1 s, WER 0,13/0,18 bis Satzende), kein Latenzgewinn (2,44->2,59 s median); Code bleibt ungeachtet im Repo |
+| OPT3 live_asr_until_s 15 s (`fd50acb`) | live, Bewaehrung laeuft | p50/p95 gegen 8-s-Referenz; Rollback = 1 Config-Zeile |
+
+Produktiv-Konfiguration damit: `compute_type=int8`, `finalize_mode=full`,
+`live_asr_until_s=15.0`, `live_typing_mode=committed`. Mid-Tail lohnt nur
+bei sehr langen Diktaten (>60 s), nicht im Alltagsmix — gate_report
+/tmp/gate_report_opt2_prod.json (241 Clips, WER-Median 0,0000, 0 Dup).
+
 ## Bekannte offene Punkte (nicht Blocker)
 
 - `live_asr_until_s=8`: Live-Ticks laufen bis 8 s, danach Pause-Indikator;

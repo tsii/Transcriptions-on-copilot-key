@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from stt_button.asr import ParakeetEngine, StreamTranscriber  # noqa: E402
 
 MODEL = "nvidia/parakeet-tdt-0.6b-v3"
-LIMIT_S = 8.0
+LIMIT_S = 15.0  # OPT3: Produktiv-Default 29.10. (Gate muss den echten Pfad replizieren)
 STEP_S = 4.0
 CONTEXT_S = 2.5
 TICK_S = 0.5           # Live-Tick-Intervall des Dienstes
