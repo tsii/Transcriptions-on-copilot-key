@@ -67,6 +67,16 @@ Produktiv-Konfiguration damit: `compute_type=int8`, `finalize_mode=full`,
 bei sehr langen Diktaten (>60 s), nicht im Alltagsmix — gate_report
 /tmp/gate_report_opt2_prod.json (241 Clips, WER-Median 0,0000, 0 Dup).
 
+## Betreiberentscheidung 29.10. (final, im Live-Config dokumentiert)
+
+`compute_type = \"float32\"` — FP32-HF-Pfad als Produktivstandard. INT8 war
+messaebrig schneller (RTF 0,05, p50 1,2 s ueber 4 Diktate), der Betreiber
+zieht jedoch die FP32-Erkennungsqualitaet vor; die int8-ONNX bleiben
+liegen, ein Opt-in ist eine Config-Zeile. OPT1 (combined backspace+paste)
+und OPT3 (live_asr_until_s 15.0) bleiben aktiv, finalize_mode full.
+Der Rueckbau-Knopf (live_asr_until_s 8.0) wird NICHT automatisch
+aus geloest — nur auf ausdruecklichen Betreiberwunsch.
+
 ## Bekannte offene Punkte (nicht Blocker)
 
 - `live_asr_until_s=8`: Live-Ticks laufen bis 8 s, danach Pause-Indikator;
