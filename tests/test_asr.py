@@ -1164,3 +1164,174 @@ class TestCachedMidTail:
         result = t.finalize()
         assert result.text == "Welt und mehr"
         assert len(engine.calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# INT8-Hauptpfad (Betreiber-Freigabe 29.10.): ParakeetEngine transkribiert
+# bei compute_type='int8' über den bewiesenen onnx_asr/ORT-CPU-Weg
+# (A/B-Log: RTF 0,043-0,060, WER verbessert), NICHT über OpenVINO-NPU
+# (Ground-Truth: OV-Encoder statisch [1,128,3000] unvertraeglich mit
+# echten Lengen, NPU unter Last 'No available devices', RTF = CPU).
+# ---------------------------------------------------------------------------
+
+
+class _FakeOrtSessionOpts:
+    def __init__(self):
+        self.intra_op_num_threads = 0
+        self.inter_op_num_threads = 0
+
+
+class _FakeOnnxAsr:
+    """Mock des onnx_asr-Moduls: zaehlt recognize-Aufrufe."""
+
+    def __init__(self, text="Hallo INT8 Welt"):
+        self.text = text
+        self.recognize_calls = []
+        self.load_kwargs = None
+
+    def load_model(self, kind, path=None, *, quantization=None,
+                   sess_options=None, providers=None):
+        self.load_kwargs = dict(kind=kind, path=path, quantization=quantization,
+                                providers=providers)
+        return self  # das Modell ist das Recognizer-Objekt
+
+    def recognize(self, audio):
+        self.recognize_calls.append(audio)
+        return self.text
+
+
+def _fake_ort_module():
+    import types
+
+    m = types.ModuleType("onnxruntime")
+    m.SessionOptions = _FakeOrtSessionOpts
+    # echtes __spec__: torch-dynamo ruft find_spec('onnxruntime') auf
+    import importlib.machinery as _mach
+
+    m.__spec__ = _mach.ModuleSpec("onnxruntime", loader=None)
+    return m
+
+
+class _NoHFModels:
+    """Soll einen Fehler werfen, wenn doch HF geladen wuerde."""
+
+    @staticmethod
+    def from_pretrained(*a, **k):
+        raise AssertionError("HF-Modell durfte bei int8-Hauptpfad nicht laden")
+
+
+class TestInt8Hauptpfad:
+    def _patch(self, monkeypatch, fake, tmp_path):
+        import sys, types
+        monkeypatch.setitem(sys.modules, "onnx_asr", fake)
+        monkeypatch.setitem(sys.modules, "onnxruntime", _fake_ort_module())
+        # int8-ONNX-Dateien existieren lassen (Fake-Dateien)
+        (tmp_path / "encoder-model.int8.onnx").write_bytes(b"x")
+        (tmp_path / "decoder_joint-model.int8.onnx").write_bytes(b"x")
+        from stt_button.asr import ParakeetEngine as _PE
+        monkeypatch.setattr(
+            _PE, "_int8_dir_for_test", lambda self: tmp_path, raising=False,
+        )
+
+    def test_int8_laed_onnx_statt_hf(self, monkeypatch, tmp_path) -> None:
+        """compute_type='int8' -> onnx_asr-Pfad, HF wird NIE geladen."""
+        from stt_button.asr import ParakeetEngine
+
+        fake = _FakeOnnxAsr()
+        self._patch(monkeypatch, fake, tmp_path)
+        # HF-Import abfangen: jeder Versuch wirft
+        import transformers
+        monkeypatch.setattr(transformers, "AutoProcessor", _NoHFModels)
+        monkeypatch.setattr(transformers, "AutoModelForTDT", _NoHFModels)
+
+        e = ParakeetEngine(compute_type="int8")
+        e.load()
+        assert e.loaded is True
+        assert fake.load_kwargs is not None, "onnx_asr.load_model nicht aufgerufen"
+        assert fake.load_kwargs["quantization"] == "int8"
+        assert fake.load_kwargs["providers"] == ["CPUExecutionProvider"]
+
+    def test_int8_transcribe_nutzt_onnx_ohne_hf(self, monkeypatch, tmp_path) -> None:
+        """transcribe() bei int8 ruft recognize() mit float32-Mono-Audio."""
+        from stt_button.asr import ParakeetEngine
+        import numpy as np
+
+        fake = _FakeOnnxAsr(text="Erkannter INT8 Text")
+        self._patch(monkeypatch, fake, tmp_path)
+        import transformers
+        monkeypatch.setattr(transformers, "AutoProcessor", _NoHFModels)
+        monkeypatch.setattr(transformers, "AutoModelForTDT", _NoHFModels)
+
+        e = ParakeetEngine(compute_type="int8")
+        pcm = (np.zeros(16000 * 2, dtype=np.int16)).tobytes()  # 2s Stille
+        result = e.transcribe(pcm)
+        assert result.text == "Erkannter INT8 Welt"[:0] + "Erkannter INT8 Text"
+        assert len(fake.recognize_calls) == 1
+        arg = fake.recognize_calls[0]
+        assert arg.dtype == np.float32 and arg.ndim == 1
+
+    def test_int8_datei_fehlt_fallback_auf_hf(self, monkeypatch, tmp_path) -> None:
+        """Fehlen die int8-ONNX-Dateien, laedt der alte HF-FP32-Pfad."""
+        from stt_button.asr import ParakeetEngine
+        import sys
+
+        fake = _FakeOnnxAsr()
+        monkeypatch.setitem(sys.modules, "onnx_asr", fake)
+        monkeypatch.setitem(sys.modules, "onnxruntime", _fake_ort_module())
+        # tmp_path bleibt leer -> ONNX-Dateien fehlen
+        from stt_button.asr import ParakeetEngine as _PE
+        monkeypatch.setattr(
+            _PE, "_int8_dir_for_test", lambda self: tmp_path, raising=False,
+        )
+
+        calls = {"n": 0}
+
+        class _P:
+            def __call__(self, a, sampling_rate):
+                class B(dict):
+                    def to(self, d, dtype=None):
+                        return self
+                return B({})
+
+            def decode(self, s, skip_special_tokens=True):
+                return ["FP32 Fallback"]
+
+        class _M:
+            dtype = "float32"
+            def to(self, d): return self
+            def eval(self): return self
+            def generate(self, **k):
+                return type("O", (), {"sequences": [[1]]})()
+
+        monkeypatch.setattr("transformers.AutoProcessor.from_pretrained", lambda m: _P())
+        monkeypatch.setattr("transformers.AutoModelForTDT.from_pretrained",
+                            lambda m, dtype=None: _M())
+
+        e = ParakeetEngine(compute_type="int8")
+        e.load()
+        assert fake.load_kwargs is None, "trotz fehlender Dateien onnx geladen"
+        pcm = (np.zeros(16000 * 2, dtype=np.int16)).tobytes() if False else b"\0\0" * 16000 * 2
+        result = e.transcribe(pcm)
+        assert result.text == "FP32 Fallback"
+
+    def test_int8_timestamps_ohne_hf(self, monkeypatch, tmp_path) -> None:
+        """transcribe_with_timestamps darf bei int8 NICHT HF nachladen;
+        ohne Token-Dauern liefert es einen leeren Transcription-Wrapper
+        um denselben Text (windowed Streaming ist hier nicht in Betrieb)."""
+        from stt_button.asr import ParakeetEngine
+        import numpy as np
+
+        fake = _FakeOnnxAsr(text="Timestamp INT8 Text")
+        self._patch(monkeypatch, fake, tmp_path)
+        import transformers
+        monkeypatch.setattr(transformers, "AutoProcessor", _NoHFModels)
+        monkeypatch.setattr(transformers, "AutoModelForTDT", _NoHFModels)
+
+        e = ParakeetEngine(compute_type="int8")
+        pcm = (np.zeros(16000 * 2, dtype=np.int16)).tobytes()
+        tr = e.transcribe_with_timestamps(pcm)
+        assert fake.load_kwargs is not None
+        assert len(fake.recognize_calls) == 1
+        joined = "".join(t.text for tok_row in [getattr(tr, "tokens", [])] for t in tok_row)
+        # Tokens duerfen fehlen (leer okay) — Text muss trotzdem stimmen:
+        assert getattr(tr, "text", None) == "Timestamp INT8 Text" or joined == "Timestamp INT8 Text"

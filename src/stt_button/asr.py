@@ -182,19 +182,31 @@ class ParakeetEngine:
         self.device = device
         self._model = None
         self._processor = None
+        self._onnx_model = None
 
     @property
     def loaded(self) -> bool:
-        return self._model is not None
+        return self._model is not None or getattr(self, "_onnx_model", None) is not None
 
     def load(self) -> None:
-        """Laedt Modell + Prozessor (idempotent)."""
-        if self._model is not None:
+        """Laedt Modell + Prozessor (idempotent).
+
+        compute_type='int8': bewiesener onnx_asr/ORT-CPU-Komplettpfad
+        (A/B-Log tools/onnx_tdt_ab_probe_20261028.log: RTF 0,043-0,060,
+        1,7-2,5x vs FP32, WER verbessert). OpenVINO/NPU ist verworfen
+        (Ground-Truth 29.10.: NPU unter Diktatlast 'No available devices',
+        OV-Encoder statischer Bucket unvertraeglich mit echten Laengen,
+        RTF-Gewinn vs CPU-INT8 null). Fehlen die int8-ONNX, faellt der
+        HF-FP32-Pfad ein (niemals Absturz).
+        """
+        if self._model is not None or getattr(self, "_onnx_model", None) is not None:
+            return
+        if self.compute_type == "int8" and self._load_int8():
             return
         import torch
         from transformers import AutoModelForTDT, AutoProcessor
 
-        log.info("Lade Parakeet-Modell %s ...", self.model)
+        log.info("Lade Parakeet-Modell %s (FP32-Fallbackpfad) ...", self.model)
         self._processor = AutoProcessor.from_pretrained(self.model)
         self._model = AutoModelForTDT.from_pretrained(
             self.model, dtype=torch.float32
@@ -203,48 +215,47 @@ class ParakeetEngine:
             torch.set_num_threads(self.cpu_threads)
         log.info("Parakeet-Modell geladen.")
 
-        # INT8-Freigabe (Betreiber erteilt, A/B-Befund /tmp/onnx_tdt_ab_probe.log:
-        # 4/5 Clips 1.5-2.3x schneller, WER verbessert - int8-ONNX liest
-        # Satzendene vollstaendig wo FP32 abbricht). FP32 bleibt Fallback:
-        # lieft die int8-ONNX nicht, greift der bewiesene FP32-Pfad.
-        if self.compute_type == "int8":
-            try:
-                from pathlib import Path as _P
-                _int8 = _P(self.model).with_name(
-                    self.model.split("/")[-1] + "-int8.onnx"
-                )
-                _model_dir = _P(self.model.split("/")[-1] and "parakeet-onnx-fp32")
-                # Pfad robust: relativ zum Repo-Root (der Mutterordner des
-                # stt_button-Pakets), NICHT zum Arbeitsverzeichnis des Dienstes
-                _repo_root = _P(__file__).resolve().parent.parent.parent
-                self._int8_dir = _repo_root / ".models" / "parakeet-onnx-fp32"
-                self._int8_encoder = self._int8_dir / "encoder-model.int8.onnx"
-                self._int8_decoder = self._int8_dir / "decoder_joint-model.int8.onnx"
-                if self._int8_encoder.exists() and self._int8_decoder.exists():
-                    import openvino as ov
-                    self._ov_core = ov.Core()
-                    # Encoder braucht vor dem Compile einen festen 30s-Bucket
-                    # (bewiesene Form): dynamische Shapes (2 dyn. Dims) sind
-                    # fuer den NPU-Compiler nicht kompilierbar — mit reshape
-                    # auf [1,128,3000] funktioniert es (Ground-Truth 23:47).
-                    _enc = self._ov_core.read_model(str(self._int8_encoder))
-                    _enc.reshape({"audio_signal": [1, 128, 3000], "length": [1]})
-                    self._ov_encoder = self._ov_core.compile_model(
-                        _enc, "NPU",
-                        {"NPU_PLATFORM": "NPU4000", "CACHE_DIR": "/tmp/npu-cache-int8"},
-                    )
-                    # Decoder/Joint: NPU-Compile scheitert an dynamischen
-                    # Dims (Ground-Truth 00:07 'Transpose_192 cannot compute
-                    # output bounds dimension') — laeuft bewusst auf ORT-CPU
-                    # int8 (0,275ms/Schritt bewiesen), KEIN NPU-Zwang.
-                    self._ov_decoder = None
-                    log.info("INT8-Encoder auf NPU kompiliert (30s-Bucket); Decoder/Joint bleibt ORT-CPU int8 (NPU-Compile scheitert, bewusst kein Risiko).")
-                else:
-                    log.warning("int8-ONNX fehlt - FP32 bleibt aktiv (Fallback).")
-            except Exception as exc:  # noqa: BLE001 - Fallback niemals Absturz
-                log.warning("INT8-Freigabe fehlgeschlagen (%s) - FP32-Pfad aktiv.", exc)
-                self._ov_encoder = None
-                self._ov_decoder = None
+    def _int8_dir(self):
+        """Ordner mit den int8-ONNX-Dateien (Tests duerfen umbiegen)."""
+        hook = getattr(type(self), "_int8_dir_for_test", None)
+        if hook is not None:
+            return hook(self)
+        from pathlib import Path as _P
+        # Pfad robust: relativ zum Repo-Root (der Mutterordner des
+        # stt_button-Pakets), NICHT zum Arbeitsverzeichnis des Dienstes
+        _repo_root = _P(__file__).resolve().parent.parent.parent
+        return _repo_root / ".models" / "parakeet-onnx-fp32"
+
+    def _load_int8(self) -> bool:
+        """Versucht den bewiesenen int8-Komplettpfad (onnx_asr + ORT-CPU).
+
+        True = int8-Modell bereit (transcribe nutzt es); False = Dateien
+        fehlen oder Laden fehlgeschlagen (Caller faellt auf HF-FP32 zurueck).
+        """
+        d = self._int8_dir()
+        enc = d / "encoder-model.int8.onnx"
+        dec = d / "decoder_joint-model.int8.onnx"
+        if not (enc.exists() and dec.exists()):
+            log.warning("int8-ONNX fehlt (%s) - FP32-Fallback.", d)
+            return False
+        try:
+            import onnx_asr
+            import onnxruntime as ort
+
+            opts = ort.SessionOptions()
+            opts.intra_op_num_threads = self.cpu_threads
+            opts.inter_op_num_threads = 1
+            log.info("Lade Parakeet int8-ONNX (ORT-CPU) aus %s ...", d)
+            self._onnx_model = onnx_asr.load_model(
+                "nemo-conformer-tdt", path=d, quantization="int8",
+                sess_options=opts, providers=["CPUExecutionProvider"],
+            )
+            log.info("Parakeet int8-ONNX bereit (RTF-Befund 0,043-0,060).")
+            return True
+        except Exception as exc:  # noqa: BLE001 - Fallback niemals Absturz
+            log.warning("int8-ONNX-Laden fehlgeschlagen (%s) - FP32-Fallback.", exc)
+            self._onnx_model = None
+            return False
 
     def transcribe(
         self, data: bytes, initial_prompt: str = ""
@@ -254,32 +265,30 @@ class ParakeetEngine:
         # Halluzination auf < 0.5s Rauschen).
         if len(data) < MIN_AUDIO_S * 16000 * 2:
             return TranscriptionResult(text="")
-        if self._model is None:
+        if self._model is None and getattr(self, "_onnx_model", None) is None:
             self.load()
+
+        # INT8-Hauptpfad (Betreiber 29.10.): bewiesener onnx_asr/ORT-CPU-
+        # Komplettpfad (A/B-Log tools/onnx_tdt_ab_probe_20261028.log:
+        # RTF 0,043-0,060, 1,7-2,5x vs FP32, WER verbessert). OpenVINO/NPU
+        # ist verworfen (Ground-Truth: NPU unter Diktatlast 'No available
+        # devices', statischer Bucket unvertraeglich, RTF-Gewinn null).
+        # initial_prompt entfaellt — der Vollpuffer wird ohnehin ganz
+        # transkribiert; FP32-HF bleibt Fallback (niemals Absturz).
+        onnx_model = getattr(self, "_onnx_model", None)
+        if onnx_model is not None:
+            import numpy as np
+
+            audio = _pcm_to_float(data)
+            if not isinstance(audio, np.ndarray):
+                audio = np.asarray(audio, dtype=np.float32)
+            text = _strip_ansi(str(onnx_model.recognize(audio)).strip())
+            return TranscriptionResult(text=text)
 
         import numpy as np
 
         audio = _pcm_to_float(data)
         inputs = self._processor([audio], sampling_rate=16000)
-        # INT8-NPU-Pfad: Encoder auf NPU (bewiesen: 0,13s median bei 10,2s-Audio,
-        # 4/5 Clips 1,5-2,3x schneller, WER verbessert); Decoder/Joint bleibt
-        # CPU-INT8 (AR-Loop: NPU-Dispatch pro Token waere teurer - Kimi-Rechnung).
-        # FP32 bleibt Fallback: liefert die int8-ONNX nicht, greift der
-        # bewiesene FP32-Pfad (niemals Absturz).
-        if getattr(self, "_ov_encoder", None) is not None:
-            try:
-                _mel = inputs["audio_signal"] if isinstance(inputs, dict) else getattr(inputs, "audio_signal", None)
-                if hasattr(_mel, "numpy"):
-                    _mel = _mel.numpy()
-                _np_in = np.asarray(_mel, dtype=np.float32)
-                _res = self._ov_encoder([_np_in])
-                self._last_npu_encoder_out = _res[0]
-                log.info("INT8-Encoder auf NPU.")
-            except Exception as exc:  # noqa: BLE001 - Fallback niemals Absturz
-                log.warning("INT8-Encoder-Aufruf fehlgeschlagen (%s) - FP32-Pfad.", exc)
-                self._last_npu_encoder_out = None
-        else:
-            self._last_npu_encoder_out = None
         inputs.to(self.device, dtype=self._model.dtype)
         # max_new_tokens explizit setzen, sonst waechst das Default-
         # max_length mit dem Audio und schneidet lange Diktate ab.
@@ -308,8 +317,25 @@ class ParakeetEngine:
         # Fix 2: Zu kurzes Audio ergibt keine Tokens.
         if len(data) < MIN_AUDIO_S * 16000 * 2:
             return Transcription(tokens=[])
-        if self._model is None:
+        if self._model is None and getattr(self, "_onnx_model", None) is None:
             self.load()
+
+        # INT8-Hauptpfad: ohne TDT-Dauern keine Token-Stempel -> ein
+        # Text-Token ueber die ganze Fensterlaenge (ganzzahlig korrekt,
+        # windowed Streaming ist mit int8 bewusst ausser Betrieb).
+        onnx_model = getattr(self, "_onnx_model", None)
+        if onnx_model is not None:
+            import numpy as np
+
+            audio = _pcm_to_float(data)
+            if not isinstance(audio, np.ndarray):
+                audio = np.asarray(audio, dtype=np.float32)
+            text = _strip_ansi(str(onnx_model.recognize(audio)).strip())
+            dur = len(data) / (16000 * 2)
+            return Transcription(
+                tokens=[Token(text=text, start=window_offset_s,
+                              end=window_offset_s + dur)]
+            )
 
         import numpy as np
 
