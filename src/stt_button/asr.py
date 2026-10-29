@@ -213,21 +213,32 @@ class ParakeetEngine:
                 _int8 = _P(self.model).with_name(
                     self.model.split("/")[-1] + "-int8.onnx"
                 )
-                self._int8_dir = _P(".models/parakeet-onnx-fp32")
+                _model_dir = _P(self.model.split("/")[-1] and "parakeet-onnx-fp32")
+                # Pfad robust: relativ zum Repo-Root (der Mutterordner des
+                # stt_button-Pakets), NICHT zum Arbeitsverzeichnis des Dienstes
+                _repo_root = _P(__file__).resolve().parent.parent.parent
+                self._int8_dir = _repo_root / ".models" / "parakeet-onnx-fp32"
                 self._int8_encoder = self._int8_dir / "encoder-model.int8.onnx"
                 self._int8_decoder = self._int8_dir / "decoder_joint-model.int8.onnx"
                 if self._int8_encoder.exists() and self._int8_decoder.exists():
                     import openvino as ov
                     self._ov_core = ov.Core()
+                    # Encoder braucht vor dem Compile einen festen 30s-Bucket
+                    # (bewiesene Form): dynamische Shapes (2 dyn. Dims) sind
+                    # fuer den NPU-Compiler nicht kompilierbar — mit reshape
+                    # auf [1,128,3000] funktioniert es (Ground-Truth 23:47).
+                    _enc = self._ov_core.read_model(str(self._int8_encoder))
+                    _enc.reshape({"audio_signal": [1, 128, 3000], "length": [1]})
                     self._ov_encoder = self._ov_core.compile_model(
-                        str(self._int8_encoder), "NPU",
-                        {"NPU_PLATFORM": "NPU4000", "CACHE_DIR": "/tmp/npu-cache"},
+                        _enc, "NPU",
+                        {"NPU_PLATFORM": "NPU4000", "CACHE_DIR": "/tmp/npu-cache-int8"},
                     )
-                    self._ov_decoder = self._ov_core.compile_model(
-                        str(self._int8_decoder), "NPU",
-                        {"NPU_PLATFORM": "NPU4000", "CACHE_DIR": "/tmp/npu-cache"},
-                    )
-                    log.info("INT8-ONNX auf NPU kompiliert (Encoder + Decoder/Joint).")
+                    # Decoder/Joint: NPU-Compile scheitert an dynamischen
+                    # Dims (Ground-Truth 00:07 'Transpose_192 cannot compute
+                    # output bounds dimension') — laeuft bewusst auf ORT-CPU
+                    # int8 (0,275ms/Schritt bewiesen), KEIN NPU-Zwang.
+                    self._ov_decoder = None
+                    log.info("INT8-Encoder auf NPU kompiliert (30s-Bucket); Decoder/Joint bleibt ORT-CPU int8 (NPU-Compile scheitert, bewusst kein Risiko).")
                 else:
                     log.warning("int8-ONNX fehlt - FP32 bleibt aktiv (Fallback).")
             except Exception as exc:  # noqa: BLE001 - Fallback niemals Absturz
