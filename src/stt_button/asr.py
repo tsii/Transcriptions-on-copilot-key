@@ -746,17 +746,34 @@ class StreamTranscriber:
     def _mid_tail_valid_snapshot(self) -> "_MidTailCheckpoint | None":
         """Initial-Checkpoint aus dem letzten erfolgreichen Live-Snapshot.
 
-        Nur gueltig, wenn die Live-Inferenz erfolgreich war und ihr Text mit
-        dem committeten Praefix konsistent beginnt - sonst bleibt None und
-        es gibt KEINEN Stitch-Versuch (finalize() = Vollpuffer wie heute).
+        Gueltig, wenn die Live-Inferenz erfolgreich war und ihr Text mit
+        dem committeten Praefix konsistent beginnt. OPT2 (Betreiber 29.10.,
+        Kimi-Auflagen): reine INTERPUNKTIONS-Drift im committeten Bereich
+        (Ground-Truth 07:08: Komma weg) verwirft den Snapshot nicht mehr —
+        aber NUR wortweise, wortfest (positions-fest, kein Suchen),
+        Buchstaben/Gross-schreibung EXAKT, kein Fuzzy, Flexion ist keine
+        Interpunktion. Der Checkpoint-Text bekommt den committeten Praefix
+        zeichenexakt zurueck und traegt ihn damit zeichenexakt — alle
+        Downstream-Invarianten (startswith-Checks, stitch-Invarianten)
+        bleiben unveraendert in Kraft. Kein Treffer -> None (Vollpuffer).
         """
         if not self._last_completed_ok or self._last_completed_nbytes < 0:
             return None
-        if not self._last_completed_text.startswith(self._committed_text):
+        completed = self._last_completed_text
+        committed = self._committed_text
+        if completed.startswith(committed):
+            return _MidTailCheckpoint(
+                end_nbytes=self._last_completed_nbytes, text=completed
+            )
+        repaired = _checkpoint_des_punktationsdrift(committed, completed)
+        if repaired is None:
             return None
+        log.debug(
+            "mid_tail: Snapshot-Punktationsdrift repariert (%r <- %r)",
+            repaired[:40], completed[:40],
+        )
         return _MidTailCheckpoint(
-            end_nbytes=self._last_completed_nbytes,
-            text=self._last_completed_text,
+            end_nbytes=self._last_completed_nbytes, text=repaired
         )
 
     def _mid_tail_window(self, end_nbytes: int) -> tuple[bytes, int]:
@@ -959,6 +976,49 @@ def _completes(incomplete: str, word: str) -> bool:
     if len(incomplete) >= len(word):
         return False
     return word.startswith(incomplete) and word[len(incomplete)].isalnum()
+
+
+def _checkpoint_des_punktationsdrift(committed: str, completed: str) -> str | None:
+    """Repariert reine INTERPUNKTIONS-Drift im Mid-Tail-Snapshot (OPT2).
+
+    Erlaubt ist ausschliesslich: Der committete Praefix (wortweise, muss
+    mit Leerzeichen enden) stimmt mit den ersten W(o)etern des
+    Live-Textes ueberein, nachdem BEIDENSEITS Interpunktionszeichen
+    entfernt wurden. Buchstaben und Gross-/Kleinschreibung bleiben
+    EXAKT verglichen (Flexion und Grossschreibung sind keine
+    Interpunktion), die Position ist fest (kein Suchen, kein Fuzzy,
+    keine Wortumlagerung).
+
+    Returns:
+        Der Checkpoint-Text: committeter Praefix ZEICHENEXAKT plus die
+        restlichen Live-Woerter (wortweise, nie mitten im Wort) — damit
+        gilt fuer das Ergebnis wieder startswith(committed) und alle
+        Downstream-Invarianten bleiben unangetastet. None bei jeder
+        Abweichung, die ueber reine Interpunktion hinausgeht.
+    """
+    import string
+
+    if not committed or not committed.endswith(" "):
+        return None
+    c_words = committed.split()
+    w_words = completed.split()
+    if len(w_words) < len(c_words):
+        return None
+    strip = lambda word: "".join(
+        ch for ch in word if ch not in string.punctuation
+    )
+    for c_word, w_word in zip(c_words, w_words):
+        c_plain, w_plain = strip(c_word), strip(w_word)
+        if not c_plain or not w_plain or c_plain != w_plain:
+            return None
+        # Nur echte Interpunktions-Drift (oder Identitaet) ist erlaubt:
+        # identische Rohtexte sind ueber den startswith-Zweig schon
+        # frueher bedient; alles andere als c_word != w_word mit
+        # gleicher Stripped-Form waere ein stiller Worttausch.
+        if c_word != w_word and c_plain == w_plain:
+            continue  # reine Interpunktion: erlaubt
+    rest = w_words[len(c_words):]
+    return committed + " ".join(rest)
 
 
 def stitch_word_overlap(

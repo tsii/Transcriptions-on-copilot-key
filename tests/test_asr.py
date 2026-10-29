@@ -1335,3 +1335,89 @@ class TestInt8Hauptpfad:
         joined = "".join(t.text for tok_row in [getattr(tr, "tokens", [])] for t in tok_row)
         # Tokens duerfen fehlen (leer okay) — Text muss trotzdem stimmen:
         assert getattr(tr, "text", None) == "Timestamp INT8 Text" or joined == "Timestamp INT8 Text"
+
+
+# ---------------------------------------------------------------------------
+# OPT2 (Betreiber 29.10., Kimi-Auflagen): Mid-Tail-Snapshot bei reiner
+# Interpunktions-/Grossschreibungs-Drift im committeten Bereich zulassen.
+# Ground-Truth 07:08: committed='TT, die ' (mit Komma getippt), spaeterer
+# Live-Text 'TT die Sau...' (Komma weg) -> Zeichen-startswith tot ->
+# Checkpoint nie angelegt -> Finalizer transkribierte den Vollpuffer.
+# Sicherheitslinie (Kimi b): Wort-feste Position, Nach-Vergleich NUR
+# nach Interaktionsstrip, Gross-/Kleinschreibung EXAKT, kein Fuzzy,
+# Resttext wortweise (nie mitten im Wort), Ergebnis muss committed_text
+# zeichenexakt als Praefix tragen -> alle Downstream-Invarianten bleiben.
+# ---------------------------------------------------------------------------
+
+
+class TestOpt2SnapshotPunctuationDrift:
+    def _make(self, engine) -> StreamTranscriber:
+        return make_mid_tail(engine)
+
+    def _snapshot(self, t, completed: str, committed: str, nbytes: int):
+        t._last_completed_ok = True
+        t._last_completed_text = completed
+        t._last_completed_nbytes = nbytes
+        t._committed_text = committed
+        t._committed_len = len(committed)
+        return t._mid_tail_valid_snapshot()
+
+    def test_pure_punctuation_drift_accepted(self) -> None:
+        """'TT, die ' committed, spaeter 'TT die Sau...' -> Snapshot mit
+        committed-Praefix zurueckgeschrieben, Rest wortweise uebernommen."""
+        t = self._make(FakeEngine([]))
+        snap = self._snapshot(
+            t, "TT die Sau wuerde laufen.", "TT, die ", 80000
+        )
+        assert snap is not None
+        assert snap.text == "TT, die Sau wuerde laufen."
+        assert snap.text.startswith("TT, die "), "Downstream-startswith muss gelten"
+        assert snap.end_nbytes == 80000
+
+    def test_capitalization_drift_accepted(self) -> None:
+        """Gross/klein-Drift NURhalb Interaktion ist ausgeschlossen: hier
+        'die'->'Die' im Praefix -> NEIN (Zeichen exakt ausser Interpunktion)."""
+        t = self._make(FakeEngine([]))
+        snap = self._snapshot(t, "TT Die Sau", "TT, die ", 80000)
+        assert snap is None, "Buchstaben-Gross/klein darf nicht toleriert werden"
+
+    def test_word_change_rejected(self) -> None:
+        """Echter Worttausch im Praefix -> weiterhin None (kein Stitch-Zwang)."""
+        t = self._make(FakeEngine([]))
+        snap = self._snapshot(t, "TT die Sau", "TT, hund ", 80000)
+        assert snap is None
+
+    def test_word_stem_change_rejected(self) -> None:
+        """'Hunde' vs 'Hunden': Flexion istKEINE Interpunktion -> None."""
+        t = self._make(FakeEngine([]))
+        snap = self._snapshot(t, "TT, hunden Sau", "TT, hunde ", 80000)
+        assert snap is None
+
+    def test_short_completed_rejected(self) -> None:
+        """Fenster aelter/kiuerzer als der Praefix (weniger Woerter) -> None;
+        niemals mitten ins Wort schneiden."""
+        t = self._make(FakeEngine([]))
+        snap = self._snapshot(t, "TT, die", "TT, die sau ", 80000)
+        assert snap is None
+
+    def test_committed_without_trailing_space_rejected(self) -> None:
+        """Commit mitten im Wort (kein abschliessendes Leerzeichen) -> None."""
+        t = self._make(FakeEngine([]))
+        snap = self._snapshot(t, "TT die Sau", "TT, di", 80000)
+        assert snap is None
+
+    def test_identical_text_behaves_as_before(self) -> None:
+        """Zeichen-exakter Praefix (der alte Sonderfall): Verhalten unveraendert."""
+        t = self._make(FakeEngine([]))
+        snap = self._snapshot(t, "TT, die Sau", "TT, die ", 12345)
+        assert snap is not None and snap.text == "TT, die Sau"
+
+    def test_repeated_anchor_words_position_fixed(self) -> None:
+        """Wortwiederholungen (Kimi: Mehrdeutigkeit): Abgleich ist
+        POSITIONSFEST, kein Suchen - 'ja ja ' muss Woerter 1:1 treffen."""
+        t = self._make(FakeEngine([]))
+        snap = self._snapshot(t, "Ja, ja Ja, ja mehr", "ja, ja ", 80000)
+        assert snap is None, "Gross/klein im Anker ('Ja' vs 'ja') -> None"
+        snap2 = self._snapshot(t, "ja, ja ja, ja mehr", "ja, ja ", 80000)
+        assert snap2 is not None
+        assert snap2.text == "ja, ja ja, ja mehr"
