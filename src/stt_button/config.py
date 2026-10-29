@@ -156,8 +156,12 @@ class Config:
     live_typing_mode: str = "committed"
     #: Live-ASR nach dieser Pufferlaenge (Sekunden) einstellen (STUFE 3):
     #: der Whole-Buffer-Ansatz wird pro Tick teurer; ab hier liefert nur
-    #: noch finalize() den Text. 0.0 (Default) = Live-Ticks immer aktiv.
-    live_asr_until_s: float = 0.0
+    #: noch finalize() den Text. Default 15.0 (OPT 29.10.): mit der
+    #: int8-Engine (RTF ~0,05) kostet ein 15-s-Vollpuffer-Tick ~0,75s und
+    #: bleibt damit unter asr_interval_s (1,0s) — Live-Vorschau bis 15s is
+    #: tragfaehig, laengere Diktate pausieren mit Indikator. 0.0 ist der
+    #: ausdrueckliche Opt-in 'Live-Ticks immer aktiv' (bisheriges Verhalten).
+    live_asr_until_s: float = 15.0
 
     def validate(self) -> None:
         """Wirft :class:`ConfigError` bei unbrauchbaren Werten."""

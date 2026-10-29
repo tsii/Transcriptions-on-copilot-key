@@ -288,10 +288,12 @@ class TestLiveTypingModeKeys:
 
 
 class TestLiveAsrUntilKeys:
-    """STUFE 3: live_asr_until_s (Default 0.0 = aus)."""
+    """STUFE 3: live_asr_until_s (Default 15.0: int8-RTF ~0,05 macht den
+    15-s-Vollpuffer-Tick ~0,75s < asr_interval_s 1,0s; 0.0 bleibt der
+    ausdrueckliche Opt-in 'immer live')."""
 
     def test_default_is_off(self) -> None:
-        assert Config().live_asr_until_s == 0.0
+        assert Config().live_asr_until_s == 15.0
 
     def test_parse_value(self, tmp_path: Path) -> None:
         p = write_config(tmp_path, "live_asr_until_s = 6.5\n")

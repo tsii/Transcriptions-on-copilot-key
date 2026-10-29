@@ -69,5 +69,7 @@ live_typing_mode = "committed"
 # live_asr_until_s: Live-Ticks nach dieser Pufferlaenge (Sekunden)
 # einstellen - der Whole-Buffer-Ansatz wird pro Tick teurer. feed()
 # sammelt weiter, finalize() transkribiert den kompletten Puffer.
-# 0.0 (Default) = Live-Ticks immer aktiv (bisheriges Verhalten).
-live_asr_until_s = 0.0
+# Default 15.0: mit int8-Engine (RTF ~0,05) kostet ein 15-s-Vollpuffer-
+# Tick ~0,75s < asr_interval_s (1,0s) - Live-Vorschau bis 15s tragfaehig.
+# 0.0 = Live-Ticks immer aktiv (bisheriges Verhalten, Opt-in).
+live_asr_until_s = 15.0

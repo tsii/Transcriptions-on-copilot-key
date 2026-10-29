@@ -734,7 +734,10 @@ stellt die Live-Ticks nach 20 s Puffer-Audio ein:
 * `feed()` sammelt weiter (nichts geht verloren),
 * `finalize()` transkribiert den **vollständigen** Puffer,
 * `reset()` reaktiviert die Live-Ticks für die nächste Aufnahme,
-* `0.0` (Default) = Live-Ticks immer aktiv (bisheriges Verhalten).
+* `0.0` = Live-Ticks immer aktiv (bisheriges Verhalten, Opt-in).
+* Default ist seit der int8-Engine (RTF ~0,05) `15.0`: ein
+  15-s-Vollpuffer-Tick kostet ~0,75 s und bleibt damit unter
+  `asr_interval_s` (1,0 s) — durchlaufende Live-Vorschau bis 15 s.
 
 Release nach dem Limit ohne laufenden Tick ⇒ der Finalizer nimmt
 `_exec_lock` ohne Wartezeit — die Finalisierung startet sofort.
