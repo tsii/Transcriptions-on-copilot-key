@@ -1735,10 +1735,16 @@ class TestDoneSound:
 
         calls = []
 
-        def fake_run(cmd, *a, **kw):
+        def fake_popen(cmd, *a, **kw):
             calls.append(list(cmd))
 
-        monkeypatch.setattr(ctrl_mod.subprocess, "run", fake_run)
+            class _P:
+                def poll(self):
+                    return 0
+
+            return _P()
+
+        monkeypatch.setattr(ctrl_mod.subprocess, "Popen", fake_popen)
         monkeypatch.setattr(ctrl_mod.shutil, "which", lambda b: f"/usr/bin/{b}")
         monkeypatch.setattr(
             ctrl_mod.os.path, "exists", lambda p: p.endswith(".oga")
@@ -1796,7 +1802,7 @@ class TestDoneSound:
         def boom(cmd, *a, **kw):
             raise OSError("kein Audiosink")
 
-        monkeypatch.setattr(ctrl_mod.subprocess, "run", boom)
+        monkeypatch.setattr(ctrl_mod.subprocess, "Popen", boom)
         monkeypatch.setattr(ctrl_mod.shutil, "which", lambda b: f"/usr/bin/{b}")
         monkeypatch.setattr(
             ctrl_mod.os.path, "exists", lambda p: p.endswith(".oga")
@@ -1816,3 +1822,46 @@ class TestDoneSound:
         ctrl.stop_recording()
         _wait_state(ctrl, ControllerState.IDLE)
         assert ctrl.state == ControllerState.IDLE, "Tonfehler darf nie abbrechen"
+
+
+class TestDoneSoundAbsolutePath:
+    """done_sound darf ein absoluter Dateipfad sein (eigener Klang,
+    Betreiber 31.10.: freedesktop-'complete' ist zu hell — ein selbst
+    generierter, tiefer Klang liegt ausserhalb des Soundverzeichnisses)."""
+
+    def test_absolute_path_used_verbatim(self, monkeypatch, tmp_path) -> None:
+        import stt_button.controller as ctrl_mod
+
+        from stt_button.config import Config
+
+        wav = tmp_path / "tief.wav"
+        wav.write_bytes(b"RIFF....WAVEfmt ")
+        calls = []
+
+        def fake_popen(cmd, *a, **kw):
+            calls.append(list(cmd))
+
+            class _P:
+                def poll(self):
+                    return 0
+
+            return _P()
+
+        monkeypatch.setattr(ctrl_mod.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(ctrl_mod.shutil, "which", lambda b: f"/usr/bin/{b}")
+        recorder = RecordingTranscriber()
+        source = RestAudioSource([b"\x00" * 16000] * 4, rest=b"")
+        ctrl = PushToTalkController(
+            config=Config(done_sound=str(wav)),
+            source_factory=lambda: source,
+            engine=FakeEngine(),
+            delta_typer=DeltaTyper(FakeTyper(), append_space=True),
+            transcriber_factory=lambda *a, **kw: recorder,
+            dump_path=str(tmp_path / "last.wav"),
+        )
+        ctrl.start_recording()
+        time.sleep(0.2)
+        ctrl.stop_recording()
+        _wait_state(ctrl, ControllerState.IDLE)
+        assert len(calls) == 1
+        assert calls[0][-1] == str(wav), "absoluter Pfad unverwendet verwenden"

@@ -168,8 +168,12 @@ class Config:
     #: der Text in der Zwischenablage liegt. '' = aus.
     done_sound: str = ""
     #: Lautstaerke des Fertig-Signals als paplay-Promille (0..65536);
-    #: Default 35000 (~54 %) — 'angenehm, nicht schrill, leise'.
-    done_sound_volume: int = 35000
+    #: 65536 = 'so wie die Desktop-Lautstaerke es vorgibt' (Default).
+    #: Hinweis Ground-Truth 31.10.: paplay --volume skaliert die
+    #: SINK-Lautstaerke — bei 24 % Sink war 35000 praktisch unhörbar.
+    #: Leiser wuenschen: ueber die Desktop-Lautstaerke steuern oder
+    #: hier z. B. 32768 (~50 % des Sink-Pegels) setzen.
+    done_sound_volume: int = 65536
 
     def validate(self) -> None:
         """Wirft :class:`ConfigError` bei unbrauchbaren Werten."""

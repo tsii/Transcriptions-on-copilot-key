@@ -473,21 +473,26 @@ class PushToTalkController:
         if binary is None:
             log.debug("paplay nicht vorhanden - kein Fertig-Signal")
             return
-        path = os.path.join(SOUND_DIR, f"{name}.oga")
+        # Absoluter Pfad (eigener Klang) oder freedesktop-Soundname.
+        path = name if os.path.isabs(name) else os.path.join(
+            SOUND_DIR, f"{name}.oga"
+        )
         if not os.path.exists(path):
             log.warning("Done-Sound %r nicht gefunden (%s)", name, path)
             return
-        volume = str(getattr(self, "_done_sound_volume", 35000))
+        volume = str(getattr(self, "_done_sound_volume", 65536))
         try:
-            # DEVNULL statt Pipes: paplay kann bei weggebrochenem Sink
-            # haengen — der Finalizer darf nie auf Audio warten (Muster
-            # wie bei den gehaerteten Subprozessen in typing._run).
-            subprocess.run(
+            # FEUER-UND-FREI (Ground-Truth 31.10.): paplay BLOCKIERT bis
+            # zum Ende des Klangs — im Finalizer-Faden verspaetete es das
+            # 'Aufnahme beendet'-Log um ~1s und haelt die exec-Logik fest.
+            # Start-Fehler (Binary weg) werden noch abgefangen; ein
+            # haengender Player wird durch das eigene Ende der Wiedergabe
+            # begrenzt, DEVNULL verhindert Pipe-Deadlocks.
+            subprocess.Popen(
                 [binary, "--volume", volume, path],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=3.0,
             )
         except Exception as exc:  # noqa: BLE001 - Ton ist Komfort, nie Muss
             log.debug("Fertig-Signal fehlgeschlagen (%s)", exc)
