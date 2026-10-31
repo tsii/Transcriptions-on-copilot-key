@@ -26,6 +26,7 @@ from typing import Callable
 
 from .asr import StreamTranscriber, TranscriptionResult
 from .audio import AudioSource, AudioSourceError
+from . import focus
 from .typing import DeltaTyper
 
 #: Freedesktop-Soundverzeichnis fuer das Fertig-Signal (config.done_sound).
@@ -78,7 +79,14 @@ class PushToTalkController:
         # paplay --volume ist Promille (0..65536); 35000 ~= 54 % — 'angenehm
         # leise' gemaess Betreiber (31.10.), nicht schrill.
         self._done_sound_volume = int(
-            getattr(config, "done_sound_volume", 35000) or 35000
+            getattr(config, "done_sound_volume", 65536) or 65536
+        )
+        # 'terminal' (Default): Ton nur bei Terminal-Fokus (Kimi-Erweiterung
+        # stt-button-focus, GetFocus per DBus); 'always': immer. None
+        # (Extension fehlt/antwortet nicht) -> Ton trotzdem, Feedback
+        # statt Stille.
+        self._done_sound_mode = str(
+            getattr(config, "done_sound_mode", "terminal") or "terminal"
         )
 
         self.state = ControllerState.IDLE
@@ -469,6 +477,14 @@ class PushToTalkController:
         name = str(getattr(self, "_done_sound", "") or "").strip()
         if not name:
             return
+        # Fokus-Modus (Kimi 31.10.): terminal-Modus unterdraeckt den Ton,
+        # wenn eindeutig ein NICHT-Terminal fokussiert ist. None
+        # (Extension fehlt/antwortet nicht) -> Ton trotzdem.
+        if getattr(self, "_done_sound_mode", "always") == "terminal":
+            state = focus.terminal_focused()
+            if state is False:
+                log.debug("Fertig-Signal unterdraengt (kein Terminal im Fokus)")
+                return
         binary = shutil.which("paplay")
         if binary is None:
             log.debug("paplay nicht vorhanden - kein Fertig-Signal")

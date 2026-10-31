@@ -1,0 +1,7 @@
+{
+  "uuid": "stt-button-focus@salmon.io",
+  "name": "STT Button Focus",
+  "description": "Exportiert das fokussierte Fenster (app-id + Titel) per DBus an stt-button (Fokus-Ton nur im Terminal)",
+  "shell-version": ["46"],
+  "version": "1.0"
+}

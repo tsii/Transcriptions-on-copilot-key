@@ -1749,6 +1749,7 @@ class TestDoneSound:
         monkeypatch.setattr(
             ctrl_mod.os.path, "exists", lambda p: p.endswith(".oga")
         )
+        monkeypatch.setattr(ctrl_mod.focus, "terminal_focused", lambda: None)
         return calls
 
     def test_sound_after_successful_finalize(self, monkeypatch, tmp_path) -> None:
@@ -1849,6 +1850,7 @@ class TestDoneSoundAbsolutePath:
 
         monkeypatch.setattr(ctrl_mod.subprocess, "Popen", fake_popen)
         monkeypatch.setattr(ctrl_mod.shutil, "which", lambda b: f"/usr/bin/{b}")
+        monkeypatch.setattr(ctrl_mod.focus, "terminal_focused", lambda: None)
         recorder = RecordingTranscriber()
         source = RestAudioSource([b"\x00" * 16000] * 4, rest=b"")
         ctrl = PushToTalkController(

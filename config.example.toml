@@ -78,4 +78,9 @@ live_asr_until_s = 15.0
 # Finalisierung = 'Text liegt in der Zwischenablage, jetzt pasten'.
 # freedesktop-Soundname (z.B. "complete", "bell"); '' = aus.
 done_sound = ""
-done_sound_volume = 35000        # paplay-Promille (0..65536)
+done_sound_volume = 65536        # paplay-Promille (0..65536); 65536 = Desktop-Pegel (35000 war bei 24% Sink unhörbar)
+
+# Wann das Fertig-Signal erklingt: "terminal" = nur bei Terminal-Fokus
+# (braucht die GNOME-Shell-Extension stt-button-focus; ohne Extension
+# erklingt der Ton trotzdem — Feedback statt Stille), "always" = immer.
+done_sound_mode = "terminal"

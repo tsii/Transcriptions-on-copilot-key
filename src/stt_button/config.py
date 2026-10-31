@@ -174,8 +174,18 @@ class Config:
     #: Leiser wuenschen: ueber die Desktop-Lautstaerke steuern oder
     #: hier z. B. 32768 (~50 % des Sink-Pegels) setzen.
     done_sound_volume: int = 65536
+    #: Wann das Fertig-Signal erklingt: 'terminal' (Default) = nur bei
+    #Terminal-Fokus laut (GNOME-Shell-Extension GetFocus; None/Unbekannt
+    # -> spielt trotzdem, Feedback vor Stille); 'always' = immer.
+    done_sound_mode: str = "terminal"
 
     def validate(self) -> None:
+        if self.done_sound_mode not in ("terminal", "always"):
+            raise ConfigError(
+                "done_sound_mode muss 'terminal' oder 'always' sein, "
+                f"ist {self.done_sound_mode!r}"
+            )
+
         """Wirft :class:`ConfigError` bei unbrauchbaren Werten."""
         if self.language not in VALID_LANGUAGES:
             raise ConfigError(
