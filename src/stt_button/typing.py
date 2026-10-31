@@ -752,7 +752,13 @@ class DeltaTyper:
 
         Eine leere Endausgabe darf den bereits getippten Text nicht loeschen
         (z.B. wenn das Modell bei der Schluss-Transkription gescheitert ist).
+
+        Bracketed-Paste-Marker (Betreiber 31.10.): Handschalliges Paste mit
+        aktiviertem Bracketed-Paste bringt '^[[200~' ... '~' in den Text.
+        Entfernt AN DER EINLAUFSEITE, damit Delta/Backspace/Paste saubere
+        Werte sehen (kein Datenverlust: nur nachgewiesene Marker).
         """
+        final_text = strip_paste_markers(final_text)
         if not final_text.strip():
             return
 
@@ -849,6 +855,43 @@ class DeltaTyper:
             self._typer.key("space")
             self._trace(f"space {time.monotonic() - t0:.3f}s")
         self._last_text = final_text
+
+
+# Bracketed-Paste-Marker in den drei relevanten Darstellungen:
+# raw mit echtem ESC-Zeichen (0x1b), # ^notiert (Terminal-Ansicht) und
+# Hex-Textform "\x1b[200~" (was Dumps zeigen koennen).
+_RAW_200 = "\x1b[200~"
+_RAW_201 = "\x1b[201~"
+_LIT_200 = "\\x1b[200~"
+_LIT_201 = "\\x1b[201~"
+_MARKER_200 = ("^[[200~", _RAW_200, _LIT_200)
+_MARKER_201 = ("^[[201~", _RAW_201, _LIT_201)
+
+
+def strip_paste_markers(text: str) -> str:
+    """Entfernt Bracketed-Paste-Marker aus ``text`` (Betreiber 31.10.).
+
+    Paste mit eingeschaltetem Bracketed-Paste (Shell z.B. nach
+    vorherigem Strg+V im quoted-insert) bringt ESC[200~/ESC[201~
+    buechlerichtig in den Text: sichtbar als '^[[200~' am Anfang und
+    (nach verendetem ESC) ein uebriggebliebenes '~' am Ende.
+
+    Regeln (bewusst konservativ):
+      * nur die MARKER (^notiert UND roh) werden entfernt;
+      * ein nacktes '~' wird NUR dann am Ende gefressen, wenn vorher
+        ein Anfangs-Marker nachgewiesen wurde (sonst bleibt jedes
+        legitime '~', z.B. in '~/Dokumente', unverletzt);
+      * alles uebrige bleibt unverandert.
+
+    Wird in finalize() AN DER EINLAUFSEITE angewendet, damit
+    Delta-Berechnung, Backspace-Zahl und Paste saubere Werte sehen.
+    """
+    had_start = any(m in text for m in _MARKER_200)
+    for m in _MARKER_200 + _MARKER_201:
+        text = text.replace(m, "")
+    if had_start and text.endswith("~"):
+        text = text[:-1]
+    return text
 
 
 def _common_prefix_len(a: str, b: str) -> int:
