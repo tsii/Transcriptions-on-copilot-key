@@ -225,7 +225,7 @@ class TestStateLifecycle:
         assert ctrl._key_down is False
         # Jetzt die Finalisierung abschliessen lassen.
         ctrl._test_unblock_finalize.set()
-        ctrl._wait_state(ControllerState.IDLE)
+        _wait_state(ctrl, ControllerState.IDLE)
         # KEINE Geisteraufnahme: die Taste ist nicht gehalten.
         assert ctrl.state == ControllerState.IDLE
         assert ctx["source"].started == 1
@@ -255,7 +255,7 @@ class TestStateLifecycle:
         ctrl.start_recording()           # vorgemerkt
         ctrl.stop_recording()            # ... aber schon losgelassen
         ctrl._test_unblock_finalize.set()
-        ctrl._wait_state(ControllerState.IDLE)
+        _wait_state(ctrl, ControllerState.IDLE)
         assert ctrl.state == ControllerState.IDLE
         assert ctx["source"].started == 1
 
@@ -273,7 +273,7 @@ class TestStateLifecycle:
         ctrl._wait_state(ControllerState.RECORDING)  # Auto-Start ist da
         ctrl.stop_recording()           # Release danach
         ctrl._test_unblock_finalize.set()  # 2. Finalisierung freigeben
-        ctrl._wait_state(ControllerState.IDLE)
+        _wait_state(ctrl, ControllerState.IDLE)
         assert ctrl._key_down is False
         assert ctx["source"].started == 2
         assert ctx["source"].stopped == 2
@@ -288,7 +288,7 @@ class TestStateLifecycle:
         assert ctx["source"].started == 1
         ctrl.stop_recording()
         ctrl._test_unblock_finalize.set()
-        ctrl._wait_state(ControllerState.IDLE)
+        _wait_state(ctrl, ControllerState.IDLE)
         assert ctx["source"].started == 1
 
 
@@ -361,7 +361,7 @@ class TestTimeouts:
         ctrl.stop_recording()          # Taste loslassen
         assert ctrl._key_down is False
         ctrl._test_unblock_finalize.set()
-        ctrl._wait_state(ControllerState.IDLE)
+        _wait_state(ctrl, ControllerState.IDLE)
         assert ctrl.state == ControllerState.IDLE
         assert ctx["source"].stopped == 1
 
@@ -1718,3 +1718,101 @@ class TestWaitForWork:
         # zum naechsten Ereignis (Finalizer-Ende notifiziert).
         probe = WaitProbe(ctrl)
         probe.assert_blocked(timeout=0.3)
+
+
+# ---------------------------------------------------------------------------
+# Fertig-Signal (Betreiber 31.10., Kimi-Folgegutachten): nach abgeschlossener
+# Finalisierung spielt der Controller einen Ton — der Nutzer weiss endlich,
+# dass der Text fertig in der Zwischenablage liegt und pasten kann.
+# Semantik (Kimi): Ton NACH ausgelöstem Paste = 'Einfuegen ausgeloest';
+# bei Exceptions kein Ton (ehrliches Feedback, kein 'fertig' bei Fehler).
+# ---------------------------------------------------------------------------
+
+
+class TestDoneSound:
+    def _play_calls(self, monkeypatch):
+        import stt_button.controller as ctrl_mod
+
+        calls = []
+
+        def fake_run(cmd, *a, **kw):
+            calls.append(list(cmd))
+
+        monkeypatch.setattr(ctrl_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(ctrl_mod.shutil, "which", lambda b: f"/usr/bin/{b}")
+        monkeypatch.setattr(
+            ctrl_mod.os.path, "exists", lambda p: p.endswith(".oga")
+        )
+        return calls
+
+    def test_sound_after_successful_finalize(self, monkeypatch, tmp_path) -> None:
+        from stt_button.config import Config
+
+        calls = self._play_calls(monkeypatch)
+        recorder = RecordingTranscriber()
+        source = RestAudioSource([b"\x00" * 16000] * 4, rest=b"")
+        ctrl = PushToTalkController(
+            config=Config(done_sound="complete"),
+            source_factory=lambda: source,
+            engine=FakeEngine(),
+            delta_typer=DeltaTyper(FakeTyper(), append_space=True),
+            transcriber_factory=lambda *a, **kw: recorder,
+            dump_path=str(tmp_path / "last.wav"),
+        )
+        ctrl.start_recording()
+        time.sleep(0.2)
+        ctrl.stop_recording()
+        _wait_state(ctrl, ControllerState.IDLE)
+        assert len(calls) == 1, "genau ein Fertig-Signal nach erfolgreichem Finalize"
+        assert calls[0][0].endswith("paplay") and any(
+            a.endswith("complete.oga") for a in calls[0]
+        )
+
+    def test_no_sound_when_off(self, monkeypatch, tmp_path) -> None:
+        from stt_button.config import Config
+
+        calls = self._play_calls(monkeypatch)
+        recorder = RecordingTranscriber()
+        source = RestAudioSource([b"\x00" * 16000] * 4, rest=b"")
+        ctrl = PushToTalkController(
+            config=Config(),  # done_sound Default '' = aus
+            source_factory=lambda: source,
+            engine=FakeEngine(),
+            delta_typer=DeltaTyper(FakeTyper(), append_space=True),
+            transcriber_factory=lambda *a, **kw: recorder,
+            dump_path=str(tmp_path / "last.wav"),
+        )
+        ctrl.start_recording()
+        time.sleep(0.2)
+        ctrl.stop_recording()
+        _wait_state(ctrl, ControllerState.IDLE)
+        assert calls == []
+
+    def test_failing_paplay_never_breaks_finalize(self, monkeypatch, tmp_path) -> None:
+        import stt_button.controller as ctrl_mod
+
+        from stt_button.config import Config
+
+        def boom(cmd, *a, **kw):
+            raise OSError("kein Audiosink")
+
+        monkeypatch.setattr(ctrl_mod.subprocess, "run", boom)
+        monkeypatch.setattr(ctrl_mod.shutil, "which", lambda b: f"/usr/bin/{b}")
+        monkeypatch.setattr(
+            ctrl_mod.os.path, "exists", lambda p: p.endswith(".oga")
+        )
+        recorder = RecordingTranscriber()
+        source = RestAudioSource([b"\x00" * 16000] * 4, rest=b"")
+        ctrl = PushToTalkController(
+            config=Config(done_sound="bell"),
+            source_factory=lambda: source,
+            engine=FakeEngine(),
+            delta_typer=DeltaTyper(FakeTyper(), append_space=True),
+            transcriber_factory=lambda *a, **kw: recorder,
+            dump_path=str(tmp_path / "last.wav"),
+        )
+        ctrl.start_recording()
+        time.sleep(0.2)
+        ctrl.stop_recording()
+        _wait_state(ctrl, ControllerState.IDLE)
+        assert ctrl.state == ControllerState.IDLE, "Tonfehler darf nie abbrechen"

@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import enum
 import logging
+import os
 import queue
+import shutil
+import subprocess
 import threading
 import time
 from typing import Callable
@@ -24,6 +27,9 @@ from typing import Callable
 from .asr import StreamTranscriber, TranscriptionResult
 from .audio import AudioSource, AudioSourceError
 from .typing import DeltaTyper
+
+#: Freedesktop-Soundverzeichnis fuer das Fertig-Signal (config.done_sound).
+SOUND_DIR = "/usr/share/sounds/freedesktop/stereo"
 
 log = logging.getLogger(__name__)
 
@@ -63,6 +69,16 @@ class PushToTalkController:
         self._dump_path = dump_path
         self._audio_dump_mode = str(
             getattr(config, "audio_dump_mode", "sync") or "sync"
+        )
+        # Fertig-Signal (Betreiber 31.10.): Name des freedesktop-Sounds
+        # (z.B. 'complete'), der nach ERFOLGREICHER Finalisierung einmal
+        # leise gespielt wird — der Nutzer hoert, dass der Text in der
+        # Zwischenablage liegt und pasten kann. '' = aus.
+        self._done_sound = str(getattr(config, "done_sound", "") or "")
+        # paplay --volume ist Promille (0..65536); 35000 ~= 54 % — 'angenehm
+        # leise' gemaess Betreiber (31.10.), nicht schrill.
+        self._done_sound_volume = int(
+            getattr(config, "done_sound_volume", 35000) or 35000
         )
 
         self.state = ControllerState.IDLE
@@ -441,6 +457,41 @@ class PushToTalkController:
             with self._lock:
                 self.state = ControllerState.IDLE
 
+    def _play_done_sound(self) -> None:
+        """Spielt das konfigurierte Fertig-Signal (config.done_sound).
+
+        Leer = aus. Sonst wird der freedesktop-Soundname (z.B. 'complete')
+        leise ueber paplay abgespielt (done_sound_volume, Promille der
+        Base-Lautstaerke). Der Ton darf den Finalizer NIEMALS bremsen
+        oder abbrechen: kein langes Warten, keine Exception nach aussen
+        (headless/ohne Sink = still).
+        """
+        name = str(getattr(self, "_done_sound", "") or "").strip()
+        if not name:
+            return
+        binary = shutil.which("paplay")
+        if binary is None:
+            log.debug("paplay nicht vorhanden - kein Fertig-Signal")
+            return
+        path = os.path.join(SOUND_DIR, f"{name}.oga")
+        if not os.path.exists(path):
+            log.warning("Done-Sound %r nicht gefunden (%s)", name, path)
+            return
+        volume = str(getattr(self, "_done_sound_volume", 35000))
+        try:
+            # DEVNULL statt Pipes: paplay kann bei weggebrochenem Sink
+            # haengen — der Finalizer darf nie auf Audio warten (Muster
+            # wie bei den gehaerteten Subprozessen in typing._run).
+            subprocess.run(
+                [binary, "--volume", volume, path],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=3.0,
+            )
+        except Exception as exc:  # noqa: BLE001 - Ton ist Komfort, nie Muss
+            log.debug("Fertig-Signal fehlgeschlagen (%s)", exc)
+
     def _finalize_worker(
         self, transcriber, audio_queue: "queue.Queue[bytes]", rest: bytes
     ) -> None:
@@ -491,6 +542,12 @@ class PushToTalkController:
                 self._trace("finalize end")
                 self._delta_typer.finalize(result.text, result.committed_len)
                 self._trace("paste")
+                # Fertig-Signal (Betreiber 31.10.): erst NACH erfolgreich
+                # abgeschlossener Ausgabe — der Ton bedeutet 'Text ist
+                # fertig, jetzt kann gepastet werden' (Kimi-Semantik: nach
+                # ausgeloestem Chord nur 'ausgeloest', nie 'zugekommen').
+                # Bei Exception oben: KEIN Ton (ehrliches Feedback).
+                self._play_done_sound()
         except Exception as exc:  # noqa: BLE001
             log.error("Schluss-Transkription fehlgeschlagen: %s", exc)
         finally:

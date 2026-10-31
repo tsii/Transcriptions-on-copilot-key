@@ -73,3 +73,9 @@ live_typing_mode = "committed"
 # Tick ~0,75s < asr_interval_s (1,0s) - Live-Vorschau bis 15s tragfaehig.
 # 0.0 = Live-Ticks immer aktiv (bisheriges Verhalten, Opt-in).
 live_asr_until_s = 15.0
+
+# Fertig-Signal (Betreiber 31.10.): leiser Ton nach ERFOLGREICHER
+# Finalisierung = 'Text liegt in der Zwischenablage, jetzt pasten'.
+# freedesktop-Soundname (z.B. "complete", "bell"); '' = aus.
+done_sound = ""
+done_sound_volume = 35000        # paplay-Promille (0..65536)

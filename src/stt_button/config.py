@@ -162,6 +162,14 @@ class Config:
     #: tragfaehig, laengere Diktate pausieren mit Indikator. 0.0 ist der
     #: ausdrueckliche Opt-in 'Live-Ticks immer aktiv' (bisheriges Verhalten).
     live_asr_until_s: float = 15.0
+    #: Fertig-Signal (Betreiber 31.10.): freedesktop-Soundname (z.B.
+    #: "complete" oder "bell"), der nach ERFOLGREICHER Finalisierung
+    #: einmal leise ueber paplay gespielt wird — hoeren statt raten, wann
+    #: der Text in der Zwischenablage liegt. '' = aus.
+    done_sound: str = ""
+    #: Lautstaerke des Fertig-Signals als paplay-Promille (0..65536);
+    #: Default 35000 (~54 %) — 'angenehm, nicht schrill, leise'.
+    done_sound_volume: int = 35000
 
     def validate(self) -> None:
         """Wirft :class:`ConfigError` bei unbrauchbaren Werten."""
