@@ -292,6 +292,105 @@ def _cmd_compare_stream(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_setup(args: argparse.Namespace) -> int:
+    """Installiert die Runtime + Konfiguration + User-Service-Unit.
+
+    Ist der Erste-Schritt auf einem System, auf dem das schlanke .deb neu
+    installiert wurde: baut die venv samt ML-Stack (via bootstrap), seedet
+    ``~/.config/stt-button/config.toml`` (nur, wenn sie fehlt), und
+    installiert die systemd-User-Unit. Alles idempotent — erneuter Lauf ist
+    ein No-op, solange die venv fertig ist.
+    """
+    import os
+    import shutil
+    import sys
+
+    from pathlib import Path
+
+    from . import bootstrap
+
+    # 1) Python-Runtime (venv + torch[cpu] + ML-Stack) — pro-User-venv,
+    #    dasselbe Default wie der .deb-Launcher (bootstrap.run_bootstrap).
+    venv_dir = Path(os.path.expanduser("~/.local/stt-button/venv"))
+    if bootstrap.probe_venv(venv_dir):
+        print(f"[1/3] Python-Runtime schon bereit ({venv_dir}) — übersprungen.")
+        bootstrap.mark_ready(venv_dir)
+    elif not bootstrap.run_bootstrap():
+        print(
+            "Bootstrap: Python-Runtime NICHT fertiggestellt."
+            "\n  Pruefe die o. Zeilen, evtl. fehlende python3-venv",
+            "  oder Netzwerk (torch vom PyTorch-CPU-Index).",
+            file=sys.stderr,
+        )
+        return 1
+    else:
+        print("[1/3] Python-Runtime bereit (venv + ML-Stack).")
+
+    # 2) Konfiguration seeden (nur wenn nicht vorhanden)
+    cfg_dir = Path(os.path.expanduser("~/.config/stt-button"))
+    cfg_path = cfg_dir / "config.toml"
+    if not cfg_path.exists():
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        # Vorlage aus dem installierten Paket (falls da), sonst Default.
+        source = bootstrap._default_install_root() / "config.example.toml"
+        if source.is_file():
+            shutil.copyfile(source, cfg_path)
+        else:
+            cfg_path.write_text("# STT-Button: Defaults gelten (siehe config.example.toml)\n")
+        seeded = True
+        print(f"[2/3] Konfiguration angelegt: {cfg_path}")
+    else:
+        print(f"[2/3] Konfiguration vorhanden: {cfg_path} (unverändert)")
+
+    # 3) User-Service-Unit installieren (Deployment: /opt/stt-button)
+    unit_src = bootstrap._default_install_root() / "systemd" / "stt-button.service"
+    unit_dir = Path(os.path.expanduser("~/.config/systemd/user"))
+    unit_dst = unit_dir / "stt-button.service"
+    if unit_src.is_file():
+        unit_dir.mkdir(parents=True, exist_ok=True)
+        # @EXEC@ ersetzen: im .deb-Lauf zeigt die Unit auf den Launcher
+        # /usr/bin/stt-button; im Source-Tree auf das Projekt (dev-venv).
+        if Path("/opt/stt-button").exists():
+            exec_target = "/usr/bin/stt-button run"
+        else:
+            root = bootstrap._default_install_root()
+            exec_target = f"{root}/.venv/bin/stt-button run"
+        text = unit_src.read_text().replace("@EXEC@", exec_target)
+        unit_dst.write_text(text)
+        print(f"[3/3] User-Unit geschrieben: {unit_dst} (ExecStart={exec_target})")
+    else:
+        print("[3/3] Keine Service-Unit installiert (keine Vorlage).")
+
+    print("")
+    print("Fertig. Naechste Schritte:")
+    print(f"  1) Config anpassen:      ${cfg_path}")
+    print("  2) Einheit laden+starten: systemctl --user daemon-reload")
+    print("     systemctl --user start stt-button")
+    print("     systemctl --user enable --now stt-button   (optional, Autostart)")
+    print("  3) Log:                   journalctl --user -u stt-button -f")
+    return 0
+
+
+def _cmd_bootstrap(args: argparse.Namespace) -> int:
+    """Stellt die Python-Runtime (venv + ML-Stack) sicher.
+
+    Ruft ``bootstrap.run_bootstrap`` mit einem expliziten install_root
+    (Default: das enthaltende Paket). Wird vom .deb-Launcher vor dem
+    Start des eigentlichen Diensts aufgerufen (System-Python, importfrei).
+    """
+    from pathlib import Path
+
+    from . import bootstrap
+
+    install_root = Path(args.root) if args.root else bootstrap._default_install_root()
+    ok = bootstrap.run_bootstrap(install_root=install_root)
+    if ok:
+        print(f"Python-Runtime bereit ({install_root}/.venv).")
+        return 0
+    print("Python-Runtime NICHT fertiggestellt.", file=sys.stderr)
+    return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="stt-button",
                                       description="Push-to-Talk Diktat (Whisper)")
@@ -302,6 +401,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_run = sub.add_parser("run", help="Dienst starten")
     p_run.set_defaults(func=_cmd_run)
+
+    p_setup = sub.add_parser(
+        "setup",
+        help="Runtime installieren (venv+ML), Config seeden, User-Unit setzen",
+    )
+    p_setup.set_defaults(func=_cmd_setup)
+
+    p_boot = sub.add_parser(
+        "bootstrap",
+        help="Nur die Python-Runtime (venv+ML) sicherstellen (fuer den .deb-Launcher)",
+    )
+    p_boot.add_argument("--root", help="installiertes Paket-Root (Default: auto)")
+    p_boot.set_defaults(func=_cmd_bootstrap)
 
     p_list = sub.add_parser("list-keys", help="Devices und Keycodes auflisten")
     p_list.add_argument("--codes", action="store_true", help="auch Keycodes zeigen")

@@ -1,11 +1,18 @@
 [Unit]
-Description=STT Push-to-Talk (Copilot-Taste -> Whisper -> Text)
+Description=STT Push-to-Talk (Copilot-Taste -> ASR -> Text)
 After=graphical-session.target
 Wants=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=@ROOT@/.venv/bin/stt-button run
+# @EXEC@ wird bei der Installation gesetzt:
+#   .deb:  /usr/bin/stt-button run   (Launcher: sichert die pro-User-venv
+#          idempotent und startet mit dem venv-Python)
+#   dev:   @ROOT@/.venv/bin/stt-button run   (venv-Python direkt)
+ExecStart=@EXEC@
+# Der allererste Start baut noch die venv (torch[cpu] + ML-Stack, ~5-15 min).
+# Danach ist der Start schnell. 1800s nur fuer dieses eine Mal.
+TimeoutStartSec=1800
 Restart=on-failure
 RestartSec=3
 Environment=HF_HOME=%h/.cache/huggingface

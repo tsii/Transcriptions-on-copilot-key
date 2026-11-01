@@ -28,7 +28,9 @@ fi
 
 echo "==> systemd-User-Unit installieren"
 mkdir -p "$HOME/.config/systemd/user"
-sed "s|@ROOT@|$ROOT|" systemd/stt-button.service > "$HOME/.config/systemd/user/stt-button.service"
+# Dev-Modus: venv-Python direkt (install.sh hat es gerade gebaut). Der
+# .deb-Weg verwendet stattdessen den Self-Healing-Launcher (build-deb.sh).
+sed "s|@EXEC@|$ROOT/.venv/bin/stt-button run|" systemd/stt-button.service > "$HOME/.config/systemd/user/stt-button.service"
 systemctl --user daemon-reload
 systemctl --user enable --now stt-button.service 2>/dev/null || true
 

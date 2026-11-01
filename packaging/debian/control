@@ -1,0 +1,27 @@
+Package: stt-button
+Version: 0.1.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: salmon <salmon@localhost>
+Depends: python3, python3-venv, python3-pip, pipewire-bin, pulseaudio-utils, wtype
+Recommends: wl-clipboard, dotool, gnome-shell
+Description: Push-to-Talk Diktat (Copilot-Taste -> Parakeet ASR -> Text)
+ Lokales Push-to-Talk-Diktat: die Copilot-Taste halten, sprechen, und der
+ erkannte Text (lokal via Parakeet TDT 0.6B, ONNX/CPU) wird an die
+ Cursor-Position des fokussierten Fensters gestreamt.
+ .
+ Laufzeit-Verfahren: das Paket enthaelt den Python-Code, einen
+ Self-Healing-Launcher (/usr/bin/stt-button), die systemd-User-Unit und
+ ein requirements-Profil. Beim ersten Aufruf wird eine pro-User-Python-
+ Umgebung (venv unter ~/.local/stt-button/venv) samt ML-Stack
+ (torch[cpu], transformers, onnxruntime, ...) aufgebaut (~5-15 min,
+ einmalig). Das ASR-Modell laedt die Engine beim ersten Diktat
+ automatisch von Hugging Face (~200 MB, wird gecacht).
+ .
+ Nach der Installation: 'stt-button setup' (venv + Config + User-Unit),
+ dann in ~/.config/stt-button/config.toml die Taste und Audioquelle
+ einstellen und 'systemctl --user restart stt-button'. 'dotool' ist
+ optional (Standard-Typer ist das in den Ubuntu-Repos befindliche
+ 'wtype'); 'gnome-shell' wird nur gebraucht, wenn das Fokus-Fenster per
+ Shell-Erweiterung ermittelt werden soll.
