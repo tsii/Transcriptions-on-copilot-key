@@ -1,11 +1,11 @@
-"""Referenz-Tests ueber ``xkbcli`` (TDD-Kette K7).
+"""Reference tests using ``xkbcli`` (TDD chain K7).
 
-Diese Tests validieren die XKB-Tastaturlayout-Annahme, die dotool ueber
-``DOTOOL_XKB_LAYOUT=de`` / ``DOTOOL_XKB_VARIANT=nodeadkeys`` verwendet. Sie
-laufen nur, wenn ``xkbcli`` installiert ist.
+These tests validate the XKB keyboard layout assumption used by dotool via
+``DOTOOL_XKB_LAYOUT=de`` / ``DOTOOL_XKB_VARIANT=nodeadkeys``. They only
+run when ``xkbcli`` is installed.
 
-Ground Truth (belegt): Umlaute und das grosse ß (ẞ) werden ueber die
-Shift-/Lock-Ebenen des nodeadkeys-Layouts korrekt gemappt.
+Verified ground truth: umlauts and capital sharp S (ẞ) are mapped correctly
+through the Shift/Lock levels of the nodeadkeys layout.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ LAYOUT = "de"
 
 
 def _compile(variant: str) -> str:
-    """Gibt die ``compile-keymap``-Ausgabe als Text zurueck."""
+    """Return the ``compile-keymap`` output as text."""
     proc = subprocess.run(
         ["xkbcli", "compile-keymap", "--layout", LAYOUT, "--variant", variant],
         capture_output=True,
@@ -31,9 +31,9 @@ def _compile(variant: str) -> str:
 @pytest.mark.skipif(shutil.which("xkbcli") is None, reason="xkbcli fehlt")
 class TestKeymapReference:
     def test_nodeadkeys_umlaut_levels(self) -> None:
-        """nodeadkeys bildet ae/oe/ue in Klein- und Grossschreibung ab."""
+        """nodeadkeys maps ae/oe/ue in lowercase and uppercase."""
         out = _compile("nodeadkeys")
-        # Klein-/Grossschreibung fuer a/o/u-Umlaut vorhanden.
+        # Lowercase and uppercase forms are present for a/o/u umlauts.
         for small, big in (
             ("udiaeresis", "Udiaeresis"),   # ü / Ü (Position AD11)
             ("adiaeresis", "Adiaeresis"),   # ä / Ä (Position AC10)
@@ -43,13 +43,13 @@ class TestKeymapReference:
             assert big in out, big
 
     def test_ssharp_key_is_four_level_plus_lock(self) -> None:
-        """Die ß-Taste hat vier Level plus Lock und liefert das grosse ẞ (U1E9E)."""
+        """The ß key has four levels plus Lock and produces capital ẞ (U1E9E)."""
         out = _compile("nodeadkeys")
         assert "U1E9E" in out
         assert ("FourLevel+Lock" in out or "FOUR_LEVEL_PLUS_LOCK" in out)
 
     def test_variant_comparison(self) -> None:
-        """nodeadkeys und basic liefern identische Umlaut-Zeichen (Level/Anzahl)."""
+        """nodeadkeys and basic produce identical umlaut characters (levels/count)."""
         nodeadkeys = _compile("nodeadkeys")
         basic = _compile("basic")
         for symbol in ("udiaeresis", "Udiaeresis", "adiaeresis",

@@ -1,48 +1,48 @@
-# Handoff — STT-Button (Push-to-Talk-Diktat)
+# Handoff — STT-Button (Push-to-Talk Dictation)
 
-**Stand:** 2026-10-27, Session unterbrochen (auf Wunsch des Nutzers).
-**Zweck dieses Dokuments:** Übergabe an eine neue Session/Person, damit die Arbeit
-ohne Kontextverlust fortgesetzt werden kann.
+**Status:** 2026-10-27, session interrupted (at the user's request).
+**Purpose of this document:** Handoff to a new session/person so that work
+can continue without loss of context.
 
 ---
 
-## 1. Was das Projekt ist
+## 1. What the Project Is
 
-Push-to-Talk-Diktat auf einem ThinkPad X1 (Ubuntu 24.04, GNOME/Wayland, CPU-only):
-Copilot-Taste halten → sprechen → Text erscheint an der Cursor-Position.
+Push-to-talk dictation on a ThinkPad X1 (Ubuntu 24.04, GNOME/Wayland, CPU-only):
+Hold the Copilot key → speak → text appears at the cursor position.
 
-| Komponente | Technik |
+| Component | Technology |
 |---|---|
-| Trigger | Copilot-Taste → `keyd`-Remap → `KEY_F24` → evdev-Read (User, kein root) |
-| Audio | `pw-record` Subprozess, 16 kHz mono s16le, eigener Capture-Thread |
+| Trigger | Copilot key → `keyd` remap → `KEY_F24` → evdev read (user, no root) |
+| Audio | `pw-record` subprocess, 16 kHz mono s16le, dedicated capture thread |
 | ASR | NVIDIA **Parakeet TDT 0.6B v3** (transformers, CPU, float32) |
-| Streaming | `whole_buffer`: wachsender Puffer, Re-Transkription alle 1 s, LocalAgreement-Commit |
-| Ausgabe | `dotool` (uinput) mit `DOTOOL_XKB_LAYOUT=de`, `DOTOOL_XKB_VARIANT=nodeadkeys` |
-| Dienst | systemd-User-Unit `stt-button.service` |
+| Streaming | `whole_buffer`: growing buffer, re-transcription every 1 s, LocalAgreement commit |
+| Output | `dotool` (uinput) with `DOTOOL_XKB_LAYOUT=de`, `DOTOOL_XKB_VARIANT=nodeadkeys` |
+| Service | systemd user unit `stt-button.service` |
 
-**Repo:** `git@github.com:tsii/Parakeet-on-copilot-key.git`, Branch `master`
-**Letzter Commit:** `4e6b496` — *CapsLock: invertierte LED-Semantik korrigiert (LED an = normal)*
-**Achtung:** Dieser Commit enthält eine **widerlegte** Prämisse (siehe §4.1). Danach
-gibt es **uncommittete** Änderungen im Working Tree.
+**Repo:** `git@github.com:tsii/Parakeet-on-copilot-key.git`, branch `master`
+**Latest commit:** `4e6b496` — *CapsLock: corrected inverted LED semantics (LED on = normal)*
+**Warning:** This commit contains a **disproven** premise (see §4.1). After it,
+there are **uncommitted** changes in the working tree.
 
 ---
 
-## 2. Aktueller technischer Stand
+## 2. Current Technical Status
 
-### 2.1 Läuft / funktioniert
+### 2.1 Running / Working
 
 | | Status |
 |---|---|
-| Testsuite | **232 passed** (`.venv/bin/python -m pytest`) |
-| Langdiktat-Fixes | ✅ behoben & committet (`e7d590e`) |
-| Zweites-Diktat-verschluckt | ✅ behoben & committet (`5826f26`) |
-| CapsLock K1–K8 + VAD-Gate + Trigger-Logging | ✅ committet (`2dbc79b`) |
-| Groß-/Kleinschreibung **und** Umlaute | ✅ korrekt (Live-Diktat bestätigt) |
-| keyd: dotool ausgeschlossen | ✅ `-4711:0815`, Journal verifiziert |
-| Phantom-F24 | ✅ nicht mehr reproduzierbar (§3.3) |
-| **Dienst** | ▶️ **läuft** (`systemctl --user start stt-button`) — Autostart (`enable`) bewusst noch nicht gesetzt |
+| Test suite | **232 passed** (`.venv/bin/python -m pytest`) |
+| Long-dictation fixes | ✅ fixed & committed (`e7d590e`) |
+| Second dictation swallowed | ✅ fixed & committed (`5826f26`) |
+| CapsLock K1–K8 + VAD gate + trigger logging | ✅ committed (`2dbc79b`) |
+| Uppercase/lowercase **and** umlauts | ✅ correct (confirmed by live dictation) |
+| keyd: dotool excluded | ✅ `-4711:0815`, verified in journal |
+| Phantom F24 | ✅ no longer reproducible (§3.3) |
+| **Service** | ▶️ **running** (`systemctl --user start stt-button`) — autostart (`enable`) intentionally not set yet |
 
-### 2.2 Uncommittete Änderungen (Working Tree)
+### 2.2 Uncommitted Changes (Working Tree)
 
 ```
  M config.example.toml        M src/stt_button/asr.py       M tests/test_config.py
@@ -53,11 +53,11 @@ gibt es **uncommittete** Änderungen im Working Tree.
 ?? tests/test_keys_logging.py ?? tests/test_stream_vad.py
 ```
 
-**Diese Änderungen sind getestet (222 grün), aber NICHT committet.** Sie enthalten
-u. a. die Entfernung des CapsLock-Toggles, das VAD-Gate, Trigger-Logging und die
-Doku-Anpassung an die (falsche) Prämisse.
+**These changes are tested (222 green), but NOT committed.** Among other things, they include
+the removal of the CapsLock toggle, the VAD gate, trigger logging, and the
+documentation adjustment to the (incorrect) premise.
 
-### 2.3 Live-Konfiguration
+### 2.3 Live Configuration
 
 `~/.config/stt-button/config.toml` — relevant:
 ```toml
@@ -72,236 +72,235 @@ xkb_layout = "de"
 xkb_variant = "nodeadkeys"
 typedelay_ms = 20
 typehold_ms = 15
-capslock_autocorrect = false     # (Zeile 41, manuell gefixt; vorher: capslock_led_inverted)
+capslock_autocorrect = false     # (line 41, fixed manually; previously: capslock_led_inverted)
 ```
 
 ---
 
-## 3. Die behobenen Probleme (chronologisch, mit Ursache)
+## 3. The Fixed Problems (Chronological, with Causes)
 
-### 3.1 Langdiktate wurden gekappt / Teile fehlten
+### 3.1 Long Dictations Were Truncated / Parts Were Missing
 
-**Drei Ursachen, alle behoben (Commit `e7d590e`):**
+**Three causes, all fixed (commit `e7d590e`):**
 
-1. **`max_new_tokens=256`** war ein hartes Limit. Beweis: dasselbe 60-s-Audio lieferte
-   mit 256 nur **123 Zeichen**, mit 2048 **294 Zeichen**.
+1. **`max_new_tokens=256`** was a hard limit. Proof: the same 60-s audio produced
+   only **123 characters** with 256, but **294 characters** with 2048.
    → Fix: `_token_budget(audio_s) = max(256, min(audio_s*12 + 64, 4096))`.
-2. **`max_record_s=60`** brach Aufnahmen nach 60 s ab. → Fix: **300 s**.
-3. **Pause-Stall im `windowed`-Modus:** Das Fenster war auf `committed_s+3s` gedeckelt;
-   bei einer Sprechpause ≥ 3 s rückte `committed_s` nie vor → alles danach ging verloren.
-   → Fix: Silence-Skip (`skip_silence`) + Text-Sicherung vor dem Sprung.
-   **Wichtiger Befund:** Der `windowed`-Modus hat zu viele Deadlock-Möglichkeiten.
-   Messvergleich (13,4 s Audio mit 4 s Pause): Referenz 256 Zeichen ·
-   `whole_buffer` **256 Zeichen** ✅ · `windowed` 137 Zeichen ❌.
-   → **`whole_buffer` ist jetzt der Default.**
+2. **`max_record_s=60`** stopped recordings after 60 s. → Fix: **300 s**.
+3. **Pause stall in `windowed` mode:** The window was capped at `committed_s+3s`;
+   during a speech pause ≥ 3 s, `committed_s` never advanced → everything after it was lost.
+   → Fix: Silence skip (`skip_silence`) + text preservation before the jump.
+   **Important finding:** `windowed` mode has too many potential deadlocks.
+   Measurement comparison (13.4 s audio with 4 s pause): reference 256 characters ·
+   `whole_buffer` **256 characters** ✅ · `windowed` 137 characters ❌.
+   → **`whole_buffer` is now the default.**
 
-### 3.2 Zweites Diktat wurde verschluckt
+### 3.2 Second Dictation Was Swallowed
 
-**Ursache:** `start_recording()` hatte `if self.state != IDLE: return`. Während der
-finalen Transkription (blockierte im Key-Thread, mehrere Sekunden) war der Zustand
-`FINALIZING` → der Tastendruck wurde **verworfen**.
+**Cause:** `start_recording()` had `if self.state != IDLE: return`. During
+final transcription (blocked in the key thread for several seconds), the state was
+`FINALIZING` → the key press was **discarded**.
 
-**Fix (Commit `5826f26`):** Finale Transkription läuft im Hintergrund-Thread.
+**Fix (commit `5826f26`):** Final transcription runs in a background thread.
 
-**⚠️ Folge-Bug (Geisteraufnahme), ebenfalls GELÖST (TDD, openrouter/Kimi-k3.1-pro
-+ GLM 5.3):** Der Vorläufer-Mechanismus `_pending_start` (Bool) merkte nur
-„irgendwann gab es einen Press“; das Release während FINALIZING ging verloren →
-nach Finalisierungsende wurde für eine längst losgelassene Taste eine
-Geisteraufnahme gestartet (im Live-Log belegt). **Heutiger Stand:**
-`_key_down` (physischer Tastenzustand) ersetzt den Bool — Release aktualisiert
-IMMER den Tastenzustand, Start nach Finalisierung nur bei gehaltener Taste,
-Prüfung+Start atomar unter `_lock`. Tests (deterministisch, BlockingTranscriber
-statt Sleeps): `test_release_during_finalizing_updates_key_state`,
+**⚠️ Resulting bug (ghost recording), also SOLVED (TDD, openrouter/Kimi-k3.1-pro
++ GLM 5.3):** The provisional `_pending_start` mechanism (Bool) only remembered
+that "there was a press at some point"; the release during FINALIZING was lost →
+after finalization ended, a ghost recording was started for a key that had long
+since been released (proven in the live log). **Current status:**
+`_key_down` (physical key state) replaces the Bool — release ALWAYS updates
+the key state, start after finalization only while the key is held,
+check+start atomic under `_lock`. Tests (deterministic, BlockingTranscriber
+instead of sleeps): `test_release_during_finalizing_updates_key_state`,
 `test_key_held_through_finalize_restarts_recording`,
 `test_start_after_finalizing_only_when_key_held`,
 `test_release_after_finalized_start_stops_fresh_recording`,
-`test_press_during_recording_is_idempotent`. Alter Sleep-Test entfernt.
-Bekannte Grenze: Kurzhub während FINALIZING wird verworfen (kein Audio erfasst).
-Nebenwirkung (Design-konform): bei **gehaltener** Taste nach Max-Dauer-Finalize
-startet automatisch die nächste Aufnahme.
+`test_press_during_recording_is_idempotent`. Old sleep test removed.
+Known limitation: A short press during FINALIZING is discarded (no audio captured).
+Side effect (by design): If the key is **held** after max-duration finalization,
+the next recording starts automatically.
 
-### 3.3 Phantom-Aufnahmen im Leerlauf ✅ GELÖST (27.10., verifiziert)
+### 3.3 Phantom Recordings While Idle ✅ SOLVED (10/27, verified)
 
-**Beobachtung (alt, 17:00):** Der Dienst startete im Leerlauf Aufnahmen und
-schickte **14× `backspace`** in 30 s in das Terminal; 3× `f24 down` ohne
-Tastendruck.
+**Observation (old, 17:00):** The service started recordings while idle and
+sent **14× `backspace`** in 30 s to the terminal; 3× `f24 down` without
+a key press.
 
-**Ursache 1 (Stille-Halluzination):** Im Default-Modus `whole_buffer` war das
-**VAD-Gate nicht verdrahtet** (nur im `windowed`-Modus). Stille/Rauschen wurde
-transkribiert → ASR halluzinierte → DeltaTyper tippte und nahm per Backspace
-zurück. **Fix:** `StreamTranscriber` hat jetzt ein optionales `vad`-Argument,
-`app.py` verdrahtet `SileroVadGate` für beide Modi (committet in `2dbc79b`).
+**Cause 1 (silence hallucination):** In default `whole_buffer` mode, the
+**VAD gate was not wired** (only in `windowed` mode). Silence/noise was
+transcribed → ASR hallucinated → DeltaTyper typed and undid it via backspace.
+**Fix:** `StreamTranscriber` now has an optional `vad` argument,
+`app.py` wires `SileroVadGate` for both modes (committed in `2dbc79b`).
 
-**Ursache 2 (Phantom-`f24`):** keyd grabbte mit `[ids] *` auch **dotools
-uinput-Tastatur** (`4711:0815`). Die Rückkopplung dotool→keyd→virtual keyboard
-erzeugte Geister-Events. **Fix:** `-4711:0815` in `/etc/keyd/default.conf`
-(Nutzer, `sudo keyd reload`). Verifiziert per keyd-Journal:
+**Cause 2 (phantom `f24`):** With `[ids] *`, keyd also grabbed **dotool's
+uinput keyboard** (`4711:0815`). The dotool→keyd→virtual keyboard
+feedback loop generated ghost events. **Fix:** `-4711:0815` in `/etc/keyd/default.conf`
+(user, `sudo keyd reload`). Verified via the keyd journal:
 `DEVICE: ignoring 4711:0815 ... (dotool keyboard)`.
 
-**Verifikation (27.10, nach dem Fix):** Passiver Wächter (`/tmp/f24_watch.py`,
-90 s Leerlauf): **0 Events**. Positivkontrolle (1× Copilot): exakt 1 Press+Release.
-Live-Betrieb mit laufendem Dienst: nur echter Trigger im Log.
+**Verification (10/27, after the fix):** Passive watcher (`/tmp/f24_watch.py`,
+90 s idle): **0 events**. Positive control (1× Copilot): exactly 1 press+release.
+Live operation with the service running: only genuine triggers in the log.
 
-> **Wichtige Lehre:** Das „offene Phantom-Log" war 3,5 h ÄLTER als der keyd-Fix.
-> Vor jeder weiteren Diagnose Alter der Messungen prüfen — das Problem war
-> bereits gelöst.
+> **Important lesson:** The "open phantom log" was 3.5 h OLDER than the keyd fix.
+> Before any further diagnosis, check the age of the measurements — the problem was
+> already solved.
 
 ---
 
-## 4. CapsLock-Inversion ✅ GELÖST (27.10., abschließend verifiziert)
+## 4. CapsLock Inversion ✅ SOLVED (10/27, conclusively verified)
 
-> **ABSCHLUSS (27.10, 21:03):** Nach dem keyd-Fix (`-4711:0815`, dotool nicht
-> mehr gegrabbt) ist das System wieder **konventionell**: LED aus = CapsLock aus
-> = normale Schreibung (per Diktat „Eins, zwei, drei, viereinhalb" + LED-Sicht
-> bestätigt). Live-Config auf `capslock_led_inverted = false` gesetzt, keine
-> Warnung mehr. Die nachfolgende Dokumentation der *zeitweise invertierten*
-> Semantik bleibt als Fallstudie erhalten — genau diese Verläufe sind der
-> Grund, warum die App nie ungefragt toggeln darf.
+> **CONCLUSION (10/27, 21:03):** After the keyd fix (`-4711:0815`, dotool no
+> longer grabbed), the system is **conventional** again: LED off = CapsLock off
+> = normal capitalization (confirmed by dictating "Eins, zwei, drei, viereinhalb" + visual LED check).
+> Live config set to `capslock_led_inverted = false`, no more warnings. The following documentation of the *temporarily inverted*
+> semantics is retained as a case study — precisely these sequences are the
+> reason the app must never toggle without asking.
 
 
-### 4.1 Was empirisch BEWIESEN ist
+### 4.1 What Has Been Empirically PROVEN
 
-Ein kontrolliertes Experiment (drei Text-Marker, getippt bei definierten LED-Zuständen,
-Nutzer hat die Bildschirmausgabe bestätigt):
+A controlled experiment (three text markers, typed under defined LED states,
+user confirmed the on-screen output):
 
-| LED | Getippt | Angekommen | Ergebnis |
+| LED | Typed | Received | Result |
 |---|---|---|---|
-| **aus** | `[[C-marker-drei]]` | `[[c-MARKER-DREI]]` | **invertiert** |
-| **an** | (Marker) | normal | korrekt |
+| **off** | `[[C-marker-drei]]` | `[[c-MARKER-DREI]]` | **inverted** |
+| **on** | (marker) | normal | correct |
 
-**FAZIT (belegt):** Auf diesem System gilt
-**LED aus = CapsLock aktiv = invertierter Text**;
-**LED an = normale Schreibung.**
+**CONCLUSION (proven):** On this system,
+**LED off = CapsLock active = inverted text**;
+**LED on = normal capitalization.**
 
-Die LED-Semantik ist also **invertiert zur üblichen Konvention**. Der Nutzer hatte
-von Anfang an recht; zwei Experten (Kimi K3) lagen mit der Gegenannahme falsch.
+The LED semantics are therefore **inverted relative to the usual convention**. The user was
+right from the beginning; two experts (Kimi K3) were wrong in assuming the opposite.
 
-### 4.2 Der Fehler in der bisherigen "Lösung"
+### 4.2 The Flaw in the Previous "Solution"
 
-Commit `4e6b496` kodiert die **falsche** Prämisse (`LED an = CapsLock an = invertiert`)
-und entfernte den Korrekturmechanismus. Das wurde vom Reviewer (Deepseek V4 Pro)
-mit **REQUEST-CHANGES** abgelehnt:
+Commit `4e6b496` encodes the **incorrect** premise (`LED on = CapsLock on = inverted`)
+and removed the correction mechanism. The reviewer (Deepseek V4 Pro)
+rejected it with **REQUEST-CHANGES**:
 
-> *P0-1: Der Nutzer bleibt mit invertiertem Text allein. Die Änderung entfernt den
-> einzigen Korrekturmechanismus und lässt ihn in beiden denkbaren Szenarien mit
-> dauerhaft invertiertem Text zurück.*
+> *P0-1: The user is left alone with inverted text. The change removes the
+> only correction mechanism and leaves them with permanently inverted text in
+> either conceivable scenario.*
 
-### 4.3 Warum kein App-seitiger Fix das Problem löst
+### 4.3 Why No App-Side Fix Solves the Problem
 
-**Architektur-Fakt:** Die Keycode→Zeichen-Umwandlung (inkl. Case) passiert **einmal,
-seat-global, in mutters XKB-State**. Ein dort gelatchter CapsLock-Modifier invertiert
-Buchstaben **aller** Keyboards und **aller** Wayland-Clients — also auch der physischen
-Tastatur. Die App kann diesen Zustand **nicht zuverlässig lesen**:
+**Architectural fact:** Keycode→character conversion (including case) happens **once,
+seat-wide, in mutter's XKB state**. A CapsLock modifier latched there inverts
+letters from **all** keyboards and **all** Wayland clients — including the physical
+keyboard. The app **cannot reliably read** this state:
 
-- Kernel-LED: zeigt den State **nicht** verlässlich (Desync belegt)
-- `xset q` (XWayland): eigener State, weicht ab
-- Es existieren **zwei** LEDs (`input3` = physisch, `input19` = keyd virtual)
-- `caps:none` (gsettings **und** setxkbmap) wirkte **nicht**
-- `key capslock`-Toggles ändern die LED, aber nicht zuverlässig das Verhalten
+- Kernel LED: does **not** reliably show the state (desync proven)
+- `xset q` (XWayland): separate state, differs
+- There are **two** LEDs (`input3` = physical, `input19` = keyd virtual)
+- `caps:none` (gsettings **and** setxkbmap) had **no** effect
+- `key capslock` toggles change the LED, but not reliably the behavior
 
-### 4.4 Der eigentliche Systemfix (Nutzer-Aufgabe, braucht sudo)
+### 4.4 The Actual System Fix (User Task, Requires sudo)
 
-**Verdacht mit hoher Wahrscheinlichkeit:** `keyd` grabbt mit `[ids] *` **alle**
-Devices — auch dotools uinput-Tastatur. Damit läuft die Diktat-Ausgabe durch einen
-remappenden Daemon, der den Lock-State anders behandelt als mutter.
+**Highly likely suspicion:** With `[ids] *`, `keyd` grabs **all**
+devices — including dotool's uinput keyboard. This routes dictation output through a
+remapping daemon that handles lock state differently from mutter.
 
 ```bash
-# 1) Device-ID von dotool ermitteln (während dotool tippt)
+# 1) Determine dotool's device ID (while dotool is typing)
 sudo keyd monitor
 
-# 2) In /etc/keyd/default.conf unter [ids] eine Ausnahme eintragen:
-#    -<vendor>:<product>        (dotools Device)
+# 2) Add an exception under [ids] in /etc/keyd/default.conf:
+#    -<vendor>:<product>        (dotool's device)
 
-# 3) Neu starten
+# 3) Restart
 sudo systemctl restart keyd
 ```
 
-**Zusätzlich empfohlen:** Einmal ab- und wieder anmelden — das setzt mutters
-Seat-State garantiert zurück.
+**Additionally recommended:** Log out and back in once — this is guaranteed to reset mutter's
+seat state.
 
-### 4.5 Umlaute: systemisch, nicht App-seitig
+### 4.5 Umlauts: Systemic, Not App-Side
 
-Der Nutzer berichtet aktuell: **ASCII korrekt, Umlaute falsch.**
-Kimi K3 hat die kompilierte Keymap geprüft (`xkbcli compile-keymap --layout de
+The user currently reports: **ASCII correct, umlauts incorrect.**
+Kimi K3 checked the compiled keymap (`xkbcli compile-keymap --layout de
 --variant nodeadkeys`):
 
-- `de+nodeadkeys` erbt `de(basic)`, überschreibt nur 9 Tasten
-- Umlaute sind eigene Keysyms: `AD11` Level1=`udiaeresis`, Level2=`Udiaeresis` (analog `ä`, `ö`)
-- **`ß` (AE11) hat Typ `FOUR_LEVEL_PLUS_LOCK` mit 5 Symbolen**, das letzte ist `U1E9E` (ẞ)
-  → deshalb wird `ß` bei aktivem Lock zu `ẞ`. **Erwartetes XKB-Verhalten, kein Bug.**
+- `de+nodeadkeys` inherits `de(basic)`, overriding only 9 keys
+- Umlauts are separate keysyms: `AD11` Level1=`udiaeresis`, Level2=`Udiaeresis` (analogous for lowercase a and o with diaeresis)
+- **Lowercase sharp S (AE11) has type `FOUR_LEVEL_PLUS_LOCK` with 5 symbols**, the last of which is `U1E9E` (capital sharp S)
+  → therefore lowercase sharp S becomes capital sharp S when lock is active. **Expected XKB behavior, not a bug.**
 
-**Konsequenz:** Ein Layout-/Variantenwechsel löst nichts. **Keine
-Umlaut-Sonderlogik in der App** — die einzige nötige Behandlung (DE-Layout-Env für
-dotool) ist bereits implementiert.
+**Consequence:** Changing the layout/variant solves nothing. **No
+special umlaut logic in the app** — the only required handling (DE layout env for
+dotool) is already implemented.
 
 ---
 
-## 5. Was als Nächstes zu tun ist
+## 5. What to Do Next
 
-> **STATUS 27.10, ~21:05:** Prioritäten 1–3 sind **erledigt** (keyd-Fix gesetzt
-> und verifiziert; K1–K8 committet in `2dbc79b`; Phantom-F24 via 90-s-Test +
-> Live-Betrieb ausgeschlossen). Übrig bleibt nur noch §5.4 Aufräumen.
+> **STATUS 10/27, ~21:05:** Priorities 1–3 are **done** (keyd fix applied
+> and verified; K1–K8 committed in `2dbc79b`; phantom F24 ruled out via 90-s test +
+> live operation). Only §5.4 cleanup remains.
 
-### 5.1 Priorität 1 — Systemzustand heilen ✅ ERLEDIGT
+### 5.1 Priority 1 — Restore System State ✅ DONE
 
-- keyd-Ausschluss `-4711:0815` gesetzt, `keyd check` fehlerfrei,
-  Journal zeigt `ignoring 4711:0815 (dotool keyboard)`.
-- Kein Relogin nötig geworden — nach dem Fix war die Schreibung sofort korrekt
-  und die LED-Semantik wieder konventionell (`capslock_led_inverted = false`).
+- keyd exclusion `-4711:0815` set, `keyd check` passes without errors,
+  journal shows `ignoring 4711:0815 (dotool keyboard)`.
+- No relogin was needed — after the fix, capitalization was immediately correct
+  and LED semantics were conventional again (`capslock_led_inverted = false`).
 
-### 5.2 Priorität 2 — Korrekturen K1–K8 umsetzen (Code) ✅ ERLEDIGT (`2dbc79b`)
+### 5.2 Priority 2 — Implement Corrections K1–K8 (Code) ✅ DONE (`2dbc79b`)
 
-Die Implementer-Runde (GLM 5.3) wurde **mitten in der Arbeit gestoppt**. Der Plan
-liegt vollständig vor und ist umsetzbar:
+The implementation round (GLM 5.3) was **stopped in the middle of its work**. The plan
+is fully available and ready to implement:
 
-| ID | Aufgabe |
+| ID | Task |
 |---|---|
-| **K1** | `_capslock_leds() -> dict[str,str]` pro Device; `_capslock_state()` baut darauf auf (OR bleibt). Diagnose-Logs geben **pro Device** aus. |
-| **K2** | `capslock_led_inverted: bool = True` **wieder einführen** (belegte Semantik im Docstring). `_ensure_capslock_normal()`: Ziel = `"an"` wenn inverted, sonst `"aus"`; nur bei `capslock_autocorrect=True` togglen; max 2 Versuche, verifiziert. |
-| **K3** | `test_capslock_led_inverted_key_rejected` → `..._accepted` umdrehen (Schlüssel ist wieder gültig) |
-| **K4** | Neues Subcommand `stt-button caps-diagnose`: LED pro Device, `xset`-Sicht, gültiger Zielzustand, Probetyp-Marker `[[diagnose-OK]]` |
-| **K5** | `docs/KONZEPT.md`: CapsLock-Abschnitt auf **belegte** Semantik umschreiben |
-| **K6** | Charakterisierungstest für dotool-Env (`DOTOOL_XKB_LAYOUT=de`, `..._VARIANT=nodeadkeys`) |
-| **K7** | `tests/test_keymap_reference.py` mit `xkbcli`-Tests (skipif fehlt): Umlaut-Level, ẞ-FOUR_LEVEL_PLUS_LOCK, Variantenvergleich |
-| **K8** | `_capslock_leds()` ehrlich benennen; Log-Hinweis "LED ist kein verlässlicher State" |
+| **K1** | `_capslock_leds() -> dict[str,str]` per device; `_capslock_state()` builds on it (OR remains). Diagnostic logs output **per device**. |
+| **K2** | **Reintroduce** `capslock_led_inverted: bool = True` (proven semantics in docstring). `_ensure_capslock_normal()`: target = `"an"` if inverted, otherwise `"aus"`; toggle only if `capslock_autocorrect=True`; max 2 attempts, verified. |
+| **K3** | Reverse `test_capslock_led_inverted_key_rejected` → `..._accepted` (key is valid again) |
+| **K4** | New subcommand `stt-button caps-diagnose`: LED per device, `xset` view, valid target state, test typing marker `[[diagnose-OK]]` |
+| **K5** | `docs/KONZEPT.md`: Rewrite CapsLock section to reflect **proven** semantics |
+| **K6** | Characterization test for dotool env (`DOTOOL_XKB_LAYOUT=de`, `..._VARIANT=nodeadkeys`) |
+| **K7** | `tests/test_keymap_reference.py` with `xkbcli` tests (skipif missing): umlaut levels, ẞ-FOUR_LEVEL_PLUS_LOCK, variant comparison |
+| **K8** | Name `_capslock_leds()` accurately; log note "LED is not a reliable state" |
 
-**Kernregel für alle Änderungen:** Die App darf CapsLock **nie ungefragt** togglen.
-Default `capslock_autocorrect=False` → nur warnen.
+**Core rule for all changes:** The app must **never** toggle CapsLock without asking.
+Default `capslock_autocorrect=False` → warn only.
 
-### 5.3 Priorität 3 — Phantom-F24 klären ✅ ERLEDIGT
+### 5.3 Priority 3 — Resolve Phantom F24 ✅ DONE
 
-Quelle war die dotool→keyd-Rückkopplung (§3.3). Verifikation: 90-s-Leerlauf
-mit 0 Events, Positivkontrolle exakt 1 Press+Release, Live-Diktat sauber.
-Wiedervorlage bei Bedarf:
+The source was the dotool→keyd feedback loop (§3.3). Verification: 90-s idle
+with 0 events, positive control exactly 1 press+release, clean live dictation.
+Re-test if needed:
 ```bash
-/tmp/f24_watch.py 90   # passiver Wächter (Dienst muss aus sein)
+/tmp/f24_watch.py 90   # passive watcher (service must be stopped)
 journalctl --user -u stt-button -f | grep -i "Trigger"
 ```
-Kommt `Trigger press` ohne Tastendruck → keyd-Combo-Leckage (Systemconfig).
+If `Trigger press` appears without a key press → keyd combo leakage (system config).
 
-### 5.4 Priorität 4 — Aufräumen
+### 5.4 Priority 4 — Cleanup
 
-- Uncommittete Änderungen prüfen, Tests laufen lassen, **committen**
-- `README.md` um `capslock_*`-Optionen ergänzen (dort ist die Config nicht dokumentiert)
-- `docs/KONZEPT.md` ist die Übergabe-Datei für ein Android-Projekt (siehe §6)
+- Review uncommitted changes, run tests, **commit**
+- Add `capslock_*` options to `README.md` (the config is not documented there)
+- `docs/KONZEPT.md` is the handoff file for an Android project (see §6)
 
 ---
 
-## 6. Wichtige Projekt-Artefakte
+## 6. Important Project Artifacts
 
-| Datei | Zweck |
+| File | Purpose |
 |---|---|
-| `docs/KONZEPT.md` | **Übergabedokument für Nachimplementierung** (u. a. Android): 7 Kernmechanismen, 6 Fallstricke, was NICHT funktionierte, Teststrategie, Checkliste |
-| `config.example.toml` | Vorlage mit allen Optionen und Kommentaren |
+| `docs/KONZEPT.md` | **Handoff document for reimplementation** (including Android): 7 core mechanisms, 6 pitfalls, what did NOT work, test strategy, checklist |
+| `config.example.toml` | Template with all options and comments |
 | `src/stt_button/streaming_types.py` | `Token`, `Transcription`, `StreamWindowPolicy` |
-| `src/stt_button/committer.py` | `TimestampCommitter` (LocalAgreement + Wortgrenzen) |
+| `src/stt_button/committer.py` | `TimestampCommitter` (LocalAgreement + word boundaries) |
 | `src/stt_button/asr.py` | `ParakeetEngine`, `QwenEngine`, `WhisperEngine`, `StreamTranscriber`, `_token_budget` |
-| `src/stt_button/typing.py` | `DeltaTyper` (Kern-Ausgabelogik), `DotoolTyper`, `WtypeTyper`, `ClipboardTyper` |
-| `src/stt_button/controller.py` | Zustandsmaschine, 3-Thread-Architektur, Shutdown-Reihenfolge |
-| `src/stt_button/keys.py` | evdev-Reader für die Trigger-Taste |
+| `src/stt_button/typing.py` | `DeltaTyper` (core output logic), `DotoolTyper`, `WtypeTyper`, `ClipboardTyper` |
+| `src/stt_button/controller.py` | State machine, 3-thread architecture, shutdown sequence |
+| `src/stt_button/keys.py` | evdev reader for the trigger key |
 | `src/stt_button/vad.py` | `SileroVadGate` |
 
-### Test-Helfer (für neue Tests wiederverwendbar)
+### Test Helpers (Reusable for New Tests)
 
 - `tests/test_controller.py`: `FakeAudioSource`, `FakeEngine`, `FakeTyper`, `make_controller()`
 - `tests/test_asr.py`: `FakeEngine`, `audio(seconds)`
@@ -310,39 +309,39 @@ Kommt `Trigger press` ohne Tastendruck → keyd-Combo-Leckage (Systemconfig).
 
 ---
 
-## 7. Arbeitsweise in dieser Session (bewährt)
+## 7. Working Approach in This Session (Proven)
 
-**Rollenverteilung, die sich etabliert hat:**
+**Established division of roles:**
 
-1. **Kimi K3** — Debugging/Analyse/Recherche (Oracle-Template)
-2. **GLM 5.3** — Implementierung TDD (implement/delegate-Template)
-3. **Deepseek V4 Pro 0813** — Review (review-Template)
+1. **Kimi K3** — Debugging/analysis/research (Oracle template)
+2. **GLM 5.3** — TDD implementation (implement/delegate template)
+3. **Deepseek V4 Pro 0813** — Review (review template)
 
-**Wichtigste Lehre:** Experten-Pläne **verifizieren, nicht glauben**. Zwei
-Kimi-Analysen zur CapsLock-Semantik waren falsch; erst ein empirisches
-Ground-Truth-Experiment (Marker tippen bei definierten Zuständen) hat es geklärt.
+**Most important lesson:** **Verify expert plans; do not trust them blindly.** Two
+Kimi analyses of CapsLock semantics were wrong; only an empirical
+ground-truth experiment (typing markers under defined states) clarified it.
 
-**Weitere Lehren:**
-- Fixes am ASR waren oft richtig — aber mehrere Probleme lagen **außerhalb** der App
-  (keyd, mutter, CapsLock-State)
-- Ein Fix kann das Problem **verursachen** (der CapsLock-Toggle hat die Inversion
-  erzeugt und dauerhaft gehalten)
-- Immer ein **gespeichertes Test-Audio** durch die Pipeline schicken und mit der
-  Einzeltranskription vergleichen — deckt Fehler zuverlässig auf
+**Additional lessons:**
+- ASR fixes were often correct — but several problems lay **outside** the app
+  (keyd, mutter, CapsLock state)
+- A fix can **cause** the problem (the CapsLock toggle created the inversion
+  and kept it in place)
+- Always send a **saved test audio** through the pipeline and compare it with
+  single transcription — reliably exposes errors
 
 ---
 
-## 8. Offene Fragen / Risiken
+## 8. Open Questions / Risks
 
-1. ~~**keyd-`[ids] *`**~~ — **erledigt:** Device-Ausschluss `-4711:0815` ist
-   gesetzt und per keyd-Journal verifiziert (`ignoring 4711:0815`).
-2. **Phantom-F24** — **erledigt:** Quelle war die dotool→keyd-Rückkopplung.
-   90-s-Leerlauf-Test nach dem Fix: 0 Events; Live-Betrieb sauber (siehe §3.3).
-3. **Uncommittete Änderungen** — Doku-Updates (KONZEPT/HANDOFF) und die
-   Live-Config (`capslock_led_inverted = false`) sind die letzten Reste.
-4. **Dienst-Autostart** — läuft aktuell manuell (`start`, aber `disabled`).
-   Dauerhaft: `systemctl --user enable stt-button` (bewusst noch nicht
-   gesetzt, damit ein Neustart first nichts Uberraschendes tut).
-5. **Der `windowed`-Modus ist unfertig** — er hat die dokumentierten Deadlocks.
-   `whole_buffer` ist Default und funktioniert; wer wortweises Live-Erscheinen will,
-   muss `windowed` mit den Fixes aus §3.1 fertigstellen.
+1. ~~**keyd-`[ids] *`**~~ — **done:** Device exclusion `-4711:0815` is
+   set and verified via the keyd journal (`ignoring 4711:0815`).
+2. **Phantom F24** — **done:** The source was the dotool→keyd feedback loop.
+   90-s idle test after the fix: 0 events; clean live operation (see §3.3).
+3. **Uncommitted changes** — Documentation updates (KONZEPT/HANDOFF) and the
+   live config (`capslock_led_inverted = false`) are the last remaining items.
+4. **Service autostart** — currently started manually (`start`, but `disabled`).
+   Permanent: `systemctl --user enable stt-button` (intentionally not set yet,
+   so that a restart does not do anything unexpected at first).
+5. **`windowed` mode is unfinished** — it has the documented deadlocks.
+   `whole_buffer` is the default and works; anyone who wants word-by-word live output
+   must finish `windowed` with the fixes from §3.1.

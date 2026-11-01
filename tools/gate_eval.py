@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
-"""Korpus-Gate für ``finalize_mode="cached_mid_tail"`` (Kimi-Gutachten).
+"""Corpus gate for ``finalize_mode="cached_mid_tail"`` (Kimi assessment).
 
-Misst pro WAV im Korpusordner zwei Laeufe mit dem ECHTEN Modell
+Measures two runs per WAV in the corpus directory using the REAL model
 (nvidia/parakeet-tdt-0.6b-v3, HF, FP32):
 
-* Referenz:      finalize_mode="full"  (Vollpuffer-Finalize, Produktivpfad)
-* Kandidat:      finalize_mode="cached_mid_tail" mit live_asr_until_s=8.0
-                 und 4-s-Hintergrund-Checkpoints (Replay der Live-Ticks
-                 wie im Dienst: 0,5-s-Audio pro Tick, interval 2 s)
+* Reference: finalize_mode="full"  (full-buffer finalize, production path)
+* Candidate: finalize_mode="cached_mid_tail" with live_asr_until_s=8.0
+             and 4-second background checkpoints (replaying live ticks
+             as in the service: 0.5 seconds of audio per tick, 2-second interval)
 
-Harte Gate-Kriterien (Kimi, sa-6dd6f8c0):
-  1. committed-Praefix zeichengleich in jeder Ausgabe
-  2. null Duplikate / null Fragmente an Stitch-Grenzen
-  3. letzte 5 Woerter wie Referenz in den Boundary-Clips
-  4. mittlere CER gegen Referenz <= +0,2 Prozentpunkte, kein Clip > +1,0 pp
-  5. Fallback-Quote bei langen Clips <= 10 %
-  6. finale ASR-Zeit: Median <= 1,3 s, p95 <= 1,8 s (30-s-Klasse)
+Hard gate criteria (Kimi, sa-6dd6f8c0):
+  1. Committed prefix character-identical in every output
+  2. Zero duplicates / zero fragments at stitch boundaries
+  3. Last 5 words identical to the reference in the boundary clips
+  4. Mean CER against reference <= +0.2 percentage points, no clip > +1.0 pp
+  5. Fallback rate for long clips <= 10%
+  6. Final ASR time: median <= 1.3 s, p95 <= 1.8 s (30-second class)
 
-Nur Werkzeug (keine Produktlogik). Laeuft mit ``nice -n 19
-OMP_NUM_THREADS=4``, damit der Diktatdienst priorisiert bleibt.
+Tool only (no production logic). Runs with ``nice -n 19
+OMP_NUM_THREADS=4`` so that the dictation service retains priority.
 
-Aufruf:  nice -n 19 OMP_NUM_THREADS=4 .venv/bin/python tools/gate_eval.py \
-             ~/stt-korpus [--limit N] [--out report.json]
+Usage:  nice -n 19 OMP_NUM_THREADS=4 .venv/bin/python tools/gate_eval.py \
+            ~/stt-korpus [--limit N] [--out report.json]
 """
 from __future__ import annotations
 
@@ -39,19 +39,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from stt_button.asr import ParakeetEngine, StreamTranscriber  # noqa: E402
 
 MODEL = "nvidia/parakeet-tdt-0.6b-v3"
-LIMIT_S = 15.0  # OPT3: Produktiv-Default 29.10. (Gate muss den echten Pfad replizieren)
+LIMIT_S = 15.0  # OPT3: Production default 29.10. (gate must replicate the real path)
 STEP_S = 4.0
 CONTEXT_S = 2.5
-TICK_S = 0.5           # Live-Tick-Intervall des Dienstes
-LIVE_INTERVAL_S = 2.0  # maybe_transcribe-Intervall (Konfiguration)
+TICK_S = 0.5           # Live tick interval of the service
+LIVE_INTERVAL_S = 2.0  # maybe_transcribe interval (configuration)
 
 
 def load_wav(path: Path) -> bytes:
-    """Liest 16-kHz-mono-16bit-WAV und gibt die PCM-Bytes zurueck."""
+    """Reads a 16 kHz mono 16-bit WAV and returns the PCM bytes."""
     with wave.open(str(path), "rb") as w:
         assert w.getnchannels() == 1 and w.getframerate() == 16000, \
-            f"{path}: 16kHz mono erwartet"
-        assert w.getsampwidth() == 2, f"{path}: 16-bit erwartet"
+            f"{path}: expected 16 kHz mono"
+        assert w.getsampwidth() == 2, f"{path}: expected 16-bit"
         return w.readframes(w.getnframes())
 
 
@@ -78,14 +78,14 @@ def wer(ref: str, hyp: str) -> float:
 
 
 def duplikate(text: str) -> list[str]:
-    """Wortwiederholungen 'wort wort' (Direkt-Duplikat, Stitch-Artefakt)."""
+    """Word repetitions 'word word' (direct duplicate, stitch artifact)."""
     w = words(text)
     return [f"{w[i]} {w[i+1]}" for i in range(len(w) - 1) if w[i] == w[i + 1]]
 
 
 def fragment_grenze(ref: str, cand: str) -> bool:
-    """Prueft Stitch-Fragment-Artefakt: kurzes Anhaengsel (>1 Buchstabe,
-    kein Wort) direkt vor einem Wort, das die Referenz so nicht kennt."""
+    """Checks for stitch fragment artifacts: a short suffix (>1 letter,
+    not a word) immediately before a word absent from the reference."""
     rw = set(w.lower().strip(".,!?;:") for w in words(ref))
     for m in re.finditer(r"(?:^| )([A-Za-zAeoueAEeouUE]{2,})(?=[A-ZAeou])", cand):
         if m.group(1).lower() not in rw:
@@ -95,8 +95,8 @@ def fragment_grenze(ref: str, cand: str) -> bool:
 
 def replay_live(t: StreamTranscriber, pcm: bytes,
                 until_bytes: int) -> None:
-    """Fuettert wie der Dienst (0,5-s-Ticks) und haelt die 2-s-Tick-Regel
-    ein; stoppt bei ``until_bytes`` (Punkt des Release)."""
+    """Feeds audio like the service (0.5-second ticks) and observes the
+    2-second tick rule; stops at ``until_bytes`` (release point)."""
     chunk = int(16000 * 2 * TICK_S)
     fed = 0
     since = 0
@@ -111,7 +111,7 @@ def replay_live(t: StreamTranscriber, pcm: bytes,
 
 
 def run_case(pcm: bytes, mode: str) -> dict:
-    """Ein Lauf: Live-Replay bis Limit + 2 s, dann finalize(); Zeiten messen."""
+    """One run: live replay up to limit + 2 s, then finalize(); measure timings."""
     engine = run_case.engine
     t = StreamTranscriber(engine=engine, sample_rate=16000,
                           interval_s=LIVE_INTERVAL_S,
@@ -135,7 +135,7 @@ def run_case(pcm: bytes, mode: str) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("corpus", help="Ordner mit WAVs")
+    ap.add_argument("corpus", help="Directory containing WAV files")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--out", default="gate_report.json")
     args = ap.parse_args()
@@ -144,10 +144,10 @@ def main() -> None:
     if args.limit:
         wavs = wavs[:args.limit]
     if not wavs:
-        print("KEINE WAVs — Korpus erst fuellen (tools/corpus_watch.py)")
+        print("NO WAV FILES — populate the corpus first (tools/corpus_watch.py)")
         return
 
-    print(f"Lade Modell {MODEL} ...", flush=True)
+    print(f"Loading model {MODEL} ...", flush=True)
     run_case.engine = ParakeetEngine(MODEL)
 
     rows = []
@@ -174,16 +174,16 @@ def main() -> None:
     lange = [r for r in rows if r["audio_s"] >= 20]
     med = statistics.median(r["fin_kand_s"] for r in rows) if rows else -1
     print("\n== GATE ==")
-    print(f"Clips: {len(rows)} (lange >=20s: {len(lange)})")
-    print(f"mittlere WER(Kandidat vs Referenz): "
+    print(f"Clips: {len(rows)} (long >=20s: {len(lange)})")
+    print(f"Mean WER (candidate vs reference): "
           f"{statistics.mean(r['wer_kand'] for r in rows)*100:.2f} pp")
-    print(f"Clips mit Duplikat: {sum(1 for r in rows if r['duplikate'])}")
-    print(f"Clips mit Fragment: {sum(1 for r in rows if r['fragment'])}")
-    print(f"letzte-5-Woerter-Faelle: {sum(1 for r in rows if not r['letzte5_ok'])}")
+    print(f"Clips with duplicates: {sum(1 for r in rows if r['duplikate'])}")
+    print(f"Clips with fragments: {sum(1 for r in rows if r['fragment'])}")
+    print(f"Last-5-words failures: {sum(1 for r in rows if not r['letzte5_ok'])}")
     if lange:
-        print(f"Fallback-Quote lange: "
+        print(f"Fallback rate for long clips: "
               f"{sum(1 for r in lange if r['fallback'])/len(lange)*100:.0f} %")
-    print(f"finale ASR Median: {med:.2f}s")
+    print(f"Final ASR median: {med:.2f}s")
     Path(args.out).write_text(json.dumps(rows, ensure_ascii=False, indent=1))
     print(f"Report: {args.out}")
 

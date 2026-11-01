@@ -1,86 +1,88 @@
-# STT-Button Konfiguration
-# Kopiere in ~/.config/stt-button/config.toml und passe an.
+# STT-Button configuration
+# Copy to ~/.config/stt-button/config.toml and adjust.
 
-# --- Ausloeser ---------------------------------------------------------
-# Das Device, auf dem die Copilot-Taste erscheint.
-# Auf ThinkPads mit keyd: "keyd virtual keyboard" (Taste -> F24)
+# --- Trigger ---------------------------------------------------------
+# The device the Copilot key appears on.
+# On ThinkPads with keyd: "keyd virtual keyboard" (key -> F24)
 input_device_name = "keyd virtual keyboard"
-# Die Linux-Keycodes, die Push-to-Talk ausloesen.
+# The Linux key codes that trigger push-to-talk.
 key_codes = ["KEY_F24"]
 
 # --- Audio -------------------------------------------------------------
-# PipeWire-Quellenname (aus: pactl list short sources) oder "auto".
-# Die Standardquelle "deepfilter_source" (Rauschunterdrueckung) ist auf
-# diesem ThinkPad stumm, wenn das Digital Microphone stumm geschaltet ist.
-# Daher hier explizit die SOF-Quelle. "auto" nimmt deepfilter_source.
+# PipeWire source name (from: pactl list short sources) or "auto".
+# The default source "deepfilter_source" (noise suppression) is silent on
+# this ThinkPad when the digital microphone is muted.
+# Hence the explicit SOF source here. "auto" picks deepfilter_source.
 audio_source = "alsa_input.pci-0000_00_1f.3-platform-sof_sdw.HiFi__hw_sofsoundwire_10__source"
 
 # --- ASR ---------------------------------------------------------------
-backend = "parakeet"           # "parakeet" (NVIDIA TDT, schnell) oder "whisper"
-model = "nvidia/parakeet-tdt-0.6b-v3"   # bei backend=whisper: "large-v3-turbo"
-language = "auto"             # Parakeet erkennt DE/EN automatisch
+backend = "parakeet"           # "parakeet" (NVIDIA TDT, fast) or "whisper"
+model = "nvidia/parakeet-tdt-0.6b-v3"   # for backend=whisper: "large-v3-turbo"
+language = "auto"             # Parakeet detects DE/EN automatically
 compute_type = "float32"     # parakeet: float32 (CPU); whisper: int8
 cpu_threads = 8
 
-# --- Ausgabe -----------------------------------------------------------
+# --- Output -----------------------------------------------------------
 typer = "dotool"               # "dotool" (GNOME/Wayland), "wtype", "clipboard"
-xkb_layout = "de"               # Tastaturlayout fuer dotool
-xkb_variant = "nodeadkeys"      # ohne tote Tasten (fuer Akzente)
-typedelay_ms = 20              # Tipp-Tempo; bei Modifier-Haengern erhoehen (z.B. 30)
-typehold_ms = 15               # Tasten-Haltezeit
-capslock_autocorrect = false   # App darf CapsLock NIE ungefragt togglen (nur warnen); true = vor dem Tippen auf den Zielzustand zwingen
-capslock_led_inverted = true    # LED-Semantik dieses Systems (belegt): true = LED aus heisst CapsLock aktiv; Ziel bei autocorrect = LED an
-append_space = true            # Leerzeichen nach dem Diktat
+xkb_layout = "de"               # keyboard layout for dotool
+xkb_variant = "nodeadkeys"      # without dead keys (for accents)
+typedelay_ms = 20              # typing speed; raise on modifier hangs (e.g. 30)
+typehold_ms = 15               # key hold time
+capslock_autocorrect = false   # app must NEVER toggle CapsLock unasked (warn only); true = force target state before typing
+capslock_led_inverted = true    # LED semantics of this system (established): true = LED off means CapsLock active; target with autocorrect = LED on
+append_space = true            # space after the dictation
 max_revision_chars = 60
-final_paste = false           # true = finales Delta beim Abschluss per Zwischenablage statt tippen (Durchsatz)
-paste_key = "ctrl+v"          # Einfuege-Chord; "ctrl+shift+v" fuer Terminals
-paste_binary = "wl-copy"      # Binary fuer den Copy-Schritt (wl-clipboard)
+final_paste = false           # true = final delta pasted via clipboard on finalize instead of typed (throughput)
+paste_key = "ctrl+v"          # insert chord; "ctrl+shift+v" for terminals
+paste_binary = "wl-copy"      # binary for the copy step (wl-clipboard)
 
 # --- Streaming ---------------------------------------------------------
 streaming_mode = "whole_buffer"
-min_audio_s = 3.0              # erst transkribieren, wenn 3s Audio da sind
-asr_interval_s = 1.0           # Re-Transkription alle X Sekunden Audio
+min_audio_s = 3.0              # only transcribe once 3s of audio are in
+asr_interval_s = 1.0           # re-transcribe every X seconds of audio
 max_record_s = 300.0
-commit_agreements = 2          # Praefix-Bestaetigungen vor dem Commit
+commit_agreements = 2          # prefix confirmations before commit
 sample_rate = 16000
 
-# --- Latenz (STUFE 1) ------------------------------------------------------
-# finalize_mode: "full" = Finalisierung transkribiert den ganzen Puffer neu
-# (bisheriges Verhalten); "cached" = unveraendertes Audio seit dem letzten
-# erfolgreichen Live-Tick wird ohne Engine-Call uebernommen (spart bei kurzem
-# Diktat einen kompletten Inferenz-Durchlauf; nur bei deterministischen
-# Engines wie Parakeet sinnvoll).
+# --- Latency (STAGE 1) ------------------------------------------------------
+# finalize_mode: "full" = finalization re-transcribes the whole buffer
+# (previous behavior); "cached" = the unchanged audio since the last
+# successful live tick is carried over without an engine call (saves a
+# complete inference pass for short dictations; only sensible with
+# deterministic engines like Parakeet).
 finalize_mode = "full"
-# audio_dump_mode: "sync" = WAV-Debug-Dump im Finalizer (bisher),
-# "async" = Dump im eigenen Thread (Datei-I/O nicht auf dem kritischen Pfad),
-# "off" = kein Dump. Ziel bleibt /tmp/stt_last.wav.
+# audio_dump_mode: "sync" = WAV debug dump in the finalizer (previous),
+# "async" = dump in its own thread (file I/O not on the critical path),
+# "off" = no dump. Target stays /tmp/stt_last.wav.
 audio_dump_mode = "sync"
-# latency_trace: true loggt Debug-Zeiten an den Messpunkten Release -> Ausgabe
-# (stop entered / source stopped / dump / finalize start / finalize end / paste).
+# latency_trace: true logs debug timings at the release -> output
+# measurement points (stop entered / source stopped / dump / finalize
+# start / finalize end / paste).
 latency_trace = false
 
-# --- Live-Vorschau-Modi (STUFE 2/3) ----------------------------------------
-# live_typing_mode: "committed" (Default) tippt nur den gesicherten
-# Praefix-Zuwachs - der unstabile Partial wird nie zurueckgetippt, das
-# finale Suffix kommt beim Loslassen als EIN Paste (null Backspaces).
-# "full" (Opt-in) tippt unstabile Partials live und korrigiert sie per
-# Backspace (bisheriges Verhalten, lebendige Vorschau).
+# --- Live preview modes (STAGE 2/3) ----------------------------------------
+# live_typing_mode: "committed" (default) types only the secured prefix
+# increment - the unstable partial is never re-typed, the final suffix
+# arrives on release as ONE paste (zero backspaces).
+# "full" (opt-in) types unstable partials live and corrects them via
+# backspace (previous behavior, lively preview).
 live_typing_mode = "committed"
-# live_asr_until_s: Live-Ticks nach dieser Pufferlaenge (Sekunden)
-# einstellen - der Whole-Buffer-Ansatz wird pro Tick teurer. feed()
-# sammelt weiter, finalize() transkribiert den kompletten Puffer.
-# Default 15.0: mit int8-Engine (RTF ~0,05) kostet ein 15-s-Vollpuffer-
-# Tick ~0,75s < asr_interval_s (1,0s) - Live-Vorschau bis 15s tragfaehig.
-# 0.0 = Live-Ticks immer aktiv (bisheriges Verhalten, Opt-in).
+# live_asr_until_s: stop live ticks after this buffer length (seconds) -
+# the whole-buffer approach gets more expensive per tick. feed() keeps
+# collecting, finalize() transcribes the complete buffer.
+# Default 15.0: with the int8 engine (RTF ~0.05) a 15s whole-buffer tick
+# costs ~0.75s < asr_interval_s (1.0s) - live preview up to 15s is viable.
+# 0.0 = live ticks always active (previous behavior, opt-in).
 live_asr_until_s = 15.0
 
-# Fertig-Signal (Betreiber 31.10.): leiser Ton nach ERFOLGREICHER
-# Finalisierung = 'Text liegt in der Zwischenablage, jetzt pasten'.
-# freedesktop-Soundname (z.B. "complete", "bell"); '' = aus.
+# Done signal (operator, 31.10.): quiet tone after a SUCCESSFUL
+# finalization = 'text is in the clipboard, paste now'.
+# freedesktop sound name (e.g. "complete", "bell"); '' = off.
 done_sound = ""
-done_sound_volume = 65536        # paplay-Promille (0..65536); 65536 = Desktop-Pegel (35000 war bei 24% Sink unhörbar)
+done_sound_volume = 65536        # paplay permille (0..65536); 65536 = desktop level (35000 was inaudible at 24% sink)
 
-# Wann das Fertig-Signal erklingt: "terminal" = nur bei Terminal-Fokus
-# (braucht die GNOME-Shell-Extension stt-button-focus; ohne Extension
-# erklingt der Ton trotzdem — Feedback statt Stille), "always" = immer.
+# When the done signal sounds: "terminal" = only when a terminal is
+# focused (requires the GNOME Shell extension stt-button-focus; without
+# the extension the tone still plays - feedback over silence),
+# "always" = on every dictation.
 done_sound_mode = "terminal"

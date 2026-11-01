@@ -1,7 +1,7 @@
-"""Tests fuer den Streaming-Transkriber (TDD-Kette 3).
+"""Tests for the streaming transcriber (TDD chain 3).
 
-Getestet wird ausschliesslich die Logik - das Whisper-Modell wird durch
-einen Fake-Engine ersetzt, damit die Tests schnell und ohne Download laufen.
+These tests cover only the logic; a fake engine replaces the Whisper model so
+tests run quickly and without downloads.
 """
 from __future__ import annotations
 
@@ -14,12 +14,12 @@ BYTES_PER_SECOND = RATE * 2  # s16le mono
 
 
 def audio(seconds: float) -> bytes:
-    """Erzeugt ``seconds`` Audio in s16le mono."""
+    """Generate ``seconds`` of audio in s16le mono."""
     return b"\x00\x00" * int(seconds * RATE)
 
 
 class FakeEngine:
-    """Liefert Texte in fester Reihenfolge, abhaengig von der Aufrufnummer."""
+    """Return texts in a fixed order based on the call number."""
 
     def __init__(self, texts: list[str] | None = None) -> None:
         self.texts = texts or []
@@ -59,7 +59,7 @@ class TestBuffering:
         t = StreamTranscriber(engine, interval_s=1.5, min_audio_s=0.8)
         t.feed(audio(1.0))
         assert t.maybe_transcribe() is not None
-        # Direkt danach: noch nicht genug neue Audiodaten
+        # Immediately afterward: not enough new audio data yet
         t.feed(audio(0.1))
         assert t.maybe_transcribe() is None
         assert len(engine.calls) == 1
@@ -138,8 +138,8 @@ class TestCommittedPrefix:
         t.maybe_transcribe()
         t.feed(audio(0.5))
         t.maybe_transcribe()
-        # Committet wird nur bis zur Wortgrenze "Hallo "; das unvollstaendige
-        # Wort "Wel" bleibt korrigierbar.
+        # Commit only up to the word boundary "Hallo "; the incomplete word "Wel"
+        # remains correctable.
         assert t.committed_len == len("Hallo ")
 
     def test_finalize_is_fully_correctable(self) -> None:
@@ -150,7 +150,7 @@ class TestCommittedPrefix:
         t.feed(audio(0.5))
         t.maybe_transcribe()
         result = t.finalize()
-        # Die Schluss-Transkription darf alles korrigieren.
+        # The final transcription may correct everything.
         assert result.committed_len == 0
 
     def test_finalize_does_not_shrink_commit_state(self) -> None:
@@ -183,7 +183,7 @@ class TestCommittedPrefix:
         for _ in range(3):
             t.feed(audio(0.5))
             t.maybe_transcribe()
-        # Das letzte Wort flackert -> nur "Hallo " wird committet
+        # The last word flickers -> only "Hallo " is committed
         assert t.committed_len == len("Hallo ")
 
 
@@ -303,7 +303,7 @@ class TestParakeetEngine:
         e = ParakeetEngine()
         e.load()
         e.load()
-        # Modell sollte nur einmal tatsaechlich geladen werden.
+        # The model should actually be loaded only once.
         assert calls["n"] == 1
         assert e.loaded is True
 
@@ -387,32 +387,32 @@ class TestParakeetEngine:
 
 class TestTokenBudget:
     def test_token_budget_scales_with_audio(self) -> None:
-        """Fix B: max_new_tokens muss mit der Audiolaenge skalieren."""
+        """Fix B: max_new_tokens must scale with audio length."""
         from stt_button.asr import _token_budget
-        # 30s Audio -> mind. 360 Tokens (12 Tokens/s)
+        # 30s audio -> at least 360 tokens (12 tokens/s)
         assert _token_budget(30.0) >= 360
-        # 60s -> mind. 720
+        # 60s -> at least 720
         assert _token_budget(60.0) >= 720
-        # kurze Audio bleibt beim Mindestbudget
+        # short audio retains the minimum budget
         assert _token_budget(1.0) >= 256
 
     def test_token_budget_capped(self) -> None:
         from stt_button.asr import _token_budget
-        # Deckel gegen Ausreisser
+        # cap against outliers
         assert _token_budget(10000.0) <= 4096
 
 
 class TestLiveAsrUntilLimit:
-    """STUFE 3: live_asr_until_s stoppt Live-Ticks nach Pufferlaenge.
+    """STAGE 3: live_asr_until_s stops live ticks based on buffer length.
 
-    Ab ``live_asr_until_s`` Sekunden Puffer-Audio liefert maybe_transcribe()
-    kein Ergebnis mehr (keine Engine-Aufrufe) - der Whole-Buffer-Ansatz wird
-    pro Tick teurer. feed() sammelt weiter, finalize() transkribiert den
-    VOLLSTaendigen Puffer, reset() reaktiviert die Live-Ticks.
+    Once the buffer contains ``live_asr_until_s`` seconds of audio,
+    maybe_transcribe() returns no result (no engine calls) because whole-buffer
+    processing becomes more expensive per tick. feed() keeps collecting,
+    finalize() transcribes the COMPLETE buffer, and reset() reactivates live ticks.
     """
 
     def test_below_limit_ticks_normally(self) -> None:
-        """(1) Unter dem Limit laufen normale Live-Ticks."""
+        """(1) Normal live ticks run below the limit."""
         engine = FakeEngine(["Hallo Welt", "Hallo Welt und"])
         t = StreamTranscriber(
             engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=10.0
@@ -423,25 +423,25 @@ class TestLiveAsrUntilLimit:
         assert result.text == "Hallo Welt"
 
     def test_above_limit_no_engine_calls(self) -> None:
-        """(2) Ueber dem Limit: maybe_transcribe() ruft die Engine NICHT."""
+        """(2) Above the limit: maybe_transcribe() does NOT call the engine."""
         engine = FakeEngine(["Hallo Welt"])
         t = StreamTranscriber(
             engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0
         )
         t.feed(audio(0.5))
-        assert t.maybe_transcribe() is not None  # unter dem Limit
-        t.feed(audio(1.0))  # jetzt 1.5s > 1.0s Limit
+        assert t.maybe_transcribe() is not None  # below the limit
+        t.feed(audio(1.0))  # now 1.5s > 1.0s limit
         assert t.maybe_transcribe() is None
         assert len(engine.calls) == 1, (
             "Engine wurde trotz Live-Limit erneut gerufen"
         )
-        # Noch mehr Audio aendert daran nichts.
+        # Additional audio does not change this.
         t.feed(audio(1.0))
         assert t.maybe_transcribe() is None
         assert len(engine.calls) == 1
 
     def test_feed_keeps_collecting(self) -> None:
-        """(3) feed() nimmt Audio vollstaendig auf, auch ueber dem Limit."""
+        """(3) feed() accepts all audio, even above the limit."""
         engine = FakeEngine(["Hallo Welt"])
         t = StreamTranscriber(
             engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0
@@ -450,10 +450,10 @@ class TestLiveAsrUntilLimit:
         t.maybe_transcribe()
         t.feed(audio(2.0))
         assert t.audio_seconds == pytest.approx(2.5)
-        assert t.maybe_transcribe() is None  # Live gestoppt
+        assert t.maybe_transcribe() is None  # live stopped
 
     def test_finalize_transcribes_full_buffer(self) -> None:
-        """(4) finalize() transkribiert den VOLLSTaendigen Puffer (Cache aus).
+        """(4) finalize() transcribes the COMPLETE buffer (cache off).
         """
         engine = FakeEngine(["kurz", "alles da"])
         t = StreamTranscriber(
@@ -461,14 +461,14 @@ class TestLiveAsrUntilLimit:
         )
         t.feed(audio(0.5))
         t.maybe_transcribe()
-        t.feed(audio(2.0))  # ueber Limit -> keine Live-Ticks mehr
+        t.feed(audio(2.0))  # above limit -> no more live ticks
         result = t.finalize()
         assert result.text == "alles da"
-        # Engine sah den kompletten 2.5s-Puffer:
+        # engine saw the complete 2.5s buffer:
         assert engine.calls[-1][0] == int(2.5 * BYTES_PER_SECOND)
 
     def test_reset_reactivates_live_ticks(self) -> None:
-        """(5) reset() setzt den Zaehler zurueck - Live-Ticks laufen wieder."""
+        """(5) reset() resets the counter; live ticks run again."""
         engine = FakeEngine(["eins", "zwei", "drei"])
         t = StreamTranscriber(
             engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0
@@ -476,20 +476,20 @@ class TestLiveAsrUntilLimit:
         t.feed(audio(0.5))
         t.maybe_transcribe()
         t.feed(audio(1.0))
-        assert t.maybe_transcribe() is None  # Limit erreicht
+        assert t.maybe_transcribe() is None  # limit reached
         t.reset()
         t.feed(audio(0.5))
         result = t.maybe_transcribe()
         assert result is not None
-        assert result.text == "zwei"  # FakeEngine: 2. Call -> texts[1]
+        assert result.text == "zwei"  # FakeEngine: 2nd call -> texts[1]
         assert len(engine.calls) == 2
 
     def test_release_after_limit_finalize_starts_immediately(self) -> None:
-        """(6) Release nach Limit ohne laufenden Tick: Finalize startet sofort.
+        """(6) Release after limit with no active tick: finalize starts immediately.
 
-        Der Finalizer nimmt ``_exec_lock``; ohne aktiven Live-Tick (die
-        Live-Ticks sind ja ueber dem Limit ausgesetzt) steht das Lock frei -
-        finalize() beginnt ohne Wartezeit.
+        The finalizer acquires ``_exec_lock``; with no active live tick (live
+        ticks are suspended above the limit), the lock is free and finalize()
+        starts without waiting.
         """
         engine = FakeEngine(["Hallo Welt"])
         t = StreamTranscriber(
@@ -498,12 +498,12 @@ class TestLiveAsrUntilLimit:
         t.feed(audio(0.5))
         t.maybe_transcribe()
         t.feed(audio(2.0))
-        assert t.maybe_transcribe() is None  # kein Tick mehr -> Lock frei
+        assert t.maybe_transcribe() is None  # no more ticks -> lock free
         result = t.finalize()
         assert result.text == "Hallo Welt"
 
     def test_zero_means_no_limit(self) -> None:
-        """Default 0.0: Live-Ticks bleiben immer aktiv (bisheriges Verhalten)."""
+        """Default 0.0: live ticks always remain active (previous behavior)."""
         engine = FakeEngine(["eins", "zwei", "drei", "vier"])
         t = StreamTranscriber(
             engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=0.0
@@ -514,34 +514,33 @@ class TestLiveAsrUntilLimit:
 
 
 class TestLivePausedSignal:
-    """STUFE 4: Limit-Erreichung genau einmal melden (take_live_paused).
+    """STAGE 4: report reaching the limit exactly once (take_live_paused).
 
-    Signatur (minimal, dokumentiert): ``take_live_paused() -> bool`` —
-    liefert ``True`` genau einmal, nachdem ``maybe_transcribe()`` erstmals
-    das Live-Limit erreicht hat (nur bei ``live_asr_until_s > 0``), und
-    konsumiert die Meldung. Weitere Aufrufe liefern ``False`` bis ein
-    ``reset()`` + erneutes Limit-Erreichen folgt.
+    Minimal documented signature: ``take_live_paused() -> bool`` returns
+    ``True`` exactly once after ``maybe_transcribe()`` first reaches the live
+    limit (only when ``live_asr_until_s > 0``), and consumes the notification.
+    Further calls return ``False`` until ``reset()`` and another limit event.
     """
 
     def test_pending_true_exactly_once_after_limit(self) -> None:
-        """(5a) Nach dem Limit genau EINE Meldung, spaeter keine mehr."""
+        """(5a) Exactly ONE notification after the limit; none afterward."""
         engine = FakeEngine(["Hallo Welt"])
         t = StreamTranscriber(
             engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0
         )
         t.feed(audio(0.5))
         assert t.maybe_transcribe() is not None
-        assert t.take_live_paused() is False  # Limit noch nicht erreicht
-        t.feed(audio(1.0))  # 1.5s Puffer > 1.0s Limit
+        assert t.take_live_paused() is False  # limit not reached yet
+        t.feed(audio(1.0))  # 1.5s buffer > 1.0s limit
         assert t.maybe_transcribe() is None
         assert t.take_live_paused() is True
-        # Weitere Ticks ueber dem Limit melden NICHTS Neues mehr:
+        # Further ticks above the limit report NOTHING new:
         t.feed(audio(1.0))
         assert t.maybe_transcribe() is None
         assert t.take_live_paused() is False
 
     def test_below_limit_never_pending(self) -> None:
-        """(5b) Unter dem Limit: keine Meldung, Ticks laufen normal."""
+        """(5b) Below the limit: no notification; ticks run normally."""
         engine = FakeEngine(["Hallo Welt", "Hallo Welt und"])
         t = StreamTranscriber(
             engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=10.0
@@ -553,7 +552,7 @@ class TestLivePausedSignal:
         assert t.take_live_paused() is False
 
     def test_default_zero_never_pending(self) -> None:
-        """(7/5c) Default live_asr_until_s=0.0: NIE eine Limit-Meldung."""
+        """(7/5c) Default live_asr_until_s=0.0: NEVER a limit notification."""
         engine = FakeEngine(["Hallo Welt", "Hallo Welt und", "Hallo Welt und mehr"])
         t = StreamTranscriber(
             engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=0.0
@@ -564,7 +563,7 @@ class TestLivePausedSignal:
             assert t.take_live_paused() is False
 
     def test_reset_rearms_the_signal(self) -> None:
-        """(5d) reset() setzt das Signal zurueck: naechstes Limit meldet wieder."""
+        """(5d) reset() resets the signal: the next limit notifies again."""
         engine = FakeEngine(["eins", "zwei"])
         t = StreamTranscriber(
             engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0
@@ -579,61 +578,61 @@ class TestLivePausedSignal:
         t.maybe_transcribe()
         t.feed(audio(1.0))
         assert t.maybe_transcribe() is None
-        assert t.take_live_paused() is True  # wieder genau eine Meldung
+        assert t.take_live_paused() is True  # exactly one notification again
 
     def test_feed_over_limit_signals_without_maybe_transcribe(self) -> None:
-        """BUG 1 (ROT): feed() uebers Limit meldet auch OHNE maybe_transcribe().
+        """BUG 1 (RED): feed() beyond the limit notifies even WITHOUT maybe_transcribe().
 
-        Realtest 11:56: Der letzte Live-Tick startet unter dem Limit, seine
-        2.8s-Inferenz ueberdauert die Grenze; der Release kommt vor dem
-        naechsten Tick - maybe_transcribe() sieht das Limit nie. Deshalb
-        erkennt take_live_paused() das Limit SELBST (feed-Zeitpunkt egal):
-        Puffer >= live_asr_until_s genuegt fuer die Meldung.
+        Real test 11:56: the last live tick starts below the limit, and its
+        2.8s inference crosses the threshold; release occurs before the next
+        tick, so maybe_transcribe() never sees the limit. Therefore,
+        take_live_paused() detects the limit ITSELF (regardless of feed time):
+        buffer >= live_asr_until_s is sufficient for the notification.
         """
         engine = FakeEngine(["Hallo Welt"])
         t = StreamTranscriber(
             engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0
         )
-        # KEIN maybe_transcribe()-Aufruf - nur fuettern ueber das Limit:
-        t.feed(audio(1.5))  # 1.5s Puffer > 1.0s Limit
+        # NO maybe_transcribe() call—only feed beyond the limit:
+        t.feed(audio(1.5))  # 1.5s buffer > 1.0s limit
         assert t.take_live_paused() is True, (
             "Limit-Erreichung ohne maybe_transcribe() nicht erkannt"
         )
-        # Genau einmal: konsumiert, weitere Abrufe False.
+        # Exactly once: consumed; further reads return False.
         assert t.take_live_paused() is False
-        t.feed(audio(1.0))  # weiterer Zuwachs: KEINE zweite Meldung
+        t.feed(audio(1.0))  # further growth: NO second notification
         assert t.take_live_paused() is False
 
     def test_feed_under_limit_never_signals_via_take(self) -> None:
-        """BUG 1 (ROT): Unter dem Limit und bei 0.0 niemals eine Meldung.
+        """BUG 1 (RED): never notify below the limit or at 0.0.
 
-        Auch bei Ueberfuetterung OHNE maybe_transcribe() bleibt die Grenze
-        bindend: live_asr_until_s=0.0 ist deaktiviert.
+        Even when overfed WITHOUT maybe_transcribe(), the threshold remains
+        binding: live_asr_until_s=0.0 is disabled.
         """
         engine = FakeEngine(["Hallo Welt"])
         t = StreamTranscriber(
             engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0
         )
-        t.feed(audio(0.5))  # 0.5s < 1.0s Limit
+        t.feed(audio(0.5))  # 0.5s < 1.0s limit
         assert t.take_live_paused() is False
-        t.feed(audio(0.4))  # 0.9s, weiterhin darunter
+        t.feed(audio(0.4))  # 0.9s, still below it
         assert t.take_live_paused() is False
 
         off = StreamTranscriber(
             FakeEngine(["x"]), interval_s=0.1, min_audio_s=0.1,
             live_asr_until_s=0.0,
         )
-        off.feed(audio(10.0))  # Limit deaktiviert: NIE melden
+        off.feed(audio(10.0))  # limit disabled: NEVER notify
         assert off.take_live_paused() is False
 
 
 class TestFinalizeCached:
-    """STUFE 1: finalize_mode="cached" spart den doppelten Engine-Call.
+    """STAGE 1: finalize_mode="cached" avoids the duplicate engine call.
 
-    War der Puffer seit dem letzten ERFOLGREICHEN Live-Tick unveraendert,
-    ist das Finale ergebnislos: der Text kommt aus dem Cache, die Engine
-    wird nicht noch einmal gerufen (identische Eingabe -> identische
-    Ausgabe, da die Engine-Determinismus-Parameter fest sind).
+    If the buffer is unchanged since the last SUCCESSFUL live tick,
+    finalization requires no new result: text comes from the cache and the
+    engine is not called again (identical input -> identical output because
+    engine determinism parameters are fixed).
     """
 
     def test_finalize_cached_unchanged_buffer_skips_engine(self) -> None:
@@ -652,11 +651,11 @@ class TestFinalizeCached:
             "cached-Finalize rief die Engine trotz unveraendertem Puffer"
         )
         assert result.text == "Hallo Welt"
-        # Volle Korrekturfaehigkeit bleibt erhalten (wie beim vollen Pfad).
+        # Full correction capability is preserved (as in the full path).
         assert result.committed_len == 0
 
     def test_cached_finalize_does_not_add_agreement(self) -> None:
-        """Die Agreement-History darf durch den Cache-Pfad nicht wachsen."""
+        """The cache path must not grow the agreement history."""
         engine = FakeEngine(["Hallo Welt", "Hallo Welt"])
         t = StreamTranscriber(
             engine, interval_s=0.1, min_audio_s=0.1, finalize_mode="cached"
@@ -674,21 +673,21 @@ class TestFinalizeCached:
         )
 
     def test_cached_finalize_invalidated_by_feed_and_reset(self) -> None:
-        """Neues feed() oder reset() entwertet den Cache -> voller Engine-Call."""
+        """A new feed() or reset() invalidates the cache -> full engine call."""
         engine = FakeEngine(["Hallo", "Hallo Welt"])
         t = StreamTranscriber(
             engine, interval_s=0.1, min_audio_s=0.1, finalize_mode="cached"
         )
         t.feed(audio(1.0))
         t.maybe_transcribe()
-        # Neues Audio seit dem letzten erfolgreichen Tick -> Cache ungueltig.
+        # New audio since the last successful tick -> cache invalid.
         t.feed(audio(0.5))
         calls_before = len(engine.calls)
         result = t.finalize()
         assert len(engine.calls) == calls_before + 1
         assert result.text == "Hallo Welt"
 
-        # Nach reset() gibt es keinen gueltigen Cache mehr.
+        # After reset(), there is no valid cache.
         engine2 = FakeEngine(["Neustext"])
         t2 = StreamTranscriber(
             engine2, interval_s=0.1, min_audio_s=0.1, finalize_mode="cached"
@@ -698,10 +697,10 @@ class TestFinalizeCached:
         t2.reset()
         t2.feed(audio(1.0))
         assert t2.finalize() is not None
-        assert len(engine2.calls) == 2  # 1 Live + 1 final (kein Treffer)
+        assert len(engine2.calls) == 2  # 1 live + 1 final (no hit)
 
     def test_cached_finalize_falls_back_after_failed_tick(self) -> None:
-        """Exception im Live-Tick setzt keinen Abgeschlossen-Vermerk."""
+        """An exception in a live tick does not set a completion marker."""
         class FlakyEngine:
             def __init__(self) -> None:
                 self.calls = 0
@@ -719,13 +718,13 @@ class TestFinalizeCached:
         t.feed(audio(1.0))
         with pytest.raises(RuntimeError):
             t.maybe_transcribe()
-        # Kein erfolgreicher Tick -> Finalize MUSS die Engine rufen.
+        # No successful tick -> finalize MUST call the engine.
         result = t.finalize()
         assert engine.calls == 2
         assert result.text == "spaeter Text"
 
     def test_default_finalize_mode_is_full(self) -> None:
-        """Default bleibt "full": Finalize transkribiert wie bisher neu."""
+        """Default remains "full": finalize retranscribes as before."""
         engine = FakeEngine(["Hallo Welt"])
         t = StreamTranscriber(engine, interval_s=0.1, min_audio_s=0.1)
         t.feed(audio(1.0))
@@ -736,32 +735,32 @@ class TestFinalizeCached:
 
 
 # ---------------------------------------------------------------------------
-# stitch_word_overlap -- Phase 1, isoliert (wird NICHT im Produktivpfad genutzt)
+# stitch_word_overlap -- Phase 1, isolated (NOT used in the production path)
 # ---------------------------------------------------------------------------
 
 from stt_button.asr import stitch_word_overlap  # noqa: E402
 
 
 class TestStitchWordOverlap:
-    """Tests fuer stitch_word_overlap: haengt ein Fenster an exakte Wortanker."""
+    """Tests for stitch_word_overlap: attach a window at exact word anchors."""
 
     def test_a_klassischer_anker(self):
-        """Regel 2/5: exakter Anker 'geht es dir' am previous-Ende, neu 'gut heute'."""
+        """Rule 2/5: exact anchor 'geht es dir' at the previous end, new 'gut heute'."""
         assert (
             stitch_word_overlap("Hallo wie geht es dir", "geht es dir gut heute")
             == "Hallo wie geht es dir gut heute"
         )
 
     def test_b_suffixfragment_kein_duplikat(self):
-        """Regression: Fenster beginnt mit 'unkte' (SUFFIX-Fragment von 'Punkte').
+        """Regression: window starts with 'unkte' (SUFFIX fragment of 'Punkte').
 
-        Selbst abgeleitete Erwartung aus Regel 4/5: Nur das ALLERERSTE
-        Fensterwort darf echtes SUFFIX-Fragment sein; previous behaelt das
-        volle Wort 'Punkte', das Fragment faellt ersatzlos weg. Anker sind
-        'Punkte' (fragmentiert) + 'hier' (zeichengleich) als letzte zwei
-        previous-Woerter, neu dahinter: 'sind schon'. Ergebnis also
-        previous + 'sind schon' -- KEIN 'Punkte Punkte'-Duplikat und kein
-        Fragmentrest 'unkte' im Ergebnis.
+        Independently derived expectation from rule 4/5: only the VERY FIRST
+        window word may be a true SUFFIX fragment; previous retains the full
+        word 'Punkte', and the fragment is dropped entirely. Anchors are the
+        last two previous words, 'Punkte' (fragmented) + 'hier' (character
+        identical), followed by new 'sind schon'. The result is therefore
+        previous + 'sind schon'—NO 'Punkte Punkte' duplicate and no 'unkte'
+        fragment remaining.
         """
         assert (
             stitch_word_overlap("das sind rote Punkte hier", "unkte hier sind schon")
@@ -769,23 +768,23 @@ class TestStitchWordOverlap:
         )
 
     def test_c1_ein_letztes_wort_ersetzt(self):
-        """Regel 3: genau EIN letztes unvollstaendiges previous-Wort ('de')
-        wird durch das Fensterwort ('deutlich') ersetzt."""
+        """Rule 3: exactly ONE final incomplete previous word ('de') is
+        replaced by the window word ('deutlich')."""
         assert stitch_word_overlap("das ist de", "deutlich besser") == "das ist deutlich besser"
 
     def test_c2_zwei_abweichende_alte_woerter(self):
-        """Regel 3: 'gut' vs 'total' UND 'echt' vs 'daneben' -- zwei abweichende
-        alte Woerter -> None."""
+        """Rule 3: 'gut' vs 'total' AND 'echt' vs 'daneben'—two differing
+        old words -> None."""
         assert stitch_word_overlap("das war echt gut", "total daneben") is None
 
     def test_d1_protected_prefix_verwirft_kandidaten(self):
-        """Regel 6: Kandidat 'wie geht es dir' beginnt nicht mit 'Hallo wie'."""
+        """Rule 6: candidate 'wie geht es dir' does not start with 'Hallo wie'."""
         assert stitch_word_overlap("wie geht es", "geht es dir", protected_prefix="Hallo wie") is None
-        # ohne Schutzpraefix liefert derselbe Fall den Kandidaten:
+        # without a protected prefix, the same case returns the candidate:
         assert stitch_word_overlap("wie geht es", "geht es dir") == "wie geht es dir"
 
     def test_d2_protected_prefix_konsistent(self):
-        """Regel 6 erfuellt: Ergebnis beginnt zeichengleich mit 'Hallo wie'."""
+        """Rule 6 satisfied: result starts character-identically with 'Hallo wie'."""
         assert (
             stitch_word_overlap(
                 "Hallo wie geht es", "wie geht es dir", protected_prefix="Hallo wie"
@@ -794,29 +793,29 @@ class TestStitchWordOverlap:
         )
 
     def test_e_kein_fuzzy_ueber_komma(self):
-        """Regel 1: 'Welt' != 'Welt,' -- Interpunktion exakt; ein angehaengtes
-        Komma ist keine Wortvervollstaendigung -> None."""
+        """Rule 1: 'Welt' != 'Welt,'—punctuation is exact; an appended comma
+        is not word completion -> None."""
         assert stitch_word_overlap("Ich sage Welt", "Welt, wie") is None
 
     def test_f_mehrdeutigkeit_zwei_anker(self):
-        """Regel 7: 'b c ende neu' deckt zwei Anker mit UNTERSCHIEDLICHEN Ergebnissen.
+        """Rule 7: 'b c ende neu' covers two anchors with DIFFERENT results.
 
-        Anker 'b c' auf previous[1:3] schneidet previous ab -> 'a b c ende neu';
-        Anker 'b c ende' auf previous[3:6] (previous-Ende) -> 'a b c b c ende neu'.
-        Zwei unterschiedliche Kandidaten -> None.
+        Anchor 'b c' at previous[1:3] truncates previous -> 'a b c ende neu';
+        anchor 'b c ende' at previous[3:6] (previous end) -> 'a b c b c ende neu'.
+        Two different candidates -> None.
         """
         assert stitch_word_overlap("a b c b c ende", "b c ende neu") is None
 
     def test_g_randfaelle(self):
-        """Regel 8: previous='' -> window; window='' -> previous;
-        previous='' mit nicht erfuelltem protected_prefix -> None."""
+        """Rule 8: previous='' -> window; window='' -> previous;
+        previous='' with unsatisfied protected_prefix -> None."""
         assert stitch_word_overlap("", "hallo welt") == "hallo welt"
         assert stitch_word_overlap("hallo welt", "") == "hallo welt"
         assert stitch_word_overlap("", "hallo welt", protected_prefix="xyz") is None
 
     def test_h_praefixfragment_statt_suffix(self):
-        """Regel 4: 'punkt' waere PRAEFIX-Fragment von 'Punkte' -- nur echte
-        SUFFIX-Fragmente sind erlaubt -> None."""
+        """Rule 4: 'punkt' would be a PREFIX fragment of 'Punkte'; only true
+        SUFFIX fragments are allowed -> None."""
         assert stitch_word_overlap("das sind rote Punkte hier", "punkt hier sind schon") is None
 
 
@@ -827,7 +826,7 @@ class TestStitchWordOverlap:
 def make_mid_tail(
     engine, *, limit_s=1.0, context_s=2.5, step_s=4.0, anchor_words=2, **kw
 ) -> StreamTranscriber:
-    """Baut einen Transcriber im OPT-IN-Modus cached_mid_tail."""
+    """Build a transcriber in OPT-IN cached_mid_tail mode."""
     return StreamTranscriber(
         engine,
         interval_s=0.1,
@@ -842,60 +841,60 @@ def make_mid_tail(
 
 
 class TestCachedMidTail:
-    """PHASE 2: Hintergrund-Stitching nach dem Live-Limit (Opt-In)."""
+    """PHASE 2: background stitching after the live limit (opt-in)."""
 
     # --- 1) Throttling ---------------------------------------------------
     def test_throttle_kein_call_vor_step_s(self) -> None:
-        """(2) <4s neues Audio seit Checkpoint -> KEIN Extra-Engine-Call."""
+        """(2) <4s new audio since checkpoint -> NO extra engine call."""
         engine = FakeEngine(["Hallo Welt", "Hallo Welt"])
         t = make_mid_tail(engine)
         t.feed(audio(0.5))
-        assert t.maybe_transcribe() is not None  # Live-Snapshot
-        t.feed(audio(1.0))  # 1.5s > Limit 1.0 -> Limit-Zweig
+        assert t.maybe_transcribe() is not None  # live snapshot
+        t.feed(audio(1.0))  # 1.5s > limit 1.0 -> limit branch
         assert t.maybe_transcribe() is None
         assert len(engine.calls) == 1, "unter step_s darf kein Mid-Tail-Call laufen"
-        t.feed(audio(2.0))  # 3.5s: immer noch < 4.0s neu seit Checkpoint
+        t.feed(audio(2.0))  # 3.5s: still < 4.0s new since checkpoint
         assert t.maybe_transcribe() is None
         assert len(engine.calls) == 1
 
     def test_throttle_genau_ein_call_und_slice_groesse(self) -> None:
-        """(2) >=4s neues Audio -> genau EIN Call, Slice <= (4.0+2.5)s."""
+        """(2) >=4s new audio -> exactly ONE call, slice <= (4.0+2.5)s."""
         engine = FakeEngine(["Hallo Welt", "Hallo Welt und"])
         t = make_mid_tail(engine)
         t.feed(audio(0.5))
-        assert t.maybe_transcribe() is not None  # Checkpoint bei 0.5s
-        t.feed(audio(3.7))  # 4.2s Puffer: 3.7s neu -> noch kein Call
+        assert t.maybe_transcribe() is not None  # checkpoint at 0.5s
+        t.feed(audio(3.7))  # 4.2s buffer: 3.7s new -> no call yet
         assert t.maybe_transcribe() is None
         assert len(engine.calls) == 1
-        t.feed(audio(0.6))  # 4.8s Puffer: 4.3s neu >= 4.0 -> Call
+        t.feed(audio(0.6))  # 4.8s buffer: 4.3s new >= 4.0 -> call
         assert t.maybe_transcribe() is None
         assert len(engine.calls) == 2
         nbytes = engine.calls[1][0]
-        # Slice = Pufferende - (checkpoint.end - context), Start bei 0
-        # geklemmt: 4.8s - max(0, 0.5-2.5)s = 4.8s.
+        # Slice = buffer end - (checkpoint.end - context), start clamped to 0:
+        # 4.8s - max(0, 0.5-2.5)s = 4.8s.
         assert nbytes == int(4.8 * BYTES_PER_SECOND)
         assert nbytes <= int((4.0 + 2.5) * BYTES_PER_SECOND)
 
     def test_slice_startet_an_snapshot_ende_minus_context(self) -> None:
-        """(4) Fall (i): erster Slice beginnt an snapshot_end - context."""
+        """(4) Case (i): first slice starts at snapshot_end - context."""
         engine = FakeEngine(["Hallo Welt", "Hallo Welt und mehr"])
         t = make_mid_tail(engine, limit_s=6.0, step_s=4.0, context_s=2.5)
-        # Snapshot bei 5.5s (Live-Tick unter Limit 6.0), dann Limit erreicht.
+        # Snapshot at 5.5s (live tick below limit 6.0), then limit reached.
         t.feed(audio(5.5))
-        assert t.maybe_transcribe() is not None  # Snapshot end_nbytes=5.5s
-        t.feed(audio(2.5))  # 8.0s > 6.0 Limit; 2.5s neu < 4.0 -> kein Call
+        assert t.maybe_transcribe() is not None  # snapshot end_nbytes=5.5s
+        t.feed(audio(2.5))  # 8.0s > 6.0 limit; 2.5s new < 4.0 -> no call
         assert t.maybe_transcribe() is None
         assert len(engine.calls) == 1
-        t.feed(audio(3.1))  # 11.1s: 5.6s neu >= 4.0 -> Call
+        t.feed(audio(3.1))  # 11.1s: 5.6s new >= 4.0 -> call
         assert t.maybe_transcribe() is None
         assert len(engine.calls) == 2
-        # Slice = 11.1s - (5.5s - 2.5s) = 8.1s, NICHT 11.1 (Vollpuffer) und
-        # NICHT ~4.9 (ab einer Commit-Stelle).
+        # Slice = 11.1s - (5.5s - 2.5s) = 8.1s, NOT 11.1 (full buffer) and
+        # NOT ~4.9 (from a commit point).
         assert engine.calls[1][0] == int(8.1 * BYTES_PER_SECOND)
 
-    # --- 2) Hintergrundlauf ohne Nebeneffekte ---------------------------
+    # --- 2) Background run without side effects -------------------------
     def test_hintergrund_liefert_none_und_veraendert_nichts(self) -> None:
-        """(3) Mid-Tail-Call: None, kein _update_commit, kein Cache-Update."""
+        """(3) Mid-tail call: None, no _update_commit, no cache update."""
         engine = FakeEngine(["Hallo Welt", "Hallo Welt und"])
         t = make_mid_tail(engine)
         t.feed(audio(0.5))
@@ -906,7 +905,7 @@ class TestCachedMidTail:
         last_text_before = t._last_text
         cache_bytes_before = t._last_completed_nbytes
         cache_text_before = t._last_completed_text
-        t.feed(audio(5.0))  # 5.5s: 5.0s neu >= 4.0 -> Mid-Tail-Call
+        t.feed(audio(5.0))  # 5.5s: 5.0s new >= 4.0 -> mid-tail call
         result = t.maybe_transcribe()
         assert result is None, "Mid-Tail-Zweig muss None liefern"
         assert t._committed_text == committed_before
@@ -915,33 +914,33 @@ class TestCachedMidTail:
         assert t._last_text == last_text_before
         assert t._last_completed_nbytes == cache_bytes_before
         assert t._last_completed_text == cache_text_before
-        # Checkpoint wurde aktualisiert (VOR dem Aufruf gesnapshottet: 5.5s).
+        # Checkpoint was updated (snapshotted BEFORE the call: 5.5s).
         assert t._mid_tail_checkpoint is not None
         assert t._mid_tail_checkpoint.end_nbytes == int(5.5 * BYTES_PER_SECOND)
         assert t._mid_tail_checkpoint.text == "Hallo Welt und"
 
-    # --- 3) Stitch-Verhalten ---------------------------------------------
+    # --- 3) Stitch behavior --------------------------------------------
     def test_normaler_stitch_checkpoint_waechst(self) -> None:
-        """(5) Ueberlappender Text: Checkpoint waechst ohne Duplikat."""
+        """(5) Overlapping text: checkpoint grows without duplication."""
         engine = FakeEngine(
             ["Hallo Welt", "Hallo Welt und mehr", "Hallo Welt und mehr noch was"]
         )
         t = make_mid_tail(engine, anchor_words=2)
         t.feed(audio(0.5))
-        assert t.maybe_transcribe() is not None  # Checkpoint 'Hallo Welt'
+        assert t.maybe_transcribe() is not None  # checkpoint 'Hallo Welt'
         t.feed(audio(5.0))
         assert t.maybe_transcribe() is None
         assert t._mid_tail_checkpoint is not None
         assert t._mid_tail_checkpoint.text == "Hallo Welt und mehr"
         assert t._mid_tail_failed is False
-        # Zweiter Hintergrundlauf: Fenster deckt das Checkpoint-Ende ab.
+        # Second background run: window covers the checkpoint end.
         t.feed(audio(4.5))
         assert t.maybe_transcribe() is None
         assert t._mid_tail_checkpoint.text == "Hallo Welt und mehr noch was"
 
     def test_regression_buffered_fragment(self) -> None:
-        """(6) Fenster beginnt 'unkte ...' -> Stitch loest das Wortfragment
-        ueber die Anker auf, ohne 'Punkte Punkte'-Duplikat."""
+        """(6) Window starts 'unkte ...' -> stitch resolves the word fragment
+        via anchors without a 'Punkte Punkte' duplicate."""
         engine = FakeEngine(
             [
                 "das sind rote Punkte",
@@ -951,11 +950,11 @@ class TestCachedMidTail:
         )
         t = make_mid_tail(engine, anchor_words=2)
         t.feed(audio(0.5))
-        assert t.maybe_transcribe() is not None  # Checkpoint bei 0.5s
+        assert t.maybe_transcribe() is not None  # checkpoint at 0.5s
         t.feed(audio(5.0))
-        assert t.maybe_transcribe() is None  # 1. Hintergrundlauf
+        assert t.maybe_transcribe() is None  # 1st background run
         assert t._mid_tail_checkpoint.text == "das sind rote Punkte hier sind schon"
-        # 2. Hintergrundlauf: Fenster beginnt mitten in 'Punkte'.
+        # 2nd background run: window starts in the middle of 'Punkte'.
         t.feed(audio(4.5))
         assert t.maybe_transcribe() is None
         assert t._mid_tail_checkpoint is not None
@@ -965,13 +964,13 @@ class TestCachedMidTail:
         assert t._mid_tail_failed is False
 
     def test_stitch_none_setzt_failed(self) -> None:
-        """(7) Stitch None -> failed, kein weiterer Versuch, Voll-Finalize."""
+        """(7) Stitch None -> failed, no further attempt, full finalize."""
         engine = FakeEngine(["Hallo Welt", "voellig anders ohne Anker"])
         t = make_mid_tail(engine)
         t.feed(audio(0.5))
         assert t.maybe_transcribe() is not None
         t.feed(audio(5.0))
-        assert t.maybe_transcribe() is None  # Stitch schlaegt fehl
+        assert t.maybe_transcribe() is None  # stitch fails
         assert t._mid_tail_failed is True
         calls_after_fail = len(engine.calls)
         t.feed(audio(5.0))
@@ -979,18 +978,18 @@ class TestCachedMidTail:
         assert len(engine.calls) == calls_after_fail, (
             "nach _mid_tail_failed darf kein weiterer Mid-Tail-Call laufen"
         )
-        # Spaeteres Voll-Finalize: FakeEngine zaehlt den Vollpuffer-Call.
+        # Later full finalize: FakeEngine counts the full-buffer call.
         result = t.finalize()
         assert result.text == "voellig anders ohne Anker"
         assert len(engine.calls) == calls_after_fail + 1
-        # Der Fallback-Call sah den VOLLSTaendigen Puffer (10.5s).
+        # The fallback call saw the COMPLETE buffer (10.5s).
         assert engine.calls[-1][0] == int(10.5 * BYTES_PER_SECOND)
 
     def test_engine_exception_kein_abort(self) -> None:
-        """(8) Engine-Exception im Hintergrund -> failed, kein Abort,
-        Finalize = genau EIN Vollpuffer-Call."""
+        """(8) Engine exception in background -> failed, no abort;
+        finalize = exactly ONE full-buffer call."""
         class FlakyEngine(FakeEngine):
-            """Wirft GENAU EINMAL (auf dem Mid-Tail-Hintergrund-Call)."""
+            """Raise EXACTLY ONCE (on the mid-tail background call)."""
 
             def __init__(self) -> None:
                 super().__init__(["Hallo Welt"])
@@ -1007,19 +1006,19 @@ class TestCachedMidTail:
         t.feed(audio(0.5))
         assert t.maybe_transcribe() is not None
         t.feed(audio(5.0))
-        assert t.maybe_transcribe() is None  # Engine-Exception im Hintergrund
+        assert t.maybe_transcribe() is None  # engine exception in background
         assert t._mid_tail_failed is True
-        # Kein Abort: finalize() laeuft und macht GENAU EINEN Vollpuffer-Call.
+        # No abort: finalize() runs and makes EXACTLY ONE full-buffer call.
         result = t.finalize()
         assert result.text == "Hallo Welt"
         assert len(engine.calls) == 2
         assert engine.calls[-1][0] == int(5.5 * BYTES_PER_SECOND)
 
     def test_ohne_live_snapshot_kein_mid_tail(self) -> None:
-        """Kein erfolgreicher Live-Snapshot -> kein Mid-Tail-Versuch."""
+        """No successful live snapshot -> no mid-tail attempt."""
         engine = FakeEngine(["Hallo Welt"])
         t = make_mid_tail(engine, limit_s=0.5, step_s=4.0)
-        t.feed(audio(1.0))  # direkt ueber Limit: noch nie live transkribiert
+        t.feed(audio(1.0))  # directly above limit: never transcribed live
         assert t.maybe_transcribe() is None
         assert len(engine.calls) == 0
         assert t._mid_tail_checkpoint is None
@@ -1029,14 +1028,14 @@ class TestCachedMidTail:
 
     # --- 4) finalize ------------------------------------------------------
     def test_finalize_ohne_aenderung_kein_call(self) -> None:
-        """(9) Puffer seit Checkpoint unveraendert -> KEIN Engine-Call,
-        Text aus Checkpoint, committed_len = len(_committed_text)."""
+        """(9) Buffer unchanged since checkpoint -> NO engine call;
+        text from checkpoint, committed_len = len(_committed_text)."""
         engine = FakeEngine(["Hallo Welt", "Hallo Welt und mehr"])
         t = make_mid_tail(engine)
         t.feed(audio(0.5))
         assert t.maybe_transcribe() is not None
         t.feed(audio(5.0))
-        assert t.maybe_transcribe() is None  # Mid-Tail-Checkpoint gesetzt
+        assert t.maybe_transcribe() is None  # mid-tail checkpoint set
         calls_before = len(engine.calls)
         result = t.finalize()
         assert len(engine.calls) == calls_before, (
@@ -1046,7 +1045,7 @@ class TestCachedMidTail:
         assert result.committed_len == len(t._committed_text)
 
     def test_finalize_tail_stitch(self) -> None:
-        """(10/Positiv) Kleiner Tail-Call, Stitch, committed_len gesetzt."""
+        """(10/positive) Small tail call, stitch, committed_len set."""
         engine = FakeEngine(
             ["Hallo Welt", "Hallo Welt und mehr", "und mehr das Ende"]
         )
@@ -1054,18 +1053,18 @@ class TestCachedMidTail:
         t.feed(audio(0.5))
         assert t.maybe_transcribe() is not None
         t.feed(audio(5.0))
-        assert t.maybe_transcribe() is None  # Checkpoint bei 5.5s
-        t.feed(audio(1.0))  # 6.5s: < 4.0s neu -> kein Hintergrundlauf
+        assert t.maybe_transcribe() is None  # checkpoint at 5.5s
+        t.feed(audio(1.0))  # 6.5s: < 4.0s new -> no background run
         calls_before = len(engine.calls)
         result = t.finalize()
         assert len(engine.calls) == calls_before + 1, "genau EIN Tail-Call"
-        # Tail-Slice = 6.5s - (5.5 - 2.5)s = 3.5s
+        # tail slice = 6.5s - (5.5 - 2.5)s = 3.5s
         assert engine.calls[-1][0] == int(3.5 * BYTES_PER_SECOND)
         assert result.text == "Hallo Welt und mehr das Ende"
         assert result.committed_len == len(t._committed_text)
 
     def test_finalize_tail_stitch_fehler_vollpuffer_fallback(self) -> None:
-        """(10) Tail-Stitch schlaegt fehl -> EIN Vollpuffer-Call wie heute."""
+        """(10) Tail stitch fails -> ONE full-buffer call as before."""
         engine = FakeEngine(
             ["Hallo Welt", "Hallo Welt und mehr", "komplett anders"]
         )
@@ -1073,11 +1072,11 @@ class TestCachedMidTail:
         t.feed(audio(0.5))
         assert t.maybe_transcribe() is not None
         t.feed(audio(5.0))
-        assert t.maybe_transcribe() is None  # Checkpoint bei 5.5s
+        assert t.maybe_transcribe() is None  # checkpoint at 5.5s
         t.feed(audio(1.0))
         result = t.finalize()
         assert result.text == "komplett anders"
-        # Live + Mid-Tail + Tail-Call + GENAU EIN Vollpuffer-Fallback.
+        # Live + mid-tail + tail call + EXACTLY ONE full-buffer fallback.
         assert len(engine.calls) == 4
         assert engine.calls[-1][0] == int(6.5 * BYTES_PER_SECOND), (
             "Fallback-Call sieht den VOLLSTaendigen Puffer"
@@ -1085,10 +1084,10 @@ class TestCachedMidTail:
         assert result.committed_len == 0, "Vollpuffer-Fallback korrigiert voll"
 
     def test_finalize_ohne_checkpoint_vollpuffer(self) -> None:
-        """Kein gueltiger Checkpoint -> Verhalten wie heute (Vollpuffer)."""
+        """No valid checkpoint -> previous behavior (full buffer)."""
         engine = FakeEngine(["alles da"])
         t = make_mid_tail(engine, limit_s=0.5, step_s=4.0)
-        t.feed(audio(1.0))  # direkt ueber Limit: noch nie live transkribiert
+        t.feed(audio(1.0))  # directly above limit: never transcribed live
         assert t.maybe_transcribe() is None
         assert t._mid_tail_checkpoint is None
         t.feed(audio(5.0))
@@ -1097,9 +1096,9 @@ class TestCachedMidTail:
         assert engine.calls[0][0] == int(6.0 * BYTES_PER_SECOND)
         assert result.committed_len == 0
 
-    # --- 5) Bestandsschutz ------------------------------------------------
+    # --- 5) Backward compatibility ----------------------------------------
     def test_default_kein_mid_tail_pfad(self) -> None:
-        """(11) Default finalize_mode='full': kein einziger Mid-Tail-Codepfad."""
+        """(11) Default finalize_mode='full': no mid-tail code path at all."""
         engine = FakeEngine(["Hallo Welt", "Hallo Welt und"])
         t = StreamTranscriber(
             engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0
@@ -1117,7 +1116,7 @@ class TestCachedMidTail:
         assert engine.calls[-1][0] == int(10.5 * BYTES_PER_SECOND)
 
     def test_cached_kein_mid_tail_pfad(self) -> None:
-        """(11b) finalize_mode='cached': Engine-Call-Zahlen wie Bestand."""
+        """(11b) finalize_mode='cached': engine call counts unchanged."""
         engine = FakeEngine(["Hallo Welt", "Hallo Welt und"])
         t = StreamTranscriber(
             engine, interval_s=0.1, min_audio_s=0.1, live_asr_until_s=1.0,
@@ -1129,12 +1128,12 @@ class TestCachedMidTail:
         assert t.maybe_transcribe() is None
         assert len(engine.calls) == 1
         assert t._mid_tail_checkpoint is None
-        result = t.finalize()  # Puffer veraendert -> voller Call wie Bestand
+        result = t.finalize()  # buffer changed -> full call as before
         assert result.text == "Hallo Welt und"
         assert len(engine.calls) == 2
 
     def test_reset_macht_mid_tail_zustand_loser(self) -> None:
-        """reset() leert Checkpoint und failed-Flag."""
+        """reset() clears the checkpoint and failed flag."""
         engine = FakeEngine(["Hallo Welt", "voellig anders ohne Anker"])
         t = make_mid_tail(engine)
         t.feed(audio(0.5))
@@ -1147,13 +1146,13 @@ class TestCachedMidTail:
         assert t._mid_tail_failed is False
 
     def test_ungueltiger_snapshot_kein_checkpoint(self) -> None:
-        """Snapshot-Text ohne Commit-Praefix darf KEIN Checkpoint werden."""
+        """Snapshot text without a commit prefix must NOT become a checkpoint."""
         engine = FakeEngine(["Hallo Welt", "Welt und mehr"])
         t = make_mid_tail(engine)
         t.feed(audio(0.5))
         assert t.maybe_transcribe() is not None
-        # Commit-Zustand kuenstlich inkonsistent machen (simuliert
-        # zurueckgesetzten Commit zwischen Snapshot und Mid-Tail-Tick).
+        # Artificially make commit state inconsistent (simulates a commit reset
+        # between the snapshot and mid-tail tick).
         t._committed_text = "Xyz "
         t.feed(audio(5.0))
         assert t.maybe_transcribe() is None
@@ -1167,11 +1166,11 @@ class TestCachedMidTail:
 
 
 # ---------------------------------------------------------------------------
-# INT8-Hauptpfad (Betreiber-Freigabe 29.10.): ParakeetEngine transkribiert
-# bei compute_type='int8' über den bewiesenen onnx_asr/ORT-CPU-Weg
-# (A/B-Log: RTF 0,043-0,060, WER verbessert), NICHT über OpenVINO-NPU
-# (Ground-Truth: OV-Encoder statisch [1,128,3000] unvertraeglich mit
-# echten Lengen, NPU unter Last 'No available devices', RTF = CPU).
+# INT8 main path (operator approval, October 29): ParakeetEngine transcribes
+# with compute_type='int8' via the proven onnx_asr/ORT CPU path (A/B log:
+# RTF 0.043-0.060, improved WER), NOT via OpenVINO NPU (ground truth: static
+# OV encoder [1,128,3000] incompatible with real lengths; NPU under load:
+# 'No available devices'; RTF = CPU).
 # ---------------------------------------------------------------------------
 
 
@@ -1182,7 +1181,7 @@ class _FakeOrtSessionOpts:
 
 
 class _FakeOnnxAsr:
-    """Mock des onnx_asr-Moduls: zaehlt recognize-Aufrufe."""
+    """Mock of the onnx_asr module: counts recognize calls."""
 
     def __init__(self, text="Hallo INT8 Welt"):
         self.text = text
@@ -1193,7 +1192,7 @@ class _FakeOnnxAsr:
                    sess_options=None, providers=None):
         self.load_kwargs = dict(kind=kind, path=path, quantization=quantization,
                                 providers=providers)
-        return self  # das Modell ist das Recognizer-Objekt
+        return self  # the model is the recognizer object
 
     def recognize(self, audio):
         self.recognize_calls.append(audio)
@@ -1205,7 +1204,7 @@ def _fake_ort_module():
 
     m = types.ModuleType("onnxruntime")
     m.SessionOptions = _FakeOrtSessionOpts
-    # echtes __spec__: torch-dynamo ruft find_spec('onnxruntime') auf
+    # real __spec__: torch-dynamo calls find_spec('onnxruntime')
     import importlib.machinery as _mach
 
     m.__spec__ = _mach.ModuleSpec("onnxruntime", loader=None)
@@ -1213,7 +1212,7 @@ def _fake_ort_module():
 
 
 class _NoHFModels:
-    """Soll einen Fehler werfen, wenn doch HF geladen wuerde."""
+    """Raise an error if HF is loaded despite expectations."""
 
     @staticmethod
     def from_pretrained(*a, **k):
@@ -1225,7 +1224,7 @@ class TestInt8Hauptpfad:
         import sys, types
         monkeypatch.setitem(sys.modules, "onnx_asr", fake)
         monkeypatch.setitem(sys.modules, "onnxruntime", _fake_ort_module())
-        # int8-ONNX-Dateien existieren lassen (Fake-Dateien)
+        # make int8 ONNX files exist (fake files)
         (tmp_path / "encoder-model.int8.onnx").write_bytes(b"x")
         (tmp_path / "decoder_joint-model.int8.onnx").write_bytes(b"x")
         from stt_button.asr import ParakeetEngine as _PE
@@ -1234,12 +1233,12 @@ class TestInt8Hauptpfad:
         )
 
     def test_int8_laed_onnx_statt_hf(self, monkeypatch, tmp_path) -> None:
-        """compute_type='int8' -> onnx_asr-Pfad, HF wird NIE geladen."""
+        """compute_type='int8' -> onnx_asr path; HF is NEVER loaded."""
         from stt_button.asr import ParakeetEngine
 
         fake = _FakeOnnxAsr()
         self._patch(monkeypatch, fake, tmp_path)
-        # HF-Import abfangen: jeder Versuch wirft
+        # intercept HF import: every attempt raises
         import transformers
         monkeypatch.setattr(transformers, "AutoProcessor", _NoHFModels)
         monkeypatch.setattr(transformers, "AutoModelForTDT", _NoHFModels)
@@ -1252,7 +1251,7 @@ class TestInt8Hauptpfad:
         assert fake.load_kwargs["providers"] == ["CPUExecutionProvider"]
 
     def test_int8_transcribe_nutzt_onnx_ohne_hf(self, monkeypatch, tmp_path) -> None:
-        """transcribe() bei int8 ruft recognize() mit float32-Mono-Audio."""
+        """transcribe() with int8 calls recognize() with float32 mono audio."""
         from stt_button.asr import ParakeetEngine
         import numpy as np
 
@@ -1263,7 +1262,7 @@ class TestInt8Hauptpfad:
         monkeypatch.setattr(transformers, "AutoModelForTDT", _NoHFModels)
 
         e = ParakeetEngine(compute_type="int8")
-        pcm = (np.zeros(16000 * 2, dtype=np.int16)).tobytes()  # 2s Stille
+        pcm = (np.zeros(16000 * 2, dtype=np.int16)).tobytes()  # 2s silence
         result = e.transcribe(pcm)
         assert result.text == "Erkannter INT8 Welt"[:0] + "Erkannter INT8 Text"
         assert len(fake.recognize_calls) == 1
@@ -1271,14 +1270,14 @@ class TestInt8Hauptpfad:
         assert arg.dtype == np.float32 and arg.ndim == 1
 
     def test_int8_datei_fehlt_fallback_auf_hf(self, monkeypatch, tmp_path) -> None:
-        """Fehlen die int8-ONNX-Dateien, laedt der alte HF-FP32-Pfad."""
+        """If int8 ONNX files are missing, the legacy HF FP32 path loads."""
         from stt_button.asr import ParakeetEngine
         import sys
 
         fake = _FakeOnnxAsr()
         monkeypatch.setitem(sys.modules, "onnx_asr", fake)
         monkeypatch.setitem(sys.modules, "onnxruntime", _fake_ort_module())
-        # tmp_path bleibt leer -> ONNX-Dateien fehlen
+        # tmp_path remains empty -> ONNX files missing
         from stt_button.asr import ParakeetEngine as _PE
         monkeypatch.setattr(
             _PE, "_int8_dir_for_test", lambda self: tmp_path, raising=False,
@@ -1315,9 +1314,9 @@ class TestInt8Hauptpfad:
         assert result.text == "FP32 Fallback"
 
     def test_int8_timestamps_ohne_hf(self, monkeypatch, tmp_path) -> None:
-        """transcribe_with_timestamps darf bei int8 NICHT HF nachladen;
-        ohne Token-Dauern liefert es einen leeren Transcription-Wrapper
-        um denselben Text (windowed Streaming ist hier nicht in Betrieb)."""
+        """transcribe_with_timestamps must NOT load HF with int8;
+        without token durations, it returns an empty Transcription wrapper
+        around the same text (windowed streaming is not active here)."""
         from stt_button.asr import ParakeetEngine
         import numpy as np
 
@@ -1333,20 +1332,20 @@ class TestInt8Hauptpfad:
         assert fake.load_kwargs is not None
         assert len(fake.recognize_calls) == 1
         joined = "".join(t.text for tok_row in [getattr(tr, "tokens", [])] for t in tok_row)
-        # Tokens duerfen fehlen (leer okay) — Text muss trotzdem stimmen:
+        # Tokens may be missing (empty is okay); text must still match:
         assert getattr(tr, "text", None) == "Timestamp INT8 Text" or joined == "Timestamp INT8 Text"
 
 
 # ---------------------------------------------------------------------------
-# OPT2 (Betreiber 29.10., Kimi-Auflagen): Mid-Tail-Snapshot bei reiner
-# Interpunktions-/Grossschreibungs-Drift im committeten Bereich zulassen.
-# Ground-Truth 07:08: committed='TT, die ' (mit Komma getippt), spaeterer
-# Live-Text 'TT die Sau...' (Komma weg) -> Zeichen-startswith tot ->
-# Checkpoint nie angelegt -> Finalizer transkribierte den Vollpuffer.
-# Sicherheitslinie (Kimi b): Wort-feste Position, Nach-Vergleich NUR
-# nach Interaktionsstrip, Gross-/Kleinschreibung EXAKT, kein Fuzzy,
-# Resttext wortweise (nie mitten im Wort), Ergebnis muss committed_text
-# zeichenexakt als Praefix tragen -> alle Downstream-Invarianten bleiben.
+# OPT2 (operator, October 29; Kimi requirements): allow mid-tail snapshots for
+# pure punctuation/capitalization drift in the committed region.
+# Ground truth 07:08: committed='TT, die ' (typed with comma), later live text
+# 'TT die Sau...' (comma removed) -> character startswith fails -> checkpoint
+# never created -> finalizer transcribed the full buffer.
+# Safety constraints (Kimi b): fixed word positions, subsequent comparison ONLY
+# after stripping punctuation, case EXACT, no fuzzy matching, remaining text
+# word by word (never mid-word), result must carry committed_text as a
+# character-exact prefix -> all downstream invariants remain intact.
 # ---------------------------------------------------------------------------
 
 
@@ -1363,8 +1362,8 @@ class TestOpt2SnapshotPunctuationDrift:
         return t._mid_tail_valid_snapshot()
 
     def test_pure_punctuation_drift_accepted(self) -> None:
-        """'TT, die ' committed, spaeter 'TT die Sau...' -> Snapshot mit
-        committed-Praefix zurueckgeschrieben, Rest wortweise uebernommen."""
+        """'TT, die ' committed, later 'TT die Sau...' -> snapshot written back
+        with committed prefix; remainder adopted word by word."""
         t = self._make(FakeEngine([]))
         snap = self._snapshot(
             t, "TT die Sau wuerde laufen.", "TT, die ", 80000
@@ -1375,46 +1374,46 @@ class TestOpt2SnapshotPunctuationDrift:
         assert snap.end_nbytes == 80000
 
     def test_capitalization_drift_accepted(self) -> None:
-        """Gross/klein-Drift NURhalb Interaktion ist ausgeschlossen: hier
-        'die'->'Die' im Praefix -> NEIN (Zeichen exakt ausser Interpunktion)."""
+        """Case drift alone is not punctuation interaction: here 'die'->'Die'
+        in the prefix -> NO (characters exact except punctuation)."""
         t = self._make(FakeEngine([]))
         snap = self._snapshot(t, "TT Die Sau", "TT, die ", 80000)
         assert snap is None, "Buchstaben-Gross/klein darf nicht toleriert werden"
 
     def test_word_change_rejected(self) -> None:
-        """Echter Worttausch im Praefix -> weiterhin None (kein Stitch-Zwang)."""
+        """A real word substitution in the prefix -> still None (no forced stitch)."""
         t = self._make(FakeEngine([]))
         snap = self._snapshot(t, "TT die Sau", "TT, hund ", 80000)
         assert snap is None
 
     def test_word_stem_change_rejected(self) -> None:
-        """'Hunde' vs 'Hunden': Flexion istKEINE Interpunktion -> None."""
+        """'Hunde' vs 'Hunden': inflection is NOT punctuation -> None."""
         t = self._make(FakeEngine([]))
         snap = self._snapshot(t, "TT, hunden Sau", "TT, hunde ", 80000)
         assert snap is None
 
     def test_short_completed_rejected(self) -> None:
-        """Fenster aelter/kiuerzer als der Praefix (weniger Woerter) -> None;
-        niemals mitten ins Wort schneiden."""
+        """Window older/shorter than the prefix (fewer words) -> None;
+        never cut in the middle of a word."""
         t = self._make(FakeEngine([]))
         snap = self._snapshot(t, "TT, die", "TT, die sau ", 80000)
         assert snap is None
 
     def test_committed_without_trailing_space_rejected(self) -> None:
-        """Commit mitten im Wort (kein abschliessendes Leerzeichen) -> None."""
+        """Commit in the middle of a word (no trailing space) -> None."""
         t = self._make(FakeEngine([]))
         snap = self._snapshot(t, "TT die Sau", "TT, di", 80000)
         assert snap is None
 
     def test_identical_text_behaves_as_before(self) -> None:
-        """Zeichen-exakter Praefix (der alte Sonderfall): Verhalten unveraendert."""
+        """Character-exact prefix (the former special case): behavior unchanged."""
         t = self._make(FakeEngine([]))
         snap = self._snapshot(t, "TT, die Sau", "TT, die ", 12345)
         assert snap is not None and snap.text == "TT, die Sau"
 
     def test_repeated_anchor_words_position_fixed(self) -> None:
-        """Wortwiederholungen (Kimi: Mehrdeutigkeit): Abgleich ist
-        POSITIONSFEST, kein Suchen - 'ja ja ' muss Woerter 1:1 treffen."""
+        """Repeated words (Kimi: ambiguity): matching is POSITION-BASED, not a
+        search—'ja ja ' must match words 1:1."""
         t = self._make(FakeEngine([]))
         snap = self._snapshot(t, "Ja, ja Ja, ja mehr", "ja, ja ", 80000)
         assert snap is None, "Gross/klein im Anker ('Ja' vs 'ja') -> None"

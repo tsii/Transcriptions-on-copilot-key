@@ -1,9 +1,9 @@
-"""Domänen-Typen und Windowing-Policy für das Parakeet-Streaming.
+"""Domain types and windowing policy for Parakeet streaming.
 
-Basierend auf der Kimi-K3-Recherche: Parakeet hat kein natives Streaming,
-also verwenden wir "Buffered Chunked Inference" mit gleitenden Fenstern
-[links_context | chunk | right_context]. Nur Tokens aus der stabilen
-Fenstermitte werden committet.
+Based on the Kimi K3 research: Parakeet has no native streaming,
+so we use "Buffered Chunked Inference" with sliding windows
+[left_context | chunk | right_context]. Only tokens from the stable
+center of the window are committed.
 """
 from __future__ import annotations
 
@@ -12,21 +12,21 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Token:
-    """Ein einzelnes Transkriptions-Token mit absoluter Zeit im Stream."""
+    """A single transcription token with an absolute timestamp in the stream."""
 
-    text: str          # roher Token-Text (inkl. führendem Leerzeichen)
-    start: float       # Sekunden, absolut im Stream
+    text: str          # raw token text (including a leading space)
+    start: float       # seconds, absolute within the stream
     end: float
 
     @property
     def is_word_start(self) -> bool:
-        """Ist dieses Token der Beginn eines neuen Wortes?"""
+        """Does this token begin a new word?"""
         return self.text.startswith(" ") or self.text.startswith("▁")
 
 
 @dataclass(frozen=True)
 class Transcription:
-    """Eine Transkription als Liste von zeitgestempelten Tokens."""
+    """A transcription represented as a list of timestamped tokens."""
 
     tokens: list[Token]
 
@@ -37,7 +37,7 @@ class Transcription:
 
 @dataclass(frozen=True)
 class StreamWindow:
-    """Ein zu transkribierendes Audio-Fenster."""
+    """An audio window to be transcribed."""
 
     start: float
     end: float
@@ -46,13 +46,13 @@ class StreamWindow:
 
 @dataclass(frozen=True)
 class StreamWindowPolicy:
-    """Entscheidet, welches Fenster als nächstes transkribiert wird.
+    """Determines which window to transcribe next.
 
-    Parameter (an CPU-Latenz angepasst, aggressiver als NeMo 10-2-2):
-        left_context_s  Context vor dem Commit-Punkt (Qualitätsanker).
-        chunk_s         Länge des neuen stabilen Chunks pro Tick.
-        right_context_s Lookahead nach dem Commit-Horizont.
-        min_audio_s     Erst ab dieser Audio-Länge überhaupt transkribieren.
+    Parameters (tuned for CPU latency, more aggressive than NeMo 10-2-2):
+        left_context_s  Context before the commit point (quality anchor).
+        chunk_s         Length of the new stable chunk per tick.
+        right_context_s Lookahead beyond the commit horizon.
+        min_audio_s     Transcribe only once this much audio is available.
     """
 
     left_context_s: float = 4.0
@@ -61,30 +61,30 @@ class StreamWindowPolicy:
     min_audio_s: float = 2.5
 
     def next_window(self, committed_s: float, audio_len_s: float) -> StreamWindow | None:
-        """Liefert das nächste Fenster oder None, wenn noch nichts zu tun ist."""
+        """Return the next window, or None if there is nothing to do yet."""
         if audio_len_s < self.min_audio_s:
             return None
 
-        # Neues Fenster beginnt beim committed-Punkt minus Links-Kontext.
+        # The new window starts at the commit point minus left context.
         start = max(0.0, committed_s - self.left_context_s)
         commit_end = committed_s + self.chunk_s
 
-        # Fix (Deadlock): Das Fenster darf NICHT hart auf committed+chunk+right
-        # gedeckelt sein. Sonst sieht die Transkription Audio jenseits dieses
-        # Punkts nie, wenn der Commit-Punkt nicht vorrueckt -> Deadlock.
-        # Wir nehmen das Fenster bis zum vorhandenen Audio, begrenzt auf das
-        # Doppelte der Nominalgroesse (haelt die Inferenzkosten im Rahmen).
+        # Fix (deadlock): The window must NOT be hard-capped at
+        # committed+chunk+right. Otherwise, transcription never sees audio
+        # beyond that point when the commit point stalls -> deadlock.
+        # Extend the window through the available audio, capped at twice the
+        # nominal size (keeps inference costs bounded).
         max_window_s = (self.left_context_s + self.chunk_s
                         + self.right_context_s) * 2
         end = min(audio_len_s, start + max_window_s)
 
-        # Wenn der Commit-Punkt schon am (oder über) dem Audioende liegt,
-        # gibt es nichts neues zu committen.
+        # If the commit point is already at or beyond the end of the audio,
+        # there is nothing new to commit.
         if committed_s >= audio_len_s:
             return None
 
-        # RC-A3: Nur committen, wenn danach noch Rechts-Kontext vorhanden ist.
-        # Sonst landet der Horizont an der Audio-Kante (TDT-Wörter unsicher).
+        # RC-A3: Commit only if right context remains beyond the horizon.
+        # Otherwise, the horizon falls at the audio edge (TDT words unreliable).
         if audio_len_s < commit_end + self.right_context_s:
             return None
 

@@ -1,9 +1,9 @@
-"""TimestampCommitter: entscheidet anhand von Token-Zeitstempeln, was
-endgültig committet (nie mehr revidiert) und was Partial (korrigierbar) ist.
+"""TimestampCommitter: uses token timestamps to determine what is
+committed permanently (never revised) and what remains partial (correctable).
 
-Kernidee aus der Kimi-Recherche: Nur Tokens, deren ``end`` vollständig vor
-dem Commit-Horizont liegt UND die bis zur letzten Wortgrenze reichen, werden
-committet. Fenster-Overlaps werden über Zeitstempel dedupliziert.
+Core idea from the Kimi research: Only tokens whose ``end`` lies entirely
+before the commit horizon AND that extend through the last word boundary are
+committed. Window overlaps are deduplicated using timestamps.
 """
 from __future__ import annotations
 
@@ -13,12 +13,12 @@ FRAME_S = 0.08  # TDT: hop 160 @16kHz * subsampling 8
 
 
 class TimestampCommitter:
-    """Verwaltet committed-Punkt und Partial-Text über mehrere Fenster.
+    """Manages the commit point and partial text across multiple windows.
 
-    RC-A1-Fix (LocalAgreement): Ein Textbereich wird erst committet, wenn er
-    in ``commit_agreements`` aufeinanderfolgenden Fenstern identisch ist.
-    So kann eine fruhe Halluzination des ersten (kontextlosen) Fensters
-    nicht unwiderruflich eingefroren werden.
+    RC-A1 fix (LocalAgreement): A text region is committed only after it is
+    identical across ``commit_agreements`` consecutive windows.
+    This prevents an early hallucination in the first (context-free) window
+    from being permanently frozen into the output.
     """
 
     def __init__(
@@ -33,26 +33,26 @@ class TimestampCommitter:
         self.last_partial = ""
         self._eps = eps
         self.commit_agreements = commit_agreements
-        #: STUFE 3: True => JEDER Kandidat braucht ``commit_agreements``
-        #: aufeinanderfolgende Identische am selben committed_s (kein
-        #: Direkt-Commit ab dem zweiten Commit). Default False laesst das
-        #: bisherige windowed-Verhalten unveraendert.
+        #: STAGE 3: True => EVERY candidate requires ``commit_agreements``
+        #: consecutive identical occurrences at the same committed_s (no
+        #: direct commit after the second commit). Default False preserves
+        #: the previous windowed behavior.
         self.require_agreement_always = require_agreement_always
-        # Kandidaten-Cache: (committed_s, text) des letzten Fensters.
+        # Candidate cache: (committed_s, text) from the last window.
         self._candidate_key: tuple = (0.0, "")
         self._agreement_count = 0
 
     def skip_silence(self, end_s: float) -> None:
-        """Ueberspringt eine stille Passage (Pause) ohne Text zu committen.
+        """Skips a silent passage (pause) without committing text.
 
-        Ohne das bleibt der Commit-Punkt an jeder Sprechpause >= chunk_s
-        permanent haengen (das Fenster ist auf committed_s+3s gedeckelt und
-        der VAD liefert dauerhaft 'keine Sprache') -> alles nach der Pause
-        geht verloren.
+        Without this, the commit point stalls permanently at every speech
+        pause >= chunk_s (the window is capped at committed_s+3s and VAD
+        continuously reports 'no speech') -> everything after the pause is
+        lost.
 
-        Wichtig: ``end_s`` ist das Ende der STILLEN Passage. Der commit-Punkt
-        wird genau dorthin gesetzt (nicht darueber hinaus), damit die danach
-        folgenden Sprach-Tokens (start >= end_s) wieder als ``fresh`` gelten.
+        Important: ``end_s`` is the end of the SILENT passage. The commit
+        point is set exactly there (not beyond it), so subsequent speech
+        tokens (start >= end_s) are once again considered ``fresh``.
         """
         if end_s <= self.committed_s:
             return
@@ -64,7 +64,7 @@ class TimestampCommitter:
     def update(
         self, tr: Transcription, commit_horizon: float
     ) -> tuple[str, str]:
-        """Verarbeitet eine Fenster-Transkription.
+        """Processes one window transcription.
 
         Returns:
             (new_commit_text, partial_text)
@@ -73,42 +73,42 @@ class TimestampCommitter:
         if not tokens:
             return "", ""
 
-        # Dedupe: nur Tokens nehmen, die zeitlich nach committed_s liegen.
+        # Dedupe: use only tokens whose timestamps follow committed_s.
         fresh = [t for t in tokens if t.start >= self.committed_s - self._eps]
         if not fresh:
             return "", self.last_partial
 
-        # Stable = Tokens, die vollständig vor dem Horizont liegen.
+        # Stable = tokens that lie entirely before the horizon.
         stable = [t for t in fresh if t.end <= commit_horizon + self._eps]
 
-        # Nur bis zur letzten Wortgrenze committen (kein halbes Wort).
+        # Commit only through the last word boundary (no partial words).
         commit_tokens, boundary = _cut_to_word_boundary(stable)
-        # Tokens nach dem Horizont + das zurueckgehaltene letzte Wort.
+        # Tokens beyond the horizon plus the withheld last word.
         partial_tokens = [t for t in fresh if t.end > commit_horizon + self._eps]
-        # Das zurueckgehaltene letzte Wort (ab boundary) gehoert zum Partial.
+        # The withheld last word (from boundary onward) belongs to the partial.
         if boundary < len(stable):
             partial_tokens = stable[boundary:] + partial_tokens
 
         new_commit_text = _join(commit_tokens)
         partial_text = _join(partial_tokens)
 
-        # RC-A1: LocalAgreement gilt nur fuer den ERSTEN Commit (der kommt aus
-        # dem kontextlosen Anfangsfenster und kann halluzinieren). Ab dem
-        # ersten bestaetigten Commit laeuft das Streaming normal durch -
-        # sonst entsteht ein Deadlock, wenn committed_s bei jedem Commit
-        # vorrueckt und der Agreement-Cache dadurch nie 2 Treffer sammelt.
+        # RC-A1: LocalAgreement applies only to the FIRST commit (which comes
+        # from the context-free initial window and can hallucinate). After the
+        # first confirmed commit, streaming proceeds normally; otherwise, a
+        # deadlock occurs as committed_s advances on every commit and the
+        # agreement cache never collects 2 matches.
         candidate_text = new_commit_text
         already_started = bool(self.committed_text.strip())
 
         if already_started and not self.require_agreement_always:
-            # Ab dem 2. Commit: direkt committen (kein Agreement mehr noetig).
+            # From the 2nd commit onward: commit directly (no agreement needed).
             if new_commit_text:
                 self.committed_tokens.extend(commit_tokens)
                 self.committed_text += new_commit_text
                 if commit_tokens:
                     self.committed_s = commit_tokens[-1].end
         else:
-            # Erster Commit: erst nach ``commit_agreements`` Bestaetigungen.
+            # First commit: wait for ``commit_agreements`` confirmations.
             candidate_key = (round(self.committed_s, 3), candidate_text)
             if candidate_text and candidate_key == self._candidate_key:
                 self._agreement_count += 1
@@ -122,44 +122,44 @@ class TimestampCommitter:
                 if commit_tokens:
                     self.committed_s = commit_tokens[-1].end
             else:
-                new_commit_text = ""  # noch nicht bestaetigt -> nicht committen
+                new_commit_text = ""  # not confirmed yet -> do not commit
 
         self.last_partial = partial_text
         return new_commit_text, partial_text
 
 
 def _cut_to_word_boundary(tokens: list[Token]) -> tuple[list[Token], int]:
-    """Committet alle Woerter, die vollstaendig vor dem Horizont liegen.
+    """Commits all words that lie entirely before the horizon.
 
-    Ein Wort ist vollstaendig, wenn ALLE seine Subword-Tokens innerhalf der
-    ``stable``-Liste liegen (d.h. ihre ``end`` <= Horizont). Da ``stable``
-    bereits nur Tokens mit ``end`` <= Horizont enthaelt, ist das hier immer
-    der Fall - AUF dem letzten Wort.
+    A word is complete when ALL of its subword tokens are in the ``stable``
+    list (i.e., their ``end`` <= horizon). Since ``stable`` already contains
+    only tokens with ``end`` <= horizon, this is always the case here EXCEPT
+    for the last word.
 
-    Das letzte Wort ist nur dann sicher vollstaendig, wenn es NICHT am
-    audioseitigen Rand abgeschnitten ist. Da wir das innerhalb der Committer-
-    Logik nicht wissen (benoetigt den Gesamt-Audio-Kontext), ist die sichere
-    Default-Regel fuer das laufende Streaming: das letzte Wort NICHT committen.
+    The last word is reliably complete only if it has NOT been cut off at the
+    audio edge. The committer cannot determine this internally (it requires
+    the full audio context), so the safe default for ongoing streaming is:
+    do NOT commit the last word.
 
-    ABER: Diese Funktion committet das letzte Wort DOCH, wenn es eindeutig
-    abgeschlossen ist - das erkennen wir daran, dass das letzte Token KEIN
-    Wortanfang ist (also das Wort aus einem Wortanfang + Folge-Subwords
-    besteht und sein letztes Subword vor dem Horizont endet).
+    HOWEVER: This function DOES commit the last word when it is unambiguously
+    complete. We infer this when the last token is NOT a word start (meaning
+    the word consists of a word start followed by subwords, with its final
+    subword ending before the horizon).
 
-    Fazit: Ein einzelnes Wortanfang-Token am Ende (z.B. " de") ist
-    unvollstaendig -> nicht committen. Ein Wort mit Folge-Subword am Ende
-    (z.B. " de"+"utlich") ist wahrscheinlich vollstaendig -> committen.
+    Conclusion: A single word-start token at the end (e.g., " de") is
+    incomplete -> do not commit. A word ending with a subsequent subword
+    (e.g., " de"+"utlich") is probably complete -> commit.
     """
     if not tokens:
         return [], 0
-    # Wenn das letzte Token ein Wortanfang ist, ist dieses letzte Wort
-    # moeglicherweise unvollstaendig -> zurueckhalten. Alles davor (also
-    # alle VORherigen Woerter) ist sicher vollstaendig und wird committet.
+    # If the last token is a word start, this final word may be incomplete
+    # -> withhold it. Everything before it (all PREVIOUS words) is reliably
+    # complete and is committed.
     if tokens[-1].is_word_start:
-        # Das letzte Wort (das letzte Token) zurueckhalten.
-        # Der Rest davor ist committierbar.
+        # Withhold the last word (the last token).
+        # Everything before it can be committed.
         return tokens[:-1], len(tokens) - 1
-    # Sonst: letztes Token ist ein Folge-Subword -> Wort vermutlich vollstaendig.
+    # Otherwise: last token is a subsequent subword -> word probably complete.
     return list(tokens), len(tokens)
 
 

@@ -1,6 +1,6 @@
-"""Fokus-Ton-Logik (Betreiber 31.10.): fertig-Signal nur bei
-Terminal-Fokus (Kimi: ohne Shell-Erweiterung keine portable API;
-Extension GetFocus() liefert app-id + Titel)."""
+"""Focus-based sound logic (operator, October 31): completion signal only
+with terminal focus (Kimi: no portable API without a shell extension;
+extension GetFocus() returns app-id + title)."""
 from __future__ import annotations
 
 import pytest
@@ -30,10 +30,10 @@ class TestTerminalFocused:
 
 
 class TestDoneSoundFocusMode:
-    """Controller-Semantik: done_sound + done_sound_mode.
+    """Controller semantics: done_sound + done_sound_mode.
 
-    'terminal' (Default): Ton bei terminal_focused() in (True, None);
-    KEIN Ton bei False (Browser-Fokus). 'always': Ton immer.
+    'terminal' (default): play sound when terminal_focused() is (True, None);
+    NO sound when it is False (browser focus). 'always': always play sound.
     """
 
     def _play_calls(self, monkeypatch):
@@ -91,7 +91,7 @@ class TestDoneSoundFocusMode:
         self._run_case(
             self._make(monkeypatch, tmp_path, "terminal", True), tmp_path
         )
-        assert len(calls) == 1, "Terminal-Fokus: Ton muss klingen"
+        assert len(calls) == 1, "Terminal focus: sound must play"
 
     def test_terminal_mode_silent_for_browser(
         self, monkeypatch, tmp_path
@@ -100,11 +100,11 @@ class TestDoneSoundFocusMode:
         self._run_case(
             self._make(monkeypatch, tmp_path, "terminal", False), tmp_path
         )
-        assert calls == [], "Browser-Fokus (False): KEIN Ton"
+        assert calls == [], "Browser focus (False): NO sound"
 
     def test_terminal_mode_unknown_plays(self, monkeypatch, tmp_path) -> None:
-        """None = Extension fehlt/nicht antwortet: lieber Toenen als
-        still sein (Feedback-Prinzip; Betaetiger-Default)."""
+        """None = extension missing/not responding: prefer sound over
+        silence (feedback principle; operator default)."""
         calls = self._play_calls(monkeypatch)
         self._run_case(
             self._make(monkeypatch, tmp_path, "terminal", None), tmp_path
@@ -116,7 +116,7 @@ class TestDoneSoundFocusMode:
         self._run_case(
             self._make(monkeypatch, tmp_path, "always", False), tmp_path
         )
-        assert len(calls) == 1, "always: Fokus ist irrelevant"
+        assert len(calls) == 1, "always: focus is irrelevant"
 
 
 from stt_button.controller import ControllerState, PushToTalkController  # noqa: E402

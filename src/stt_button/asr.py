@@ -1,16 +1,16 @@
-"""Whisper-Engine und Streaming-Logik.
+"""Whisper engine and streaming logic.
 
-faster-whisper hat kein natives Streaming. Der hier verfolgte Ansatz ist
-"wachsender Puffer + periodische Neutranskription" (LocalAgreement-artig):
+faster-whisper has no native streaming. The approach used here is
+"growing buffer + periodic retranscription" (LocalAgreement-like):
 
-* Audio sammelt sich im Puffer.
-* Alle ``interval_s`` Sekunden Audio wird der komplette Puffer transkribiert.
-* Der Teil des Textes, der in ``commit_agreements`` aufeinanderfolgenden
-  Laeufen identisch war, gilt als *committed* und wird nie mehr zurueckgenommen.
-* Der Rest wird als Delta an die Ausgabe gereicht.
+* Audio accumulates in the buffer.
+* Every ``interval_s`` seconds of audio, the entire buffer is transcribed.
+* The portion of text that was identical across ``commit_agreements``
+  consecutive runs is considered *committed* and is never retracted.
+* The remainder is passed to the output as a delta.
 
-Damit erscheinen Woerter live, und spaetere Korrekturen des Modells werden
-durch Backspaces ausgeglichen statt den Text zu verdoppeln.
+This makes words appear live, while later model corrections are applied
+through backspaces instead of duplicating text.
 """
 from __future__ import annotations
 
@@ -28,22 +28,22 @@ log = logging.getLogger(__name__)
 DEFAULT_SAMPLE_RATE = 16000
 BYTES_PER_SAMPLE = 2  # s16le
 
-#: Unter dieser Laenge (Sekunden) wird Audio nie transkribiert - verhindert
-#: Halluzination auf zu kurzem Rauschen (RC-1 aus der Debug-Recherche).
+#: Audio shorter than this (seconds) is never transcribed; prevents
+#: hallucinations on excessively short noise (RC-1 from the debug research).
 MIN_AUDIO_S = 0.5
 
-#: ANSI-Escape-Sequenzen, die ein versehentlich durchgereichter Terminal-
-#: Fortschrittsbalken (z.B. ``ESC[2K``) in das Transkript schreiben koennte.
+#: ANSI escape sequences that an accidentally forwarded terminal progress
+#: bar (e.g., ``ESC[2K``) could write into the transcript.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
 def _strip_ansi(text: str) -> str:
-    """Entfernt ANSI-Escape-Sequenzen (z.B. ESC[2K) aus einem Transkript."""
+    """Removes ANSI escape sequences (e.g., ESC[2K) from a transcript."""
     return _ANSI_RE.sub("", text)
 
 
 def _pcm_to_float(data: bytes) -> "object":
-    """s16le-Bytes robust in float32 [-1,1] wandeln (auch bei ungerader Laenge)."""
+    """Reliably convert s16le bytes to float32 [-1,1], even for odd lengths."""
     import numpy as np
     if len(data) % 2:
         data = data[:-1]
@@ -51,13 +51,13 @@ def _pcm_to_float(data: bytes) -> "object":
 
 
 def _token_budget(audio_seconds: float) -> int:
-    """Berechnet das noetige ``max_new_tokens`` fuer eine Audiolaenge.
+    """Calculates the required ``max_new_tokens`` for an audio duration.
 
-    Fix B (Langdiktat-Kappung): Ein fixes Limit von 256 Tokens schneidet
-    laengere Diktate hart ab. Deutsche Sprache braucht grob 12 Subword-
-    Tokens pro Sekunde (2-4 Tokens/Wort, ~2.5 Woerter/s + Reserve).
-    Mindestbudget 256, Deckel 4096 (TDT-Decoder hat kein eigenes Limit;
-    der Deckel schuetzt nur vor Speicher-/Laufzeit-Ausreissern).
+    Fix B (long-dictation truncation): A fixed limit of 256 tokens hard-
+    truncates longer dictations. German requires roughly 12 subword tokens
+    per second (2-4 tokens/word, ~2.5 words/s + headroom).
+    Minimum budget 256, cap 4096 (the TDT decoder has no internal limit;
+    the cap only protects against memory/runtime outliers).
     """
     budget = int(audio_seconds * 12) + 64
     return max(256, min(budget, 4096))
@@ -65,16 +65,16 @@ def _token_budget(audio_seconds: float) -> int:
 
 @dataclass(frozen=True)
 class TranscriptionResult:
-    """Ergebnis einer Transkription."""
+    """Result of a transcription."""
 
     text: str
-    #: Laenge des committeten (endgueltigen) Praefixes.
+    #: Length of the committed (final) prefix.
     committed_len: int = 0
 
 
 @runtime_checkable
 class TranscriberEngine(Protocol):
-    """Schnittstelle der Transkriptions-Engine (fuer Tests mockbar)."""
+    """Transcription engine interface (mockable for tests)."""
 
     def transcribe(
         self, data: bytes, initial_prompt: str = ""
@@ -82,10 +82,11 @@ class TranscriberEngine(Protocol):
 
 
 class WhisperEngine:
-    """Ladet faster-whisper und transkribiert Audio.
+    """Loads faster-whisper and transcribes audio.
 
-    Das Modell wird erst beim ersten :meth:`load` geladen, damit der Start des
-    Dienstes schnell ist. Der erste Aufruf laedt ca. 1,6 GB vom HuggingFace-Cache.
+    The model is loaded only on the first :meth:`load` call so that the service
+    starts quickly. The first call loads approximately 1.6 GB from the
+    HuggingFace cache.
     """
 
     def __init__(
@@ -108,16 +109,16 @@ class WhisperEngine:
 
     @property
     def loaded(self) -> bool:
-        """Ist das Modell bereits geladen?"""
+        """Is the model already loaded?"""
         return self._model is not None
 
     def load(self) -> None:
-        """Laedt das Modell (idempotent)."""
+        """Loads the model (idempotent)."""
         if self._model is not None:
             return
-        from faster_whisper import WhisperModel  # teurer Import, erst hier
+        from faster_whisper import WhisperModel  # expensive import; defer until here
 
-        log.info("Lade Whisper-Modell %s (%s) ...", self.model, self.compute_type)
+        log.info("Loading Whisper model %s (%s) ...", self.model, self.compute_type)
         self._model = WhisperModel(
             self.model,
             device=self.device,
@@ -125,12 +126,12 @@ class WhisperEngine:
             cpu_threads=self.cpu_threads,
             download_root=str(self.download_root) if self.download_root else None,
         )
-        log.info("Modell geladen.")
+        log.info("Model loaded.")
 
     def transcribe(
         self, data: bytes, initial_prompt: str = ""
     ) -> TranscriptionResult:
-        """Transkribiert s16le-Mono-Audio (16 kHz)."""
+        """Transcribes s16le mono audio (16 kHz)."""
         if self._model is None:
             self.load()
 
@@ -154,16 +155,16 @@ class WhisperEngine:
 
 
 class ParakeetEngine:
-    """Transkribiert mit NVIDIA Parakeet TDT (transformers, CPU-only).
+    """Transcribes with NVIDIA Parakeet TDT (transformers, CPU-only).
 
-    Parakeet TDT 0.6B v3 ist ein Transducer-Modell (FastConformer-Encoder +
-    TDT-Decoder), das 25 europaeische Sprachen automatisch erkennt - darunter
-    Deutsch und Englisch. Auf CPU ist es deutlich schneller als
-    faster-whisper und liefert fuer DE/EN-Mischdiktat die beste Qualitaet.
+    Parakeet TDT 0.6B v3 is a transducer model (FastConformer encoder +
+    TDT decoder) that automatically detects 25 European languages, including
+    German and English. On CPU, it is significantly faster than faster-whisper
+    and provides the best quality for mixed German/English dictation.
 
-    Das Modell kennt kein ``initial_prompt`` (anders als Whisper); der
-    Parameter wird deshalb still ignoriert. Fuer das Streaming-Delta ist das
-    unkritisch, da die Transkription ohnehin den ganzen Puffer verarbeitet.
+    The model does not support ``initial_prompt`` (unlike Whisper), so the
+    parameter is silently ignored. This is not critical for streaming deltas
+    because transcription processes the entire buffer anyway.
     """
 
     def __init__(
@@ -189,15 +190,15 @@ class ParakeetEngine:
         return self._model is not None or getattr(self, "_onnx_model", None) is not None
 
     def load(self) -> None:
-        """Laedt Modell + Prozessor (idempotent).
+        """Loads the model and processor (idempotent).
 
-        compute_type='int8': bewiesener onnx_asr/ORT-CPU-Komplettpfad
-        (A/B-Log tools/onnx_tdt_ab_probe_20261028.log: RTF 0,043-0,060,
-        1,7-2,5x vs FP32, WER verbessert). OpenVINO/NPU ist verworfen
-        (Ground-Truth 29.10.: NPU unter Diktatlast 'No available devices',
-        OV-Encoder statischer Bucket unvertraeglich mit echten Laengen,
-        RTF-Gewinn vs CPU-INT8 null). Fehlen die int8-ONNX, faellt der
-        HF-FP32-Pfad ein (niemals Absturz).
+        compute_type='int8': proven end-to-end onnx_asr/ORT CPU path
+        (A/B log tools/onnx_tdt_ab_probe_20261028.log: RTF 0.043-0.060,
+        1.7-2.5x vs FP32, improved WER). OpenVINO/NPU has been rejected
+        (ground truth, 29.10.: NPU under dictation load reports
+        'No available devices'; OV encoder static bucket incompatible with
+        actual lengths; zero RTF gain vs CPU INT8). If the int8 ONNX files
+        are missing, the HF FP32 path takes over (never crashes).
         """
         if self._model is not None or getattr(self, "_onnx_model", None) is not None:
             return
@@ -206,37 +207,37 @@ class ParakeetEngine:
         import torch
         from transformers import AutoModelForTDT, AutoProcessor
 
-        log.info("Lade Parakeet-Modell %s (FP32-Fallbackpfad) ...", self.model)
+        log.info("Loading Parakeet model %s (FP32 fallback path) ...", self.model)
         self._processor = AutoProcessor.from_pretrained(self.model)
         self._model = AutoModelForTDT.from_pretrained(
             self.model, dtype=torch.float32
         ).to(self.device).eval()
         if self.device == "cpu":
             torch.set_num_threads(self.cpu_threads)
-        log.info("Parakeet-Modell geladen.")
+        log.info("Parakeet model loaded.")
 
     def _int8_dir(self):
-        """Ordner mit den int8-ONNX-Dateien (Tests duerfen umbiegen)."""
+        """Directory containing the int8 ONNX files (tests may redirect it)."""
         hook = getattr(type(self), "_int8_dir_for_test", None)
         if hook is not None:
             return hook(self)
         from pathlib import Path as _P
-        # Pfad robust: relativ zum Repo-Root (der Mutterordner des
-        # stt_button-Pakets), NICHT zum Arbeitsverzeichnis des Dienstes
+        # Robust path: relative to the repo root (the parent directory of the
+        # stt_button package), NOT to the service's working directory
         _repo_root = _P(__file__).resolve().parent.parent.parent
         return _repo_root / ".models" / "parakeet-onnx-fp32"
 
     def _load_int8(self) -> bool:
-        """Versucht den bewiesenen int8-Komplettpfad (onnx_asr + ORT-CPU).
+        """Attempts the proven end-to-end int8 path (onnx_asr + ORT CPU).
 
-        True = int8-Modell bereit (transcribe nutzt es); False = Dateien
-        fehlen oder Laden fehlgeschlagen (Caller faellt auf HF-FP32 zurueck).
+        True = int8 model ready (transcribe uses it); False = files missing
+        or loading failed (caller falls back to HF FP32).
         """
         d = self._int8_dir()
         enc = d / "encoder-model.int8.onnx"
         dec = d / "decoder_joint-model.int8.onnx"
         if not (enc.exists() and dec.exists()):
-            log.warning("int8-ONNX fehlt (%s) - FP32-Fallback.", d)
+            log.warning("int8 ONNX missing (%s) - FP32 fallback.", d)
             return False
         try:
             import onnx_asr
@@ -245,36 +246,36 @@ class ParakeetEngine:
             opts = ort.SessionOptions()
             opts.intra_op_num_threads = self.cpu_threads
             opts.inter_op_num_threads = 1
-            log.info("Lade Parakeet int8-ONNX (ORT-CPU) aus %s ...", d)
+            log.info("Loading Parakeet int8 ONNX (ORT CPU) from %s ...", d)
             self._onnx_model = onnx_asr.load_model(
                 "nemo-conformer-tdt", path=d, quantization="int8",
                 sess_options=opts, providers=["CPUExecutionProvider"],
             )
-            log.info("Parakeet int8-ONNX bereit (RTF-Befund 0,043-0,060).")
+            log.info("Parakeet int8 ONNX ready (RTF measurement 0.043-0.060).")
             return True
-        except Exception as exc:  # noqa: BLE001 - Fallback niemals Absturz
-            log.warning("int8-ONNX-Laden fehlgeschlagen (%s) - FP32-Fallback.", exc)
+        except Exception as exc:  # noqa: BLE001 - fallback must never crash
+            log.warning("Failed to load int8 ONNX (%s) - FP32 fallback.", exc)
             self._onnx_model = None
             return False
 
     def transcribe(
         self, data: bytes, initial_prompt: str = ""
     ) -> TranscriptionResult:
-        """Transkribiert s16le-Mono-Audio (16 kHz)."""
-        # Fix 2: Zu kurzes Audio wird nie transkribiert (verhindert
-        # Halluzination auf < 0.5s Rauschen).
+        """Transcribes s16le mono audio (16 kHz)."""
+        # Fix 2: Audio that is too short is never transcribed (prevents
+        # hallucinations on < 0.5s of noise).
         if len(data) < MIN_AUDIO_S * 16000 * 2:
             return TranscriptionResult(text="")
         if self._model is None and getattr(self, "_onnx_model", None) is None:
             self.load()
 
-        # INT8-Hauptpfad (Betreiber 29.10.): bewiesener onnx_asr/ORT-CPU-
-        # Komplettpfad (A/B-Log tools/onnx_tdt_ab_probe_20261028.log:
-        # RTF 0,043-0,060, 1,7-2,5x vs FP32, WER verbessert). OpenVINO/NPU
-        # ist verworfen (Ground-Truth: NPU unter Diktatlast 'No available
-        # devices', statischer Bucket unvertraeglich, RTF-Gewinn null).
-        # initial_prompt entfaellt — der Vollpuffer wird ohnehin ganz
-        # transkribiert; FP32-HF bleibt Fallback (niemals Absturz).
+        # INT8 primary path (operator, 29.10.): proven end-to-end
+        # onnx_asr/ORT CPU path (A/B log tools/onnx_tdt_ab_probe_20261028.log:
+        # RTF 0.043-0.060, 1.7-2.5x vs FP32, improved WER). OpenVINO/NPU has
+        # been rejected (ground truth: NPU under dictation load reports
+        # 'No available devices'; static bucket incompatible; zero RTF gain).
+        # initial_prompt is omitted because the full buffer is transcribed
+        # anyway; FP32 HF remains the fallback (never crashes).
         onnx_model = getattr(self, "_onnx_model", None)
         if onnx_model is not None:
             import numpy as np
@@ -290,9 +291,9 @@ class ParakeetEngine:
         audio = _pcm_to_float(data)
         inputs = self._processor([audio], sampling_rate=16000)
         inputs.to(self.device, dtype=self._model.dtype)
-        # max_new_tokens explizit setzen, sonst waechst das Default-
-        # max_length mit dem Audio und schneidet lange Diktate ab.
-        # Fix B: Budget skaliert mit der Audiolaenge.
+        # Set max_new_tokens explicitly; otherwise, the default max_length
+        # grows with the audio and truncates long dictations.
+        # Fix B: Budget scales with audio duration.
         audio_s = len(data) / (16000 * 2)
         output = self._model.generate(
             **inputs,
@@ -306,23 +307,24 @@ class ParakeetEngine:
     def transcribe_with_timestamps(
         self, data: bytes, window_offset_s: float = 0.0
     ) -> "Transcription":
-        """Transkribiert und liefert Token-Zeitstempel.
+        """Transcribes and returns token timestamps.
 
-        Nutzt die TDT-Durations (80ms-Frames), um jedem Token eine absolute
-        Zeit zuzuordnen. ``window_offset_s`` ist die Startzeit des
-        Audio-Fensters im Gesamtstrom (fuer das windowed Streaming).
+        Uses TDT durations (80ms frames) to assign an absolute timestamp to
+        each token. ``window_offset_s`` is the start time of the audio window
+        in the overall stream (for windowed streaming).
         """
         from .streaming_types import Token, Transcription
 
-        # Fix 2: Zu kurzes Audio ergibt keine Tokens.
+        # Fix 2: Audio that is too short produces no tokens.
         if len(data) < MIN_AUDIO_S * 16000 * 2:
             return Transcription(tokens=[])
         if self._model is None and getattr(self, "_onnx_model", None) is None:
             self.load()
 
-        # INT8-Hauptpfad: ohne TDT-Dauern keine Token-Stempel -> ein
-        # Text-Token ueber die ganze Fensterlaenge (ganzzahlig korrekt,
-        # windowed Streaming ist mit int8 bewusst ausser Betrieb).
+        # INT8 primary path: without TDT durations, there are no token
+        # timestamps -> one text token spanning the entire window length
+        # (integer-correct; windowed streaming is intentionally disabled
+        # with int8).
         onnx_model = getattr(self, "_onnx_model", None)
         if onnx_model is not None:
             import numpy as np
@@ -366,15 +368,15 @@ class ParakeetEngine:
 
 
 class QwenEngine:
-    """Transkribiert mit Qwen3-ASR (transformers, CPU-only).
+    """Transcribes with Qwen3-ASR (transformers, CPU-only).
 
-    Qwen3-ASR-1.7B ist ein Multimodal-Modell, das nativ ueber
-    ``AutoModelForMultimodalLM`` + ``apply_transcription_request`` laeuft.
-    Es liefert sehr gute Qualitaet (inkl. Interpunktion und
-    Sprach-Erkennung), ist aber auf CPU deutlich langsamer als Parakeet.
+    Qwen3-ASR-1.7B is a multimodal model that runs natively through
+    ``AutoModelForMultimodalLM`` + ``apply_transcription_request``.
+    It provides very high quality (including punctuation and language
+    detection) but is significantly slower than Parakeet on CPU.
 
-    Das Modell kennt ebenfalls kein ``initial_prompt``; der Parameter wird
-    ignoriert.
+    This model also does not support ``initial_prompt``; the parameter is
+    ignored.
     """
 
     def __init__(
@@ -399,25 +401,25 @@ class QwenEngine:
         return self._model is not None
 
     def load(self) -> None:
-        """Laedt Modell + Prozessor (idempotent)."""
+        """Loads the model and processor (idempotent)."""
         if self._model is not None:
             return
         import torch
         from transformers import AutoModelForMultimodalLM, AutoProcessor
 
-        log.info("Lade Qwen3-ASR-Modell %s ...", self.model)
+        log.info("Loading Qwen3-ASR model %s ...", self.model)
         self._processor = AutoProcessor.from_pretrained(self.model)
         self._model = AutoModelForMultimodalLM.from_pretrained(
             self.model, dtype=torch.float32
         ).to(self.device).eval()
         if self.device == "cpu":
             torch.set_num_threads(self.cpu_threads)
-        log.info("Qwen3-ASR-Modell geladen.")
+        log.info("Qwen3-ASR model loaded.")
 
     def transcribe(
         self, data: bytes, initial_prompt: str = ""
     ) -> TranscriptionResult:
-        """Transkribiert s16le-Mono-Audio (16 kHz)."""
+        """Transcribes s16le mono audio (16 kHz)."""
         if self._model is None:
             self.load()
 
@@ -428,8 +430,8 @@ class QwenEngine:
 
         audio = _pcm_to_float(data)
 
-        # Der Qwen-Prozessor akzeptiert einen Dateipfad; wir schreiben
-        # den Puffer als temporaere WAV.
+        # The Qwen processor accepts a file path, so we write the buffer
+        # to a temporary WAV file.
         with tempfile.NamedTemporaryFile(suffix=".wav") as f:
             with _wave.open(f.name, "wb") as w:
                 w.setnchannels(1)
@@ -452,25 +454,24 @@ class QwenEngine:
 
 @dataclass(frozen=True)
 class _MidTailCheckpoint:
-    """PHASE 2: Hintergrund-Checkpoint fuer finalize_mode="cached_mid_tail".
+    """PHASE 2: Background checkpoint for finalize_mode="cached_mid_tail".
 
-    Speichert das Pufferende (Bytes) eines erfolgreichen Live-Snapshots
-    bzw. Hintergrund-Stitch-Laufs zusammen mit der gestitchten
-    Arbeitshypothese. Naechste Fenster starten bei ``end_nbytes -
-    mid_tail_context_s``.
+    Stores the buffer end (bytes) of a successful live snapshot or background
+    stitching run together with the stitched working hypothesis. Subsequent
+    windows start at ``end_nbytes - mid_tail_context_s``.
     """
 
-    #: Pufferlaenge (Bytes) zum Zeitpunkt des Snapshots.
+    #: Buffer length (bytes) at the time of the snapshot.
     end_nbytes: int
-    #: Gestitchte Arbeitshypothese zu diesem Pufferstand.
+    #: Stitched working hypothesis at this buffer position.
     text: str
 
 
 @dataclass
 class StreamTranscriber:
-    """Sammelt Audio und erzeugt periodisch Transkriptionen.
+    """Accumulates audio and periodically produces transcriptions.
 
-    Die Klasse enthaelt keine I/O-Logik und ist damit vollstaendig testbar.
+    The class contains no I/O logic and is therefore fully testable.
     """
 
     engine: TranscriberEngine
@@ -478,31 +479,31 @@ class StreamTranscriber:
     min_audio_s: float = 0.8
     sample_rate: int = DEFAULT_SAMPLE_RATE
     commit_agreements: int = 2
-    #: Finalisierungs-Modus:
-    #: ``"full"`` (Default, bisheriges Verhalten): Finalize transkribiert
-    #: den kompletten Puffer neu.
-    #: ``"cached"``: war der Puffer seit der letzten ERFOLGREICHEN Inferenz
-    #: unveraendert (gleiche Laenge, kein feed()/reset() seitdem), liefert
-    #: Finalize den Cache-Text ohne Engine-Call. Nur fuer deterministische
-    #: Engines sinnvoll (Parakeet: festliegende Decode-Parameter).
+    #: Finalization mode:
+    #: ``"full"`` (default, previous behavior): Finalize retranscribes the
+    #: entire buffer.
+    #: ``"cached"``: if the buffer has not changed since the last SUCCESSFUL
+    #: inference (same length, no feed()/reset() since then), Finalize returns
+    #: the cached text without an engine call. Useful only for deterministic
+    #: engines (Parakeet: fixed decoding parameters).
     finalize_mode: str = "full"
-    #: Optionales VAD-Gate (z.B. :class:`~stt_button.vad.SileroVadGate`).
-    #: Meldet es im NEUEN Audio-Bereich keine Sprache, wird nicht transkribiert
-    #: (verhindert Halluzinationen auf Stille -> Phantom-Backspaces).
+    #: Optional VAD gate (e.g., :class:`~stt_button.vad.SileroVadGate`).
+    #: If it reports no speech in the NEW audio region, transcription is skipped
+    #: (prevents hallucinations on silence -> phantom backspaces).
     vad: object | None = None
-    #: STUFE 3: Live-Ticks nach dieser Pufferlaenge (Sekunden) einstellen.
-    #: Der Whole-Buffer-Ansatz wird pro Tick teurer (RTF wachst mit dem
-    #: Puffer); ab hier liefern nur noch finalize() den Text. feed()
-    #: sammelt weiter, finalize() transkribiert den kompletten Puffer,
-    #: reset() reaktiviert die Live-Ticks. 0.0 (Default) = immer aktiv.
+    #: STAGE 3: Stop live ticks after this buffer duration (seconds).
+    #: The whole-buffer approach becomes more expensive per tick (RTF grows
+    #: with the buffer); beyond this point, only finalize() produces text.
+    #: feed() continues accumulating, finalize() transcribes the entire buffer,
+    #: and reset() reactivates live ticks. 0.0 (default) = always active.
     live_asr_until_s: float = 0.0
-    #: PHASE 2 (nur finalize_mode="cached_mid_tail"): Links-Kontext
-    #: (Sekunden) der Mid-Tail-Fenster vor dem Checkpoint-Ende.
+    #: PHASE 2 (only finalize_mode="cached_mid_tail"): left context
+    #: (seconds) of mid-tail windows before the checkpoint end.
     mid_tail_context_s: float = 2.5
-    #: PHASE 2: Abstand (Sekunden neuem Audio seit Checkpoint) zwischen
-    #: zwei Hintergrund-Mid-Tail-Engine-Calls.
+    #: PHASE 2: Interval (seconds of new audio since the checkpoint) between
+    #: two background mid-tail engine calls.
     mid_tail_step_s: float = 4.0
-    #: PHASE 2: Mindestanzahl Wortanker fuer stitch_word_overlap.
+    #: PHASE 2: Minimum number of word anchors for stitch_word_overlap.
     mid_tail_anchor_words: int = 2
 
     _buffer: bytearray = field(default_factory=bytearray, init=False, repr=False)
@@ -512,70 +513,69 @@ class StreamTranscriber:
     _committed_len: int = field(default=0, init=False, repr=False)
     _history: list[str] = field(default_factory=list, init=False, repr=False)
     _last_text: str = field(default="", init=False, repr=False)
-    #: Audio-Stand (Sekunden), zu dem das VAD zuletzt befragt wurde.
+    #: Audio position (seconds) at which VAD was last queried.
     _vad_checked_at: float = field(default=0.0, init=False, repr=False)
-    # --- Cache fuer finalize_mode="cached" -------------------------------
-    #: Puffergroesse (Bytes) nach der letzten ERFOLGREICHEN Inferenz.
+    # --- Cache for finalize_mode="cached" ---------------------------------
+    #: Buffer size (bytes) after the last SUCCESSFUL inference.
     _last_completed_nbytes: int = field(default=-1, init=False, repr=False)
-    #: Text der letzten ERFOLGREICHEN Inferenz.
+    #: Text from the last SUCCESSFUL inference.
     _last_completed_text: str = field(default="", init=False, repr=False)
-    #: True nur nach erfolgreichem Engine-Durchlauf (nicht schon vor dem
-    #: Aufruf) - der Abgeschlossen-Nachweis fuer den Cache.
+    #: True only after a successful engine run (not before the call); proof
+    #: of completion for the cache.
     _last_completed_ok: bool = field(default=False, init=False, repr=False)
-    #: Zaehlt jedes nicht-leere feed(); entwertet den Cache.
+    #: Counts every non-empty feed(); invalidates the cache.
     _feed_epoch: int = field(default=0, init=False, repr=False)
-    #: feed-Zaehler-Stand zum Zeitpunkt der letzten erfolgreichen Inferenz.
+    #: feed counter value at the time of the last successful inference.
     _completed_feed_epoch: int = field(default=-1, init=False, repr=False)
     # --- STUFE 4: Pausen-Indikator (live_asr_until_s) ---------------------
-    #: Live-Limit wurde (seit dem letzten reset()) bereits erreicht und
-    #: gemeldet - verhindert eine zweite Meldung bei weiteren Limit-Ticks.
+    #: Live limit has already been reached and reported (since the last
+    #: reset()); prevents a second report on subsequent limit ticks.
     _live_paused_seen: bool = field(default=False, init=False, repr=False)
-    #: Live-Limit wurde erreicht, aber die Meldung noch nicht abgeholt
-    #: (take_live_paused()).
+    #: Live limit has been reached, but the notification has not yet been
+    #: retrieved (take_live_paused()).
     _live_paused_pending: bool = field(default=False, init=False, repr=False)
     # --- PHASE 2: cached_mid_tail ----------------------------------------
-    #: Gueltiger Hintergrund-Checkpoint (Vollpuffer-Bytes + gestitchter
-    #: Arbeitshypothese). None = kein Stitch-Versuch moeglich.
+    #: Valid background checkpoint (full-buffer bytes + stitched working
+    #: hypothesis). None = no stitching attempt possible.
     _mid_tail_checkpoint: "_MidTailCheckpoint | None" = field(
         default=None, init=False, repr=False
     )
-    #: True, nachdem ein Hintergrund-Mid-Tail-Lauf endgueltig gescheitert
-    #: ist (Engine-Exception oder Stitch None): keine weiteren Versuche,
-    #: finalize() faellt auf den Vollpuffer zurueck.
+    #: True after a background mid-tail run has permanently failed (engine
+    #: exception or stitch None): no further attempts; finalize() falls back
+    #: to the full buffer.
     _mid_tail_failed: bool = field(default=False, init=False, repr=False)
 
     # ------------------------------------------------------------------
-    # Zustand
+    # State
     # ------------------------------------------------------------------
     @property
     def audio_seconds(self) -> float:
-        """Wie viele Sekunden Audio aktuell im Puffer liegen."""
+        """Number of seconds of audio currently in the buffer."""
         return len(self._buffer) / (self.sample_rate * BYTES_PER_SAMPLE)
 
     @property
     def committed_len(self) -> int:
-        """Laenge des committeten (endgueltigen) Textpraefixes."""
+        """Length of the committed (final) text prefix."""
         return self._committed_len
 
     @property
     def committed_text(self) -> str:
-        """Der endgueltige Textpraefix."""
+        """The final text prefix."""
         return self._committed_text
 
     @property
     def last_text(self) -> str:
-        """Der zuletzt transkribierte Gesamttext."""
+        """The most recently transcribed full text."""
         return self._last_text
 
     # ------------------------------------------------------------------
-    # Steuerung
+    # Control
     # ------------------------------------------------------------------
     def reset(self) -> None:
-        """Verwirft den Puffer und den Commit-Zustand (entwertet den Cache).
+        """Discards the buffer and commit state (invalidates the cache).
 
-        Setzt auch die Live-Limit-Meldung (Pausen-Indikator) zurueck: Die
-        naechste Aufnahme kann das Limit erneut und damit wieder genau
-        einmal melden.
+        Also resets the live-limit notification (pause indicator): the next
+        recording can reach the limit again and report it exactly once.
         """
         self._buffer.clear()
         self._last_transcribed_at = 0.0
@@ -592,29 +592,27 @@ class StreamTranscriber:
         self._invalidate_cache()
 
     def take_live_paused(self) -> bool:
-        """Holt die Limit-Meldung der Live-ASR ab (genau einmal pro Aufnahme).
+        """Retrieves the live-ASR limit notification (exactly once per recording).
 
-        Minimale Signatur (bewusst kein Callback, kein extra Property):
-        ``take_live_paused() -> bool``. Liefert ``True`` genau einmal -
-        nach dem ersten Ueberschreiten des Live-Limits
-        (``live_asr_until_s > 0`` und Puffer >= Limit) - und konsumiert die
-        Meldung. Weitere Aufrufe liefern ``False``, bis ein ``reset()``
-        gefolgt von einem erneuten Limit-Ueberschreiten folgt.
+        Minimal signature (intentionally no callback or extra property):
+        ``take_live_paused() -> bool``. Returns ``True`` exactly once, after
+        the live limit is first exceeded (``live_asr_until_s > 0`` and buffer
+        >= limit), and consumes the notification. Subsequent calls return
+        ``False`` until ``reset()`` is followed by another limit crossing.
 
-        Das Limit wird HIER SELBST erkannt (nicht nur in
-        ``maybe_transcribe()`` vermerkt): Der letzte Live-Tick startet
-        regulaer unter dem Limit und liefert noch ein Ergebnis; die Grenze
-        wird erst waehrend seiner mehrsekundigen Inferenz ueberschritten
-        (Audio laeuft weiter), und der Release kann VOR dem naechsten Tick
-        kommen. Dann hat ``maybe_transcribe()`` das Limit nie gesehen -
-        der Finalizer (der als Letzter fuettert) muss die Meldung trotzdem
-        noch bekommen koennen (Realtest 11:56).
+        The limit is detected HERE (not merely recorded in
+        ``maybe_transcribe()``): the last live tick starts normally below the
+        limit and still returns a result; the limit is crossed only during its
+        multi-second inference (audio continues), and release can occur BEFORE
+        the next tick. In that case, ``maybe_transcribe()`` never sees the
+        limit; the finalizer (which feeds last) must still be able to retrieve
+        the notification (real-world test 11:56).
 
-        Mit ``live_asr_until_s=0.0`` (Default) liefert die Methode NIE
-        ``True`` - das Limit ist dann deaktiviert.
+        With ``live_asr_until_s=0.0`` (default), this method NEVER returns
+        ``True`` because the limit is disabled.
 
         Returns:
-            ``True`` gdw. die Limit-Meldung noch nicht abgeholt war.
+            ``True`` iff the limit notification had not yet been retrieved.
         """
         if (
             self.live_asr_until_s > 0.0
@@ -628,71 +626,70 @@ class StreamTranscriber:
         return pending
 
     def _invalidate_cache(self) -> None:
-        """Entwertet den Finalize-Cache (nach reset() oder Fehlerfall)."""
+        """Invalidates the finalize cache (after reset() or an error)."""
         self._last_completed_nbytes = -1
         self._last_completed_text = ""
         self._last_completed_ok = False
         self._completed_feed_epoch = -1
 
     def feed(self, chunk: bytes) -> None:
-        """Legt Audiodaten in den Puffer und entwertet den Finalize-Cache."""
+        """Adds audio data to the buffer and invalidates the finalize cache."""
         if chunk:
             self._buffer.extend(chunk)
             self._feed_epoch += 1
 
     def maybe_transcribe(self) -> TranscriptionResult | None:
-        """Transkribiert, wenn genug neue Audiodaten vorliegen.
+        """Transcribes when enough new audio data is available.
 
         Returns:
-            Das Ergebnis oder ``None``, wenn noch nicht transkribiert wurde.
+            The result, or ``None`` if no transcription has occurred yet.
         """
         if self.audio_seconds < self.min_audio_s:
             return None
-        # STUFE 3: Live-ASR-Limit erreicht -> keine Live-Engine-Calls mehr.
-        # Der Puffer wachst weiter (feed()); finalize() transkribiert alles.
-        # STUFE 4: Der ersten Ueberschreitung wird GENAU EINMAL als Meldung
-        # vermerkt (take_live_paused()) - der Controller tippt darauf den
-        # Pausen-Indikator.
+        # STAGE 3: Live ASR limit reached -> no more live engine calls.
+        # The buffer continues growing (feed()); finalize() transcribes all of it.
+        # STAGE 4: The first crossing is recorded EXACTLY ONCE as a notification
+        # (take_live_paused()); the controller types the pause indicator in response.
         if self.live_asr_until_s > 0.0 and self.audio_seconds >= self.live_asr_until_s:
             if not self._live_paused_seen:
                 self._live_paused_seen = True
                 self._live_paused_pending = True
-            # PHASE 2: Hintergrund-Mid-Tail-Stitch (nur Opt-In-Modus).
-            # Liefert IMMER None: kein Tippen, kein _update_commit, keine
-            # Aenderung an _history/_committed_text/Live-Cache.
+            # PHASE 2: Background mid-tail stitching (opt-in mode only).
+            # ALWAYS returns None: no typing, no _update_commit, and no changes
+            # to _history/_committed_text/live cache.
             if self.finalize_mode == "cached_mid_tail" and not self._mid_tail_failed:
                 self._mid_tail_step()
             return None
-        # Die erste Transkription darf sofort erfolgen, danach wird nur
-        # neu hinzugekommene Audio beruecksichtigt.
+        # The first transcription may occur immediately; thereafter, only
+        # newly added audio is considered.
         if self._has_transcribed:
             if self.audio_seconds - self._last_transcribed_at < self.interval_s:
                 return None
 
-        # VAD-Gate: Stille/Rauschen darf nie bis zur ASR kommen. Geprueft wird
-        # nur das neue Audio (ab der letzten Transkription) - das spart Rechen-
-        # zeit und verhindert Phantom-Text samt Backspace-Ruecknahmen.
-        # Ein Fehler im Gate darf das Diktat nicht verhindern: es ist eine
-        # Optimierung, kein Muss.
+        # VAD gate: Silence/noise must never reach ASR. Only new audio (since
+        # the last transcription) is checked, saving computation time and
+        # preventing phantom text and backspace retractions.
+        # A gate error must not prevent dictation: it is an optimization,
+        # not a requirement.
         if self.vad is not None:
             if not self._vad_due():
                 return None
             self._vad_checked_at = self.audio_seconds
             new_audio = self._new_audio()
             arr = _pcm_to_float(new_audio) if new_audio else None
-            # Unter 1s kann das VAD nichts beurteilen -> nicht blocken.
+            # Below 1s, VAD cannot make a determination -> do not block.
             if arr is not None and len(arr) >= self.sample_rate:
                 try:
                     speech = self.vad.has_speech(arr)
-                except Exception as exc:  # noqa: BLE001 - Gate ist optional
+                except Exception as exc:  # noqa: BLE001 - gate is optional
                     log.warning(
-                        "VAD-Gate fehlgeschlagen (%s) - transkribiere trotzdem", exc
+                        "VAD gate failed (%s) - transcribing anyway", exc
                     )
                 else:
                     if not speech:
                         log.debug(
-                            "VAD: keine Sprache in %.1fs neuem Audio - "
-                            "Transkription uebersprungen",
+                            "VAD: no speech in %.1fs of new audio - "
+                            "transcription skipped",
                             len(new_audio) / (self.sample_rate * BYTES_PER_SAMPLE),
                         )
                         return None
@@ -700,17 +697,16 @@ class StreamTranscriber:
         return self._transcribe()
 
     def finalize(self) -> TranscriptionResult:
-        """Transkribiert den kompletten Puffer als Endresultat.
+        """Transcribes the entire buffer as the final result.
 
-        Das Ergebnis ist bewusst voll korrigierend (``committed_len=0``):
-        das Modell darf sein letztes Wort noch korrigieren.
+        The result is intentionally fully correctable (``committed_len=0``):
+        the model may still revise its last word.
 
-        Mit ``finalize_mode="cached"`` entfaellt der Engine-Aufruf, wenn
-        der Puffer seit der letzten ERFOLGREICHEN Inferenz unveraendert ist
-        (gleiche Bytes-Laenge, kein feed()/reset() seitdem): bei den
-        festliegenden Decode-Parameter (temperature=0, beam=1) waere die
-        Neutranskription ergebnislos. Der Text kommt aus dem Cache, die
-        Agreement-History bleibt unveraendert.
+        With ``finalize_mode="cached"``, the engine call is skipped if the
+        buffer has not changed since the last SUCCESSFUL inference (same byte
+        length, no feed()/reset() since then): with fixed decoding parameters
+        (temperature=0, beam=1), retranscription would produce no new result.
+        The text comes from the cache, and the agreement history is unchanged.
         """
         if (
             self.finalize_mode == "cached"
@@ -719,20 +715,20 @@ class StreamTranscriber:
             and self._feed_epoch == self._completed_feed_epoch
         ):
             log.debug(
-                "Finalize aus Cache uebernommen (%d Bytes, kein Engine-Call)",
+                "Finalize result taken from cache (%d bytes, no engine call)",
                 len(self._buffer),
             )
             return TranscriptionResult(
                 text=self._last_completed_text, committed_len=0
             )
-        # PHASE 2: kleiner Tail statt Vollpuffer, wenn die Mid-Tail-Kette
-        # gueltig ist; sonst Verhalten wie heute (Vollpuffer-Fallback).
+        # PHASE 2: Small tail instead of full buffer if the mid-tail chain is
+        # valid; otherwise, preserve current behavior (full-buffer fallback).
         if self.finalize_mode == "cached_mid_tail":
             mid_tail = self._mid_tail_finalize()
             if mid_tail is not None:
                 log.debug(
-                    "Finalize aus Mid-Tail-Checkpoint (%d Bytes Puffer, "
-                    "Tail-Stitch)",
+                    "Finalize from mid-tail checkpoint (%d-byte buffer, "
+                    "tail stitch)",
                     len(self._buffer),
                 )
                 return mid_tail
@@ -740,22 +736,22 @@ class StreamTranscriber:
         return TranscriptionResult(text=result.text, committed_len=0)
 
     # ------------------------------------------------------------------
-    # Intern
+    # Internal
     # ------------------------------------------------------------------
     # --- PHASE 2: cached_mid_tail ---------------------------------------
     def _mid_tail_valid_snapshot(self) -> "_MidTailCheckpoint | None":
-        """Initial-Checkpoint aus dem letzten erfolgreichen Live-Snapshot.
+        """Initial checkpoint from the last successful live snapshot.
 
-        Gueltig, wenn die Live-Inferenz erfolgreich war und ihr Text mit
-        dem committeten Praefix konsistent beginnt. OPT2 (Betreiber 29.10.,
-        Kimi-Auflagen): reine INTERPUNKTIONS-Drift im committeten Bereich
-        (Ground-Truth 07:08: Komma weg) verwirft den Snapshot nicht mehr —
-        aber NUR wortweise, wortfest (positions-fest, kein Suchen),
-        Buchstaben/Gross-schreibung EXAKT, kein Fuzzy, Flexion ist keine
-        Interpunktion. Der Checkpoint-Text bekommt den committeten Praefix
-        zeichenexakt zurueck und traegt ihn damit zeichenexakt — alle
-        Downstream-Invarianten (startswith-Checks, stitch-Invarianten)
-        bleiben unveraendert in Kraft. Kein Treffer -> None (Vollpuffer).
+        Valid if live inference succeeded and its text starts consistently
+        with the committed prefix. OPT2 (operator, 29.10.; Kimi requirements):
+        pure PUNCTUATION drift in the committed region (ground truth 07:08:
+        comma disappeared) no longer invalidates the snapshot, but ONLY on a
+        word-by-word, position-fixed basis (no searching); letters and case
+        must match EXACTLY, no fuzzy matching, and inflection is not
+        punctuation. The checkpoint text receives the committed prefix back
+        character-for-character and therefore preserves it exactly; all
+        downstream invariants (startswith checks, stitching invariants)
+        remain unchanged. No match -> None (full buffer).
         """
         if not self._last_completed_ok or self._last_completed_nbytes < 0:
             return None
@@ -769,7 +765,7 @@ class StreamTranscriber:
         if repaired is None:
             return None
         log.debug(
-            "mid_tail: Snapshot-Punktationsdrift repariert (%r <- %r)",
+            "mid_tail: snapshot punctuation drift repaired (%r <- %r)",
             repaired[:40], completed[:40],
         )
         return _MidTailCheckpoint(
@@ -777,25 +773,25 @@ class StreamTranscriber:
         )
 
     def _mid_tail_window(self, end_nbytes: int) -> tuple[bytes, int]:
-        """Fenster [checkpoint.end - Kontext | Pufferende] als Bytes-Slice.
+        """Window [checkpoint.end - context | buffer end] as a byte slice.
 
-        Der Start wird bei 0 geklemmt (kurzer Puffer). Liefert Slice und
-        Start-Byte (für Tests/Logs).
+        The start is clamped to 0 (short buffer). Returns the slice and start
+        byte (for tests/logs).
         """
         context_bytes = int(self.mid_tail_context_s * self.sample_rate * BYTES_PER_SAMPLE)
         start = max(0, end_nbytes - context_bytes)
         return bytes(self._buffer[start:]), start
 
     def _mid_tail_step(self) -> None:
-        """Ein Hintergrund-Stitch-Lauf (nie tippend, nie committend).
+        """One background stitching run (never types, never commits).
 
-        (1) Initial-Checkpoint aus dem letzten Live-Snapshot, falls noch
-        keiner existiert. Ungueltiger Snapshot -> kein Versuch.
-        (2) Throttle: erst ab mid_tail_step_s neuem Audio seit Checkpoint.
-        (3) Fenster transkribieren, mit stitch_word_overlap an die
-        Arbeitshypothese naehen; Erfolg -> neuer Checkpoint am VOR dem
-        Engine-Call gesnapshotteten Pufferende. Engine-Exception oder
-        Stitch None -> _mid_tail_failed=True (endgueltig, kein abort).
+        (1) Create an initial checkpoint from the last live snapshot if none
+        exists yet. Invalid snapshot -> no attempt.
+        (2) Throttle: wait for mid_tail_step_s of new audio since the checkpoint.
+        (3) Transcribe the window and stitch it to the working hypothesis with
+        stitch_word_overlap; success -> new checkpoint at the buffer end
+        snapshotted BEFORE the engine call. Engine exception or stitch None ->
+        _mid_tail_failed=True (permanent, no abort).
         """
         checkpoint = self._mid_tail_checkpoint
         if checkpoint is None:
@@ -804,7 +800,7 @@ class StreamTranscriber:
                 return
             self._mid_tail_checkpoint = checkpoint
 
-        end_nbytes_snapshot = len(self._buffer)  # VOR dem Engine-Call
+        end_nbytes_snapshot = len(self._buffer)  # BEFORE the engine call
         new_bytes = end_nbytes_snapshot - checkpoint.end_nbytes
         if new_bytes < self.mid_tail_step_s * self.sample_rate * BYTES_PER_SAMPLE:
             return
@@ -812,9 +808,9 @@ class StreamTranscriber:
         window, _start = self._mid_tail_window(checkpoint.end_nbytes)
         try:
             result = self.engine.transcribe(window, initial_prompt=self._committed_text)
-        except Exception:  # noqa: BLE001 - Hintergrundlauf darf nie abbrechen
+        except Exception:  # noqa: BLE001 - background run must never abort
             self._mid_tail_failed = True
-            log.debug("mid_tail: Engine-Exception - keine weiteren Versuche")
+            log.debug("mid_tail: engine exception - no further attempts")
             return
         window_text = result.text.strip()
         stitched = stitch_word_overlap(
@@ -825,7 +821,7 @@ class StreamTranscriber:
         )
         if stitched is None:
             self._mid_tail_failed = True
-            log.debug("mid_tail: Stitch ohne Anker - keine weiteren Versuche")
+            log.debug("mid_tail: stitch without anchor - no further attempts")
             return
         self._mid_tail_checkpoint = _MidTailCheckpoint(
             end_nbytes=end_nbytes_snapshot, text=stitched
@@ -837,10 +833,10 @@ class StreamTranscriber:
         )
 
     def _mid_tail_finalize(self) -> TranscriptionResult | None:
-        """Finalize im Modus cached_mid_tail: kleiner Tail statt Vollpuffer.
+        """Finalize in cached_mid_tail mode: small tail instead of full buffer.
 
-        None = Mid-Tail nicht moeglich/gescheitert -> Caller macht den
-        bisherigen Vollpuffer-Fallback.
+        None = mid-tail unavailable/failed -> caller performs the previous
+        full-buffer fallback.
         """
         checkpoint = self._mid_tail_checkpoint
         if self._mid_tail_failed or checkpoint is None:
@@ -850,7 +846,7 @@ class StreamTranscriber:
 
         end_nbytes_snapshot = len(self._buffer)
         if end_nbytes_snapshot == checkpoint.end_nbytes:
-            # Puffer seit Checkpoint unveraendert: KEIN Engine-Call.
+            # Buffer unchanged since checkpoint: NO engine call.
             return TranscriptionResult(
                 text=checkpoint.text, committed_len=len(self._committed_text)
             )
@@ -858,8 +854,8 @@ class StreamTranscriber:
         window, _start = self._mid_tail_window(checkpoint.end_nbytes)
         try:
             result = self.engine.transcribe(window, initial_prompt=self._committed_text)
-        except Exception:  # noqa: BLE001 - Caller faellt auf Vollpuffer zurueck
-            log.debug("mid_tail finalize: Engine-Exception - Vollpuffer-Fallback")
+        except Exception:  # noqa: BLE001 - caller falls back to full buffer
+            log.debug("mid_tail finalize: engine exception - full-buffer fallback")
             return None
         window_text = result.text.strip()
         stitched = stitch_word_overlap(
@@ -869,25 +865,25 @@ class StreamTranscriber:
             min_anchor_words=self.mid_tail_anchor_words,
         )
         if stitched is None:
-            log.debug("mid_tail finalize: Stitch fehlgeschlagen - Vollpuffer-Fallback")
+            log.debug("mid_tail finalize: stitch failed - full-buffer fallback")
             return None
         return TranscriptionResult(
             text=stitched, committed_len=len(self._committed_text)
         )
 
     def _new_audio(self) -> bytes:
-        """Audio seit der letzten Transkription (sonst der ganze Puffer)."""
+        """Audio since the last transcription (otherwise, the entire buffer)."""
         start_byte = int(
             self._last_transcribed_at * self.sample_rate * BYTES_PER_SAMPLE
         )
         return bytes(self._buffer[start_byte:])
 
     def _vad_due(self) -> bool:
-        """Ist ein neuer VAD-Lauf faellig?
+        """Is another VAD run due?
 
-        Bei Stille wird ``_last_transcribed_at`` nie fortgeschrieben; ohne
-        diese Drosselung pruefte das Gate im Controler-Takt (20 ms) immer
-        wieder den ganzen Puffer.
+        During silence, ``_last_transcribed_at`` never advances; without this
+        throttle, the gate would repeatedly check the entire buffer at the
+        controller interval (20 ms).
         """
         if self._vad_checked_at <= 0.0:
             return True
@@ -898,9 +894,8 @@ class StreamTranscriber:
         self._has_transcribed = True
         data = bytes(self._buffer)
 
-        # Abgeschlossen-Nachweis zuruecksetzen: erst NACH erfolgreichem
-        # Durchlauf wird er gesetzt - ein Exception werfender Tick darf
-        # den Cache NICHT gueltig setzen.
+        # Reset proof of completion: it is set only AFTER a successful run;
+        # a tick that raises an exception must NOT mark the cache as valid.
         self._invalidate_cache()
 
         result = self.engine.transcribe(data, initial_prompt=self._committed_text)
@@ -909,32 +904,31 @@ class StreamTranscriber:
 
         self._update_commit(text)
 
-        # Abgeschlossen-Nachweis ERST nach erfolgreichem Durchlauf; wirft
-        # der Engine-Aufruf eine Exception, bleibt ok=False (Cache ungueltig).
+        # Set proof of completion ONLY after a successful run; if the engine
+        # call raises an exception, ok=False remains (cache invalid).
         self._last_completed_nbytes = len(data)
         self._last_completed_text = text
         self._last_completed_ok = True
         self._completed_feed_epoch = self._feed_epoch
 
         log.debug(
-            "Transkription %.1fs Audio -> %r (committed=%d)",
+            "Transcription of %.1fs audio -> %r (committed=%d)",
             self.audio_seconds, text, self._committed_len,
         )
 
         return TranscriptionResult(text=text, committed_len=self._committed_len)
 
     def _update_commit(self, text: str) -> None:
-        """Verringert den committeten Praefix, wenn er stabil bestaetigt wurde.
+        """Extends the committed prefix once it has been stably confirmed.
 
-        Der committete Praefix ist der Teil, der in den letzten
-        ``commit_agreements`` Transkriptionen identisch war (LocalAgreement).
-        Er wird nur bis zur letzten Wortgrenze committet: das aktuell
-        laufende Wort bleibt so korrigierbar.
+        The committed prefix is the portion that was identical across the last
+        ``commit_agreements`` transcriptions (LocalAgreement). It is committed
+        only through the last word boundary, leaving the current word
+        correctable.
 
-        Ein committeter Praefix waehrend des Streamings schuetzt vor
-        Flackern. Die *Schluss*-Transkription ist dagegen voll korrigierend
-        (sie liefert ``committed_len=0``), damit das Modell am Ende sein
-        letztes Wort noch korrigieren darf.
+        A committed prefix during streaming prevents flicker. The FINAL
+        transcription, by contrast, is fully correctable (it returns
+        ``committed_len=0``), allowing the model to revise its last word.
         """
         self._history.append(text)
         if len(self._history) > self.commit_agreements:
@@ -943,7 +937,7 @@ class StreamTranscriber:
         if len(self._history) < self.commit_agreements:
             return
 
-        # Gemeinsamer Praefix aller Hypothesen im Fenster.
+        # Common prefix of all hypotheses in the window.
         common_len = len(self._history[0])
         for candidate in self._history[1:]:
             common_len = _common_prefix_len(self._history[0][:common_len], candidate)
@@ -954,10 +948,10 @@ class StreamTranscriber:
             return
 
         common_str = self._history[0][:common_len]
-        # Nur bis zur letzten Wortgrenze committen.
+        # Commit only through the last word boundary.
         cut = common_str.rfind(" ")
         if cut < 0:
-            # Noch kein fertiges Wort - nichts committen.
+            # No complete word yet -> commit nothing.
             return
         common_str = common_str[: cut + 1]
 
@@ -967,11 +961,11 @@ class StreamTranscriber:
 
 
 def _completes(incomplete: str, word: str) -> bool:
-    """Prueft, ob ``word`` das unvollstaendige Wort ``incomplete`` fortsetzt.
+    """Checks whether ``word`` continues the incomplete word ``incomplete``.
 
-    Ein unvollstaendiges Wort wird mit BUCHSTABEN fortgeschrieben
-    ('de' -> 'deutlich'); reine Interpunktion dahinter ('Welt' -> 'Welt,')
-    zaehlt nicht als Wortfortsetzung (kein Fuzzy ueber Komma).
+    An incomplete word must be continued with LETTERS ('de' -> 'deutlich');
+    punctuation alone appended afterward ('Welt' -> 'Welt,') does not count
+    as word completion (no fuzzy matching across a comma).
     """
     if len(incomplete) >= len(word):
         return False
@@ -979,22 +973,19 @@ def _completes(incomplete: str, word: str) -> bool:
 
 
 def _checkpoint_des_punktationsdrift(committed: str, completed: str) -> str | None:
-    """Repariert reine INTERPUNKTIONS-Drift im Mid-Tail-Snapshot (OPT2).
+    """Repairs pure PUNCTUATION drift in the mid-tail snapshot (OPT2).
 
-    Erlaubt ist ausschliesslich: Der committete Praefix (wortweise, muss
-    mit Leerzeichen enden) stimmt mit den ersten W(o)etern des
-    Live-Textes ueberein, nachdem BEIDENSEITS Interpunktionszeichen
-    entfernt wurden. Buchstaben und Gross-/Kleinschreibung bleiben
-    EXAKT verglichen (Flexion und Grossschreibung sind keine
-    Interpunktion), die Position ist fest (kein Suchen, kein Fuzzy,
-    keine Wortumlagerung).
+    The only permitted case is: the committed prefix (word-by-word, must end
+    with a space) matches the first words of the live text after punctuation
+    is removed from BOTH sides. Letters and case are compared EXACTLY
+    (inflection and capitalization are not punctuation), and positions are
+    fixed (no searching, fuzzy matching, or word reordering).
 
     Returns:
-        Der Checkpoint-Text: committeter Praefix ZEICHENEXAKT plus die
-        restlichen Live-Woerter (wortweise, nie mitten im Wort) — damit
-        gilt fuer das Ergebnis wieder startswith(committed) und alle
-        Downstream-Invarianten bleiben unangetastet. None bei jeder
-        Abweichung, die ueber reine Interpunktion hinausgeht.
+        The checkpoint text: committed prefix CHARACTER-FOR-CHARACTER plus
+        the remaining live words (word-by-word, never mid-word), so the result
+        once again satisfies startswith(committed) and all downstream
+        invariants remain intact. None for any difference beyond punctuation.
     """
     import string
 
@@ -1011,12 +1002,12 @@ def _checkpoint_des_punktationsdrift(committed: str, completed: str) -> str | No
         c_plain, w_plain = strip(c_word), strip(w_word)
         if not c_plain or not w_plain or c_plain != w_plain:
             return None
-        # Nur echte Interpunktions-Drift (oder Identitaet) ist erlaubt:
-        # identische Rohtexte sind ueber den startswith-Zweig schon
-        # frueher bedient; alles andere als c_word != w_word mit
-        # gleicher Stripped-Form waere ein stiller Worttausch.
+        # Only genuine punctuation drift (or identity) is permitted:
+        # identical raw text was already handled by the startswith branch;
+        # anything other than c_word != w_word with the same stripped form
+        # would be a silent word substitution.
         if c_word != w_word and c_plain == w_plain:
-            continue  # reine Interpunktion: erlaubt
+            continue  # punctuation only: permitted
     rest = w_words[len(c_words):]
     return committed + " ".join(rest)
 
@@ -1028,54 +1019,51 @@ def stitch_word_overlap(
     protected_prefix: str = "",
     min_anchor_words: int = 2,
 ) -> str | None:
-    """Haengt das Fenster-Transkript ``window`` an die Arbeitshypothese ``previous`` an.
+    """Appends the window transcript ``window`` to the working hypothesis ``previous``.
 
-    Genaeht wird NUR an exakten Wortankern; ist nichts eindeutig sicher,
-    wird ``None`` geliefert. Phase 1, isoliert: diese Funktion wird NICHT
-    im Produktivpfad aufgerufen (nur Test-Importe).
+    Stitching occurs ONLY at exact word anchors; if no unambiguously safe
+    result exists, ``None`` is returned. Phase 1, isolated: this function is
+    NOT called in the production path (test imports only).
 
-    Regel 1 (Woerter): zusammenhaengende Nicht-Whitespace-Folgen
-    (``str.split``); Grossschreibung und Interpunktion werden EXAKT
-    verglichen -- keine Normalisierung, kein Fuzzy. Alle Ergebnisse werden
-    mit genau EINEM Leerzeichen zwischen Woertern rekonstruiert, weil nur
-    so die Wortgrenzen des Ankers deterministisch erhalten bleiben.
+    Rule 1 (words): contiguous non-whitespace sequences (``str.split``);
+    capitalization and punctuation are compared EXACTLY -- no normalization
+    or fuzzy matching. Every result is reconstructed with exactly ONE space
+    between words because this is the only way to deterministically preserve
+    the anchor's word boundaries.
 
-    Kandidaten (Regel 2, 4, 5): Der Fensterkopf deckt eine previous-Region
-    ``P[m0:m0+t]``; alle Deckungspositionen ``m0`` werden geprueft:
+    Candidates (rules 2, 4, 5): The window head covers a previous region
+    ``P[m0:m0+t]``; every coverage position ``m0`` is checked:
 
-    * exakt: ``W[:t] == P[m0:m0+t]``; Anker sind die letzten
-      ``min_anchor_words`` Woerter der Folge (zeichengleich, in Folge).
-      Im kanonischen Fall (``m0 + t == n``) liegt der Anker am ENDE von
-      previous.
-    * Fragment (Regel 4): nur das ALLERERSTE Fensterwort darf echtes
-      SUFFIX-Fragment des previous-Wortes ``P[m0]`` sein ('unkte' zu
-      'Punkte'); ein Praefix-Fragment ('punkt' fuer 'Punkte') ist
-      ungueltig und liefert keinen Kandidaten. Previous behaelt das
-      volle Wort, das Fragment faellt weg; uebersprungene Woerter sind
-      nicht erlaubt (Kontext deckt zusammenhaengend).
-    * Vervollstaendigung (Regel 3, AUSNAHME ohne Anker-Mindestgroesse):
-      der Kontext deckt ``P[m0:n-1]`` exakt, und das Fensterwort ``W[t]``
-      ersetzt genau das LETZTE previous-Wort, sofern dieses
-      unvollstaendig war (echtes Praefix von ``W[t]`` mit
-      Buchstabenfortsetzung, 'de' -> 'deutlich'). Zwei oder mehr
-      abweichende alte Woerter ergeben daher keinen Kandidaten.
+    * exact: ``W[:t] == P[m0:m0+t]``; anchors are the last
+      ``min_anchor_words`` words of the sequence (character-identical and
+      consecutive). In the canonical case (``m0 + t == n``), the anchor is at
+      the END of previous.
+    * Fragment (rule 4): only the VERY FIRST window word may be a true SUFFIX
+      fragment of the previous word ``P[m0]`` ('unkte' for 'Punkte'); a prefix
+      fragment ('punkt' for 'Punkte') is invalid and yields no candidate.
+      Previous retains the full word, and the fragment is dropped; skipped
+      words are not allowed (context coverage must be contiguous).
+    * Completion (rule 3, EXCEPTION without minimum anchor size): the context
+      covers ``P[m0:n-1]`` exactly, and window word ``W[t]`` replaces exactly
+      the LAST previous word, provided it was incomplete (a true prefix of
+      ``W[t]`` continued with letters, 'de' -> 'deutlich'). Two or more
+      differing old words therefore yield no candidate.
 
-    Ergebnis je Kandidat (Regel 5): previous bis zum Ankerende plus
-    Fenster nach dem Ankerende -- Wortgrenzen exakt, genau ein
-    Leerzeichen zwischen Woertern.
+    Result per candidate (rule 5): previous through the anchor end plus the
+    window after the anchor end -- exact word boundaries, exactly one space
+    between words.
 
-    Regel 6: Kandidaten, die nicht zeichengleich mit ``protected_prefix``
-    beginnen, werden verworfen.
+    Rule 6: Discard candidates that do not begin character-for-character with
+    ``protected_prefix``.
 
-    Regel 7: Bleibt von allen Kandidaten genau EIN unterschiedliches
-    Ergebnis uebrig, wird es geliefert; keins oder mehrere unterschiedliche
-    ergeben ``None``.
+    Rule 7: If exactly ONE distinct result remains among all candidates,
+    return it; zero or multiple distinct results yield ``None``.
 
-    Regel 8: ``previous == ''`` liefert ``window`` (sofern die
-    ``protected_prefix``-Pflicht erfuellt ist, sonst ``None``);
-    ``window == ''`` liefert ``previous``.
+    Rule 8: ``previous == ''`` returns ``window`` (provided the
+    ``protected_prefix`` requirement is satisfied; otherwise ``None``);
+    ``window == ''`` returns ``previous``.
     """
-    # Regel 8: Randfaelle.
+    # Rule 8: Edge cases.
     if previous == "":
         return window if window.startswith(protected_prefix) else None
     if window == "":
@@ -1087,25 +1075,25 @@ def stitch_word_overlap(
     m = len(win_words)
 
     if n == 0:
-        # previous besteht nur aus Whitespace: wie previous == "" (Regel 8).
+        # previous consists only of whitespace: same as previous == "" (rule 8).
         joined = " ".join(win_words)
         return joined if joined.startswith(protected_prefix) else None
     if m == 0:
-        # Fenster ohne Woerter: wie window == "" (Regel 8).
+        # Window without words: same as window == "" (rule 8).
         return previous
 
     candidates: set[tuple[str, ...]] = set()
 
-    # Exakte und Fragment-Deckungen (Regel 2/4/5): Fensterkopf deckt P[m0:...].
+    # Exact and fragment coverage (rules 2/4/5): window head covers P[m0:...].
     for m0 in range(n):
-        # Exakte Folge: Anker = letzte >= min_anchor_words Woerter der Folge.
+        # Exact sequence: anchor = last >= min_anchor_words words of sequence.
         t = 0
         while t < m and m0 + t < n and win_words[t] == prev_words[m0 + t]:
             t += 1
         if t >= min_anchor_words:
             candidates.add(tuple(prev_words[: m0 + t]) + tuple(win_words[t:]))
 
-        # Suffix-Fragment am ALLERERSTEN Fensterwort (Regel 4).
+        # Suffix fragment on the VERY FIRST window word (rule 4).
         if len(win_words[0]) < len(prev_words[m0]) and prev_words[m0].endswith(win_words[0]):
             t = 0
             while 1 + t < m and m0 + 1 + t < n and win_words[1 + t] == prev_words[m0 + 1 + t]:
@@ -1115,16 +1103,16 @@ def stitch_word_overlap(
                     tuple(prev_words[: m0 + 1 + t]) + tuple(win_words[1 + t :])
                 )
 
-    # Regel 3 (AUSNAHME): genau EIN letztes unvollstaendiges previous-Wort
-    # wird durch das Fensterwort ersetzt ('de' -> 'deutlich').
+    # Rule 3 (EXCEPTION): exactly ONE final incomplete previous word is
+    # replaced by the window word ('de' -> 'deutlich').
     for m0 in range(n):
-        t = n - 1 - m0  # Kontextlaenge: deckt P[m0 : n-1] exakt.
+        t = n - 1 - m0  # context length: covers P[m0 : n-1] exactly.
         if t >= m:
             continue
         if win_words[:t] == prev_words[m0 : n - 1] and _completes(prev_words[-1], win_words[t]):
             candidates.add(tuple(prev_words[: n - 1]) + tuple(win_words[t:]))
 
-    # Regel 6 (protected_prefix) + Regel 7 (Eindeutigkeit).
+    # Rule 6 (protected_prefix) + rule 7 (uniqueness).
     results = {" ".join(candidate) for candidate in candidates}
     surviving = [result for result in results if result.startswith(protected_prefix)]
     if len(surviving) == 1:

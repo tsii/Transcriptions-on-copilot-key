@@ -1,17 +1,17 @@
 [Unit]
-Description=STT Push-to-Talk (Copilot-Taste -> ASR -> Text)
+Description=STT Push-to-Talk (Copilot key -> ASR -> text)
 After=graphical-session.target
 Wants=graphical-session.target
 
 [Service]
 Type=simple
-# @EXEC@ wird bei der Installation gesetzt:
-#   .deb:  /usr/bin/stt-button run   (Launcher: sichert die pro-User-venv
-#          idempotent und startet mit dem venv-Python)
-#   dev:   @ROOT@/.venv/bin/stt-button run   (venv-Python direkt)
+# @EXEC@ is set at install time:
+#   .deb:  /usr/bin/stt-button run   (launcher: secures the per-user venv
+#          idempotently and starts with the venv python)
+#   dev:   @ROOT@/.venv/bin/stt-button run   (venv python directly)
 ExecStart=@EXEC@
-# Der allererste Start baut noch die venv (torch[cpu] + ML-Stack, ~5-15 min).
-# Danach ist der Start schnell. 1800s nur fuer dieses eine Mal.
+# The very first start still builds the venv (torch[cpu] + ML stack, ~5-15 min).
+# After that the start is fast. 1800s only for that one-time case.
 TimeoutStartSec=1800
 Restart=on-failure
 RestartSec=3

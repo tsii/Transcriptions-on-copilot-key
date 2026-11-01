@@ -1,8 +1,8 @@
-"""StreamingAsrSession: orchestriert windowed Streaming.
+"""StreamingAsrSession: orchestrates windowed streaming.
 
-Hält einen Ringpuffer, schiebt Audio rein, transkribiert bei jedem Tick ein
-Fenster und committet nur stabile Tokens. Beim Release wird der Rest final
-transkribiert.
+Maintains a ring buffer, feeds audio into it, transcribes one window per
+tick, and commits only stable tokens. On release, the remainder is
+transcribed in a final pass.
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class Typer(Protocol):
 
 
 class StreamingAsrSession:
-    """Verbindet Audio-Ringpuffer, WindowingPolicy, Committer und Typer."""
+    """Connects the audio ring buffer, windowing policy, committer, and typer."""
 
     def __init__(
         self,
@@ -58,18 +58,18 @@ class StreamingAsrSession:
         return len(self._buffer) / (self.sample_rate * 2)
 
     def on_audio(self, chunk: bytes) -> None:
-        """Fügt Audiodaten in den Ringpuffer."""
+        """Adds audio data to the ring buffer."""
         if chunk:
             self._buffer.extend(chunk)
 
     def on_tick(self) -> None:
-        """Transkribiert das nächste Fenster, wenn eines fällig ist."""
+        """Transcribes the next window when one is due."""
         audio_len = self.audio_seconds
         window = self.policy.next_window(self.committer.committed_s, audio_len)
         if window is None:
             return
 
-        # Audioslice des Fensters.
+        # Audio slice for the window.
         start_byte = int(window.start * self.sample_rate * 2)
         end_byte = int(window.end * self.sample_rate * 2)
         slice_data = bytes(self._buffer[start_byte:end_byte])
@@ -77,7 +77,7 @@ class StreamingAsrSession:
         if not slice_data:
             return
 
-        # VAD-Gate: nur transkribieren, wenn Sprache da ist.
+        # VAD gate: transcribe only when speech is present.
         if self.vad is not None:
             arr = np.frombuffer(slice_data, dtype=np.int16).astype(np.float32) / 32768.0
             if not self.vad.has_speech(arr):
@@ -93,7 +93,7 @@ class StreamingAsrSession:
             self._last_partial = partial
 
     def on_release(self) -> None:
-        """Finaler Qualitäts-Pass: Resttranskription ab committed_s."""
+        """Final quality pass: transcribe the remainder from committed_s."""
         committed_byte = int(self.committer.committed_s * self.sample_rate * 2)
         rest = bytes(self._buffer[committed_byte:])
         if not rest:

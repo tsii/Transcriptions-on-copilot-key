@@ -1,12 +1,12 @@
-"""Vergleiche mehrere ASR-Modelle auf derselben Audio-Datei.
+"""Compare several ASR models on the same audio file.
 
-Nutzung:
-    stt-button compare /tmp/test_aufnahme.wav [--models qwen,parakeet,granite,whisper]
+Usage:
+    stt-button compare /tmp/test_recording.wav [--models qwen,parakeet,granite,whisper]
 
-Lädt die Modelle nacheinander (nicht parallel), transkribiert die WAV und
-gibt nummerierte Absätze aus:
-    ## Modellname
-    <transkript>
+Loads the models sequentially (not in parallel), transcribes the WAV and
+prints numbered sections:
+    ## Model name
+    <transcript>
 """
 from __future__ import annotations
 
@@ -19,11 +19,11 @@ import numpy as np
 
 
 def load_wav(path: str) -> np.ndarray:
-    """Liest eine WAV und liefert 16 kHz mono float32 (normiert auf [-1, 1])."""
+    """Reads a WAV and returns 16 kHz mono float32 (normalized to [-1, 1])."""
     with wave.open(path, "rb") as wf:
-        assert wf.getnchannels() == 1, "nur mono unterstützt"
-        assert wf.getsampwidth() == 2, "nur 16-bit PCM"
-        assert wf.getframerate() == 16000, "nur 16 kHz"
+        assert wf.getnchannels() == 1, "mono only supported"
+        assert wf.getsampwidth() == 2, "16-bit PCM only"
+        assert wf.getframerate() == 16000, "16 kHz only"
         data = wf.readframes(wf.getnframes())
     audio = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
     return audio
@@ -47,7 +47,7 @@ def run_qwen(audio: np.ndarray) -> str:
     )
     model = model.to("cpu").eval()
 
-    # numpy-Array -> temporäre WAV (processor akzeptiert Pfad oder Array)
+    # numpy array -> temporary WAV (processor accepts a path or an array)
     import tempfile
     import wave as _wave
 
@@ -84,7 +84,7 @@ def run_granite(audio: np.ndarray) -> str:
     text_prompt = processor.tokenizer.apply_chat_template(
         chat, tokenize=False, add_generation_prompt=True
     )
-    # wav muss ein Tensor (1, N) sein
+    # wav must be a tensor (1, N)
     wav = torch.from_numpy(audio).unsqueeze(0)
     inputs = processor(
         text_prompt, wav, return_tensors="pt", sampling_rate=16000
@@ -98,7 +98,7 @@ def run_granite(audio: np.ndarray) -> str:
 
 
 def run_parakeet(audio: np.ndarray) -> str:
-    """Parakeet TDT 0.6B v3 (transformers, falls verfügbar)."""
+    """Parakeet TDT 0.6B v3 (transformers, if available)."""
     import torch
     from transformers import AutoModelForTDT, AutoProcessor
 
@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("wav")
     parser.add_argument(
         "--models", default="qwen,parakeet,granite",
-        help="kommagetrennt: qwen,parakeet,granite",
+        help="comma-separated: qwen,parakeet,granite",
     )
     args = parser.parse_args(argv)
 
@@ -144,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
             print(text)
             print(f"({dt:.1f}s)")
         except Exception as exc:  # noqa: BLE001
-            print(f"[FEHLER] {exc}")
+            print(f"[ERROR] {exc}")
         print()
 
     return 0

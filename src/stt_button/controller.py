@@ -1,16 +1,16 @@
-"""State-Maschine, die Aufnahme, Transkription und Ausgabe verbindet.
+"""State machine connecting recording, transcription, and output.
 
-Zustaende::
+States::
 
     IDLE --start_recording()--> RECORDING --stop_recording()--> IDLE
       ^                          |  ^
-      |                          |  (max_record_s erreicht)
-      +---abort()/Fehler/Timeout-+
+      |                          |  (max_record_s reached)
+      +---abort()/error/timeout--+
 
-Waehrend RECORDING wird in ``run_once()``-Schritten Audio gelesen, dem
-StreamTranscriber gefuettert und bei Bedarf transkribiert. Die Ergebnisse
-fliessen in den DeltaTyper, der die Differenz an die Cursor-Position tippt.
-Beim Loslassen wird finalisiert und mit einem Leerzeichen abgeschlossen.
+During RECORDING, ``run_once()`` steps read audio, feed it to the
+StreamTranscriber, and transcribe as needed. Results flow into DeltaTyper,
+which types the difference at the cursor position. On release, output is
+finalized and terminated with a space.
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from .audio import AudioSource, AudioSourceError
 from . import focus
 from .typing import DeltaTyper
 
-#: Freedesktop-Soundverzeichnis fuer das Fertig-Signal (config.done_sound).
+#: Freedesktop sound directory for the completion signal (config.done_sound).
 SOUND_DIR = "/usr/share/sounds/freedesktop/stereo"
 
 log = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ class ControllerState(enum.Enum):
 
 
 class PushToTalkController:
-    """Steuert den Ablauf Push-to-Talk -> Transkription -> Ausgabe."""
+    """Control the push-to-talk -> transcription -> output flow."""
 
     def __init__(
         self,
@@ -66,25 +66,25 @@ class PushToTalkController:
         self._max_record_s = max_record_s
         self._no_audio_timeout_s = no_audio_timeout_s
         self._transcriber_factory = transcriber_factory or StreamTranscriber
-        # Ziel fuer den Debug-WAV-Dump; Modi aus config.audio_dump_mode.
+        # Destination for the debug WAV dump; modes from config.audio_dump_mode.
         self._dump_path = dump_path
         self._audio_dump_mode = str(
             getattr(config, "audio_dump_mode", "sync") or "sync"
         )
-        # Fertig-Signal (Betreiber 31.10.): Name des freedesktop-Sounds
-        # (z.B. 'complete'), der nach ERFOLGREICHER Finalisierung einmal
-        # leise gespielt wird — der Nutzer hoert, dass der Text in der
-        # Zwischenablage liegt und pasten kann. '' = aus.
+        # Completion signal (operator, 31.10.): name of the freedesktop sound
+        # (e.g., 'complete') played quietly once after SUCCESSFUL finalization;
+        # the user hears that the text is on the clipboard and can be pasted.
+        # '' = off.
         self._done_sound = str(getattr(config, "done_sound", "") or "")
-        # paplay --volume ist Promille (0..65536); 35000 ~= 54 % — 'angenehm
-        # leise' gemaess Betreiber (31.10.), nicht schrill.
+        # paplay --volume uses parts per 65536 (0..65536); 35000 ~= 54%,
+        # "pleasantly quiet" according to the operator (31.10.), not shrill.
         self._done_sound_volume = int(
             getattr(config, "done_sound_volume", 65536) or 65536
         )
-        # 'terminal' (Default): Ton nur bei Terminal-Fokus (Kimi-Erweiterung
-        # stt-button-focus, GetFocus per DBus); 'always': immer. None
-        # (Extension fehlt/antwortet nicht) -> Ton trotzdem, Feedback
-        # statt Stille.
+        # 'terminal' (default): sound only with terminal focus (Kimi extension
+        # stt-button-focus, GetFocus via DBus); 'always': always. None
+        # (extension missing/not responding) -> play sound anyway, feedback
+        # instead of silence.
         self._done_sound_mode = str(
             getattr(config, "done_sound_mode", "terminal") or "terminal"
         )
@@ -95,81 +95,79 @@ class PushToTalkController:
         self._started_at = 0.0
         self._last_audio_at = 0.0
         self._total_bytes = 0
-        # Serialisiert KURZE Zustandswechsel: state, _key_down, _source/
-        # _transcriber-Zeiger, Zaehler. Wird NIEMALS waehrend einer ASR-
-        # Inferenz gehalten - sonst wartet der Release (stop_recording)
-        # auf die laufende Live-Inferenz (Latenz STUFE 1).
+        # Serializes SHORT state changes: state, _key_down, _source/
+        # _transcriber pointers, counters. NEVER held during ASR inference;
+        # otherwise release (stop_recording) would wait for ongoing live
+        # inference (latency STAGE 1).
         self._lock = threading.RLock()
-        # Weckt den Worker (Application.run_forever) gezielt auf, statt
-        # alle 20 ms blind zu pollen: notified wird bei jedem Zustands-
-        # wechsel und jedem nicht-leeren Capture-put. Teilt _lock - damit
-        # ist die Nicht-Leer-Pruefung der Queue und das wait() atomar
-        # gegen den Notify-Pfad (kein Lost-Wakeup).
+        # Wakes the worker (Application.run_forever) selectively instead of
+        # blindly polling every 20 ms: notified on every state change and
+        # every non-empty capture put. Shares _lock, making the queue non-empty
+        # check and wait() atomic with respect to the notify path (no lost
+        # wakeup).
         self._work_cv = threading.Condition(self._lock)
-        # Serialisiert die Live-/Final-Ausfuehrungskette (Transcriber +
-        # DeltaTyper): der Live-Tick und der Finalizer nehmen dieses Lock,
-        # der Key-Thread NIE. Verschachtelung immer: _exec_lock -> _lock.
+        # Serializes the live/final execution chain (Transcriber +
+        # DeltaTyper): the live tick and finalizer acquire this lock; the key
+        # thread NEVER does. Nesting is always: _exec_lock -> _lock.
         self._exec_lock = threading.Lock()
-        # Latenz-Messung (config.latency_trace); 0.0 = kein laufender Release.
+        # Latency measurement (config.latency_trace); 0.0 = no active release.
         self._latency_trace = bool(getattr(config, "latency_trace", False))
         self._stop_entered_at = 0.0
-        # Audio-Chunks, die der Capture-Thread kontinuierlich einliest.
+        # Audio chunks continuously read by the capture thread.
         self._audio_queue: queue.Queue[bytes] = queue.Queue()
         self._capture_thread: threading.Thread | None = None
-        # Physischer Zustand der Trigger-Taste (press/release). Er wird
-        # bei JEDEM Tastenereignis aktualisiert - ein Release geht nie
-        # verloren, auch nicht waehrend der Finalisierung.
+        # Physical state of the trigger key (press/release). Updated on EVERY
+        # key event; a release is never lost, even during finalization.
         self._key_down: bool = False
 
     # ------------------------------------------------------------------
     # Trigger
     # ------------------------------------------------------------------
     def start_recording(self) -> None:
-        """Beginnt eine Aufnahme (aufgerufen bei Tastendruck).
+        """Begin recording (called on key press).
 
-        Wichtig: Der Tastenzustand (``_key_down``) wird IMMER gesetzt,
-        auch waehrend der Finalisierung. Ein Start erfolgt nur bei IDLE
-        (atomar unter dem Lock); bei FINALIZING startet die Aufnahme
-        erst nach Abschluss - und nur, wenn die Taste dann noch gehalten
-        wird. Sonst ginge ein schnell folgendes Diktat verloren
-        (Datenverlust) bzw. es entstuende eine Geisteraufnahme ohne
-        gehaltene Taste.
+        Important: The key state (``_key_down``) is ALWAYS set, even during
+        finalization. Starting occurs only in IDLE (atomically under the
+        lock); in FINALIZING, recording starts only after completion and only
+        if the key is still held. Otherwise, a quickly following dictation
+        would be lost (data loss), or a phantom recording without a held key
+        would be created.
         """
         with self._lock:
             self._key_down = True
             if self.state == ControllerState.RECORDING:
-                return  # bereits aktiv -> idempotent
+                return  # already active -> idempotent
             if self.state == ControllerState.FINALIZING:
-                # Start nach Finalisierungsende, nur falls Taste gehalten.
-                log.info("Taste gehalten - Start nach Finalisierung")
+                # Start after finalization ends, only if the key is held.
+                log.info("Key held - start after finalization")
                 return
             self._start_now()
             self._notify_work()
 
     def _notify_work(self) -> None:
-        """Weckt wartende Worker auf (Condition-Notify unter ``_lock``).
+        """Wake waiting workers (condition notify under ``_lock``).
 
-        Muss unter ``_lock`` bzw. ``_work_cv`` gehalten werden; nach dem
-        Weckruf prueft wait_for_work() seine Bedingungen erneut (kein
-        Lost-Wakeup, spurious Wakeups unschaedlich).
+        Must be called while holding ``_lock`` or ``_work_cv``; after wakeup,
+        wait_for_work() rechecks its conditions (no lost wakeup; spurious
+        wakeups are harmless).
         """
         self._work_cv.notify_all()
 
     def wait_for_work(self) -> None:
-        """Blockt, bis neue Arbeit ansteht (statt 20-ms-Polling).
+        """Block until new work is available (instead of 20 ms polling).
 
-        Ersetzt ``time.sleep(0.02)`` in ``Application.run_forever()``.
-        Wird NIE unter ``_exec_lock`` aufgerufen (der wartende Worker
-        darf keine Live-/Final-Inferenz festhalten).
+        Replaces ``time.sleep(0.02)`` in ``Application.run_forever()``.
+        NEVER called under ``_exec_lock`` (the waiting worker must not hold up
+        live/final inference).
 
-        * IDLE/FINALIZING: bedingungslos blocken, bis ein Notify
-          (Tastendruck, Finalisierungsende, Abbruch) den Worker weckt.
-        * RECORDING mit leerer Capture-Queue: blocken bis zur naechsten
-          Frist - neues Audio (Notify vom Capture-Pfad), No-Audio-Timeout
-          oder maximale Aufnahmedauer, je nachdem was zuerst faellig ist.
-        * RECORDING mit nicht-leerer Queue: sofort zurueckkehren
-          (Lost-Wakeup-Schutz: Die Pruefung erfolgt VOR dem wait(); ein
-          bereits verstrichenes Notify verpasst dadurch nichts).
+        * IDLE/FINALIZING: block unconditionally until a notify (key press,
+          finalization end, abort) wakes the worker.
+        * RECORDING with an empty capture queue: block until the next
+          deadline: new audio (notify from capture path), no-audio timeout,
+          or maximum recording duration, whichever comes first.
+        * RECORDING with a non-empty queue: return immediately (lost-wakeup
+          protection: the check occurs BEFORE wait(), so an earlier notify is
+          not missed).
         """
         with self._work_cv:
             if self.state != ControllerState.RECORDING:
@@ -185,12 +183,12 @@ class PushToTalkController:
             self._work_cv.wait(timeout=max(0.0, timeout))
 
     def _start_now(self) -> None:
-        """Startet die Aufnahme sofort (Zustand bereits geprueft)."""
+        """Start recording immediately (state already checked)."""
         try:
             self._source = self._source_factory()
             self._source.start()
         except AudioSourceError as exc:
-            log.error("Audioquelle nicht startbar: %s", exc)
+            log.error("Could not start audio source: %s", exc)
             self._source = None
             return
 
@@ -213,20 +211,18 @@ class PushToTalkController:
             daemon=True,
         )
         self._capture_thread.start()
-        log.info("Aufnahme gestartet")
+        log.info("Recording started")
 
     def stop_recording(self) -> None:
-        """Beendet die Aufnahme und finalisiert (aufgerufen beim Loslassen).
+        """Stop recording and finalize (called on key release).
 
-        Der Tastenzustand wird IMMER aktualisiert - auch wenn gerade
-        finalisiert wird. Sonst wuerde der Release-Edge verloren gehen und
-        eine waehrend der Finalisierung gedrueckte Taste eine Geister-
-        aufnahme ausloesen.
+        The key state is ALWAYS updated, even during finalization. Otherwise,
+        the release edge would be lost, and a key pressed during finalization
+        would trigger a phantom recording.
 
-        Latenz STUFE 1: Der Zustand wechselt nur kurz unter ``_lock`` auf
-        FINALIZING; das eigentliche Stoppen (``_finish``) laeuft OHNE beide
-        Locks, damit die Audioquelle auch bei laufender Live-Inferenz in
-        < 0,3 s stoppt.
+        Latency STAGE 1: The state changes to FINALIZING only briefly under
+        ``_lock``; the actual stop (``_finish``) runs WITHOUT either lock so
+        that the audio source stops in < 0.3 s even during live inference.
         """
         if self._latency_trace:
             self._stop_entered_at = time.monotonic()
@@ -238,10 +234,10 @@ class PushToTalkController:
         self._finish()
 
     def _trace(self, point: str) -> None:
-        """Debug-Messpunkt der Release->Ausgabe-Latenz (nur bei latency_trace).
+        """Debug measurement point for release->output latency (latency_trace only).
 
-        Misst die monotone Zeit seit dem Betreten von ``stop_recording()``;
-        ohne Release (z.B. Max-Dauer) seit Aufnahmestart.
+        Measure monotonic time since entering ``stop_recording()``; without a
+        release (e.g., maximum duration), measure since recording start.
         """
         if not self._latency_trace:
             return
@@ -249,7 +245,7 @@ class PushToTalkController:
         log.debug("latency[%s] +%.3fs", point, time.monotonic() - base)
 
     def abort(self) -> None:
-        """Bricht ab, ohne Text auszugeben (Fehlerfall)."""
+        """Abort without outputting text (error case)."""
         with self._lock:
             if self._source is not None:
                 try:
@@ -260,26 +256,26 @@ class PushToTalkController:
             self._transcriber = None
             self.state = ControllerState.IDLE
             self._notify_work()
-            log.info("Aufnahme abgebrochen")
+            log.info("Recording aborted")
 
     def shutdown(self) -> None:
-        """Beendet alles (SIGTERM / Prozessende)."""
+        """Shut down everything (SIGTERM / process exit)."""
         self.abort()
 
     # ------------------------------------------------------------------
-    # Betrieb
+    # Operation
     # ------------------------------------------------------------------
     def run_once(self) -> None:
-        """Verarbeitet einen Zeitschritt (liest Audio, transkribiert ggf.).
+        """Process one time step (read audio, transcribe if needed).
 
-        Laeuft unter ``_exec_lock`` (NICHT unter ``_lock``): die Live-
-        Inferenz darf den Key-Thread (Press/Release) nie blockieren.
+        Runs under ``_exec_lock`` (NOT under ``_lock``): live inference must
+        never block the key thread (press/release).
         """
         with self._exec_lock:
             self._run_once_exec()
 
     def _run_once_exec(self) -> None:
-        """Ein Live-Tick unter ``_exec_lock``; Zustand wird kurz unter ``_lock`` geprueft."""
+        """One live tick under ``_exec_lock``; state checked briefly under ``_lock``."""
         with self._lock:
             if self.state != ControllerState.RECORDING:
                 return
@@ -287,17 +283,17 @@ class PushToTalkController:
             transcriber = self._transcriber
             audio_queue = self._audio_queue
         if source is None or transcriber is None:
-            # Nur abbrechen, solange die Aufnahme noch laeuft: ein Release
-            # (FINALIZING) uebergibt an den Finalizer, abort wuerde dessen
-            # Zustand sloschen.
+            # Abort only while recording is still active: a release
+            # (FINALIZING) hands over to the finalizer; abort would delete its
+            # state.
             with self._lock:
                 live = self.state == ControllerState.RECORDING
             if live:
                 self.abort()
             return
 
-        # Chunks aus der Capture-Queue leeren (nicht direkt von source lesen,
-        # damit die ASR-Inferenz das Einlesen nicht blockiert).
+        # Drain chunks from the capture queue (do not read directly from the
+        # source, so ASR inference does not block reading).
         got_audio = False
         while True:
             try:
@@ -317,16 +313,16 @@ class PushToTalkController:
             with self._lock:
                 stalled = now - self._last_audio_at > self._no_audio_timeout_s
             if stalled:
-                log.warning("Keine Audiodaten seit %.0fs - Abbruch",
+                log.warning("No audio data for %.0fs - aborting",
                             self._no_audio_timeout_s)
                 self.abort()
                 return
 
         self._enforce_max_duration()
 
-        # Kurzer Zustandstest VOR der Transkription: ein Release
-        # (FINALIZING) oder Abbruch laesst diesen Tick ins Leere laufen
-        # (Ergebnis waere ueberholt und wuerde den Finaltext overseizen).
+        # Brief state check BEFORE transcription: a release (FINALIZING) or
+        # abort makes this tick a no-op (its result would be stale and would
+        # overwrite the final text).
         with self._lock:
             if self.state != ControllerState.RECORDING:
                 return
@@ -335,34 +331,34 @@ class PushToTalkController:
             self._trace("live asr start")
             result = transcriber.maybe_transcribe()
             self._trace("live asr end")
-        except Exception as exc:  # noqa: BLE001 - ASR-Fehler -> sauberer Abbruch
-            log.error("Transkription fehlgeschlagen: %s", exc)
+        except Exception as exc:  # noqa: BLE001 - ASR error -> clean abort
+            log.error("Transcription failed: %s", exc)
             self.abort()
             return
 
-        # STUFE 2: Post-Release-Discard. Der Live-Tick kann Sekunden in der
-        # Engine geblockt haben; ein Release in dieser Zeit hat die Aufnahme
-        # bereits an den Finalizer uebergeben. Das jetzt vorliegende Live-
-        # Ergebnis waere ueberholt: Es wuerde dem Finaltext vorgreifen und
-        # der Finalizer muesste es per Backspace zuruecknehmen (gefuelte
-        # Latenz). Verwerfen statt tippen - der Finalizer liefert den
-        # vollstaendigen Text gegen den effektiven Stand.
+        # STAGE 2: post-release discard. The live tick may have been blocked
+        # in the engine for seconds; a release during that time has already
+        # handed the recording to the finalizer. The live result now available
+        # would be stale: it would preempt the final text, and the finalizer
+        # would have to remove it with backspaces (perceived latency). Discard
+        # instead of typing; the finalizer supplies the complete text relative
+        # to the effective state.
         with self._lock:
             stale = (
                 self.state != ControllerState.RECORDING
                 or self._transcriber is not transcriber
             )
         if stale:
-            log.info("Livetick verwerfen: Aufnahme bereits abgeschlossen")
+            log.info("Discarding live tick: recording already completed")
             return
 
-        # STUFE 4 (Pausen-Indikator): Meldet der Transkriber, dass die
-        # Live-ASR das live_asr_until_s-Limit erreicht hat, tippt der
-        # DeltaTyper GENAU EINMAL den Indikator ("ich hoere noch zu,
-        # schreibe aber gerade nicht mit"). finalize() entfernt ihn ueber
-        # die normale Differenz wieder. Nur StreamTranscriber hat ein
-        # Live-Limit (windowed/buffered/Fakes nicht) -> getattr-Guard.
-        # Mit live_asr_until_s=0.0 (Default) wird NIE gemeldet.
+        # STAGE 4 (pause indicator): If the transcriber reports that live ASR
+        # has reached the live_asr_until_s limit, DeltaTyper types the
+        # indicator EXACTLY ONCE ("still listening, but not writing right
+        # now"). finalize() removes it again through the normal difference.
+        # Only StreamTranscriber has a live limit (windowed/buffered/fakes do
+        # not) -> getattr guard. With live_asr_until_s=0.0 (default), this is
+        # NEVER reported.
         take_live_paused = getattr(transcriber, "take_live_paused", None)
         if take_live_paused is not None and take_live_paused():
             self._trace("live paused")
@@ -376,11 +372,11 @@ class PushToTalkController:
     def _capture_loop(
         self, source: AudioSource, audio_queue: "queue.Queue[bytes]"
     ) -> None:
-        """Liest kontinuierlich Audio aus der Quelle in die Queue.
+        """Continuously read audio from the source into the queue.
 
-        Quelle und Queue sind als Argumente gebunden, damit ein verspaetet
-        endender Capture-Thread einer alten Aufnahme nie in die Queue
-        einer neuen Aufnahme legt.
+        Source and queue are bound as arguments so that a delayed capture
+        thread from an old recording never writes into a new recording's
+        queue.
         """
         while self.state == ControllerState.RECORDING:
             try:
@@ -389,35 +385,34 @@ class PushToTalkController:
                 break
             if chunk:
                 audio_queue.put(chunk)
-                # Worker wecken: NUR das Notify - keine ASR-/Typer-
-                # Operationen im Capture-Thread (sie laufen exklusiv
-                # unter _exec_lock im Worker).
+                # Wake the worker: ONLY the notify, no ASR/typer operations
+                # in the capture thread (they run exclusively under _exec_lock
+                # in the worker).
                 with self._lock:
                     self._notify_work()
             else:
                 time.sleep(0.02)
 
     def _enforce_max_duration(self) -> None:
-        """Bricht nach ``_max_record_s`` ab, wie beim Loslassen."""
+        """Finish after ``_max_record_s``, as on key release."""
         if self.state != ControllerState.RECORDING:
             return
         with self._lock:
             expired = time.monotonic() - self._started_at >= self._max_record_s
         if expired:
-            log.info("Maximale Aufnahmedauer erreicht - Finalisierung")
+            log.info("Maximum recording duration reached - finalizing")
             self._finish()
 
     def _finish(self) -> None:
-        """Stoppt die Aufnahme sofort und stoesst die Finalisierung an.
+        """Stop recording immediately and initiate finalization.
 
-        Laeuft OHNE _lock und OHNE _exec_lock (AUSSER dem kurzen
-        Zustandswechsel): der Release stoppt die Audioquelle auch dann in
-        < 0,3 s, wenn gerade eine mehrsekundige Live-Inferenz unter
-        _exec_lock laeuft.
+        Runs WITHOUT _lock and WITHOUT _exec_lock (except for the brief state
+        change): release stops the audio source in < 0.3 s even when
+        multi-second live inference is running under _exec_lock.
 
-        Die RC-B2/B3-Reihenfolge 'Queue-drain vor stop()-Rest' bleibt
-        gewahrt: beide Feeds passieren im Finalizer UNTER _exec_lock, also
-        nach jedem noch laufenden Live-Tick am selben Transcriber.
+        The RC-B2/B3 order "queue drain before stop() remainder" is preserved:
+        both feeds occur in the finalizer UNDER _exec_lock, after every live
+        tick still running on the same transcriber.
         """
         with self._lock:
             if self.state != ControllerState.RECORDING:
@@ -430,15 +425,15 @@ class PushToTalkController:
             self._capture_thread = None
             self._notify_work()
 
-        # RC-B2/B3: Erst den Capture-Thread beenden (er prueft den Zustand,
-        # der bereits FINALIZING ist, und endet praktisch sofort), DANN
-        # die Queue drainen, DANN den stop()-Rest feeden.
+        # RC-B2/B3: First stop the capture thread (it checks the state, which
+        # is already FINALIZING, and exits almost immediately), THEN drain the
+        # queue, THEN feed the stop() remainder.
         if capture_thread is not None:
             capture_thread.join(timeout=1.0)
         self._trace("capture stopped")
 
-        # Audioquelle SOFORT stoppen; der Pipe-Rest (neueste Bytes) wird
-        # mitgenommen und erst im Finalizer ans Pufferende gefuettert.
+        # Stop the audio source IMMEDIATELY; retain the pipe remainder (newest
+        # bytes) and feed it at the end of the buffer only in the finalizer.
         rest = b""
         if source is not None:
             try:
@@ -449,10 +444,9 @@ class PushToTalkController:
                 self._source = None
         self._trace("source stopped")
 
-        # Die finale Transkription kann mehrere Sekunden dauern (CPU). Sie
-        # laeuft deshalb im HINTERGRUND, damit der Key-Thread sofort wieder
-        # bereit ist und ein schnell folgendes zweites Diktat nicht verloren
-        # geht.
+        # Final transcription can take several seconds (CPU). It therefore
+        # runs in the BACKGROUND so that the key thread is immediately ready
+        # again and a quickly following second dictation is not lost.
         if transcriber is not None:
             finalizer = threading.Thread(
                 target=self._finalize_worker,
@@ -466,67 +460,65 @@ class PushToTalkController:
                 self.state = ControllerState.IDLE
 
     def _play_done_sound(self) -> None:
-        """Spielt das konfigurierte Fertig-Signal (config.done_sound).
+        """Play the configured completion signal (config.done_sound).
 
-        Leer = aus. Sonst wird der freedesktop-Soundname (z.B. 'complete')
-        leise ueber paplay abgespielt (done_sound_volume, Promille der
-        Base-Lautstaerke). Der Ton darf den Finalizer NIEMALS bremsen
-        oder abbrechen: kein langes Warten, keine Exception nach aussen
-        (headless/ohne Sink = still).
+        Empty = off. Otherwise, quietly play the freedesktop sound name (e.g.,
+        'complete') via paplay (done_sound_volume, parts per 65536 of the base
+        volume). The sound must NEVER slow down or abort the finalizer: no
+        long waits, no exceptions propagated (headless/no sink = silent).
         """
         name = str(getattr(self, "_done_sound", "") or "").strip()
         if not name:
             return
-        # Fokus-Modus (Kimi 31.10.): terminal-Modus unterdraeckt den Ton,
-        # wenn eindeutig ein NICHT-Terminal fokussiert ist. None
-        # (Extension fehlt/antwortet nicht) -> Ton trotzdem.
+        # Focus mode (Kimi, 31.10.): terminal mode suppresses the sound when
+        # a NON-terminal is definitively focused. None (extension missing/not
+        # responding) -> play the sound anyway.
         if getattr(self, "_done_sound_mode", "always") == "terminal":
             state = focus.terminal_focused()
             if state is False:
-                log.debug("Fertig-Signal unterdraengt (kein Terminal im Fokus)")
+                log.debug("Completion signal suppressed (no terminal focused)")
                 return
         binary = shutil.which("paplay")
         if binary is None:
-            log.debug("paplay nicht vorhanden - kein Fertig-Signal")
+            log.debug("paplay unavailable - no completion signal")
             return
-        # Absoluter Pfad (eigener Klang) oder freedesktop-Soundname.
+        # Absolute path (custom sound) or freedesktop sound name.
         path = name if os.path.isabs(name) else os.path.join(
             SOUND_DIR, f"{name}.oga"
         )
         if not os.path.exists(path):
-            log.warning("Done-Sound %r nicht gefunden (%s)", name, path)
+            log.warning("Done sound %r not found (%s)", name, path)
             return
         volume = str(getattr(self, "_done_sound_volume", 65536))
         try:
-            # FEUER-UND-FREI (Ground-Truth 31.10.): paplay BLOCKIERT bis
-            # zum Ende des Klangs — im Finalizer-Faden verspaetete es das
-            # 'Aufnahme beendet'-Log um ~1s und haelt die exec-Logik fest.
-            # Start-Fehler (Binary weg) werden noch abgefangen; ein
-            # haengender Player wird durch das eigene Ende der Wiedergabe
-            # begrenzt, DEVNULL verhindert Pipe-Deadlocks.
+            # FIRE-AND-FORGET (Ground-Truth, 31.10.): paplay BLOCKS until the
+            # sound ends; in the finalizer thread, this delayed the "Recording
+            # finished" log by ~1 s and held up the exec logic. Startup errors
+            # (binary missing) are still caught; a hanging player is bounded
+            # by playback ending, and DEVNULL prevents pipe deadlocks.
             subprocess.Popen(
                 [binary, "--volume", volume, path],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-        except Exception as exc:  # noqa: BLE001 - Ton ist Komfort, nie Muss
-            log.debug("Fertig-Signal fehlgeschlagen (%s)", exc)
+        except Exception as exc:  # noqa: BLE001 - sound is optional, never required
+            log.debug("Completion signal failed (%s)", exc)
 
     def _finalize_worker(
         self, transcriber, audio_queue: "queue.Queue[bytes]", rest: bytes
     ) -> None:
-        """Fuehrt die finale Transkription aus (Hintergrund-Thread).
+        """Run final transcription (background thread).
 
-        Laeuft unter ``_exec_lock``: keine Live-Inferenz und kein
-        DeltaTyper-Zugriff kann mehr parallel zum finalen Feed/finalize/
-        Ausgabe am selben Transcriber arbeiten. State/Log kurz unter _lock.
+        Runs under ``_exec_lock``: no live inference or DeltaTyper access can
+        operate in parallel with the final feed/finalize/output on the same
+        transcriber. State/log briefly under _lock.
         """
         try:
             with self._exec_lock:
                 self._trace("finalizer exec acquired")
-                # 1) Queue in zeitlicher Reihenfolge drainen (aeltere
-                #    Bytes zuerst), 2) stop()-Rest ans Ende.
+                # 1) Drain the queue in chronological order (older bytes
+                #    first), 2) append the stop() remainder.
                 while True:
                     try:
                         chunk = audio_queue.get_nowait()
@@ -538,22 +530,22 @@ class PushToTalkController:
                 if rest:
                     transcriber.feed(rest)
 
-                # BUG 1 (Fix b): Der Live-Pfad kann das Limit NIE gesehen
-                # haben - der letzte Live-Tick startete unter dem Limit,
-                # seine Inferenz ueberdauerte die Grenze, und der Release
-                # kam vor dem naechsten Tick (Realtest 11:56). Erst der
-                # Queue-/Rest-Feed oben hat den Puffer jetzt ueber die
-                # Grenze gedrueckt. take_live_paused() erkennt das Limit
-                # SELBST - hier wird es spaetestens zu Beginn der finalen
-                # Inferenz gemeldet. Der Indikator wird von der finalen
-                # Differenz (3 Backspaces) automatisch entfernt.
-                # Nur StreamTranscriber hat ein Live-Limit -> getattr-Guard.
+                # BUG 1 (fix b): The live path may NEVER have seen the limit:
+                # the last live tick started below the limit, its inference
+                # continued past the threshold, and release occurred before
+                # the next tick (11:56 live test). Only the queue/remainder
+                # feed above has now pushed the buffer past the threshold.
+                # take_live_paused() detects the limit ITSELF; here it is
+                # reported no later than the start of final inference. The
+                # final difference (3 backspaces) removes the indicator
+                # automatically. Only StreamTranscriber has a live limit ->
+                # getattr guard.
                 take_live_paused = getattr(transcriber, "take_live_paused", None)
                 if take_live_paused is not None and take_live_paused():
                     self._trace("live paused")
                     self._delta_typer.show_paused()
 
-                # Vollstaendige Aufnahme zu Debug-Zwecken abspeichern.
+                # Save the complete recording for debugging.
                 self._trace("dump start")
                 self._dump_audio(transcriber)
                 self._trace("dump end")
@@ -563,40 +555,40 @@ class PushToTalkController:
                 self._trace("finalize end")
                 self._delta_typer.finalize(result.text, result.committed_len)
                 self._trace("paste")
-                # Fertig-Signal (Betreiber 31.10.): erst NACH erfolgreich
-                # abgeschlossener Ausgabe — der Ton bedeutet 'Text ist
-                # fertig, jetzt kann gepastet werden' (Kimi-Semantik: nach
-                # ausgeloestem Chord nur 'ausgeloest', nie 'zugekommen').
-                # Bei Exception oben: KEIN Ton (ehrliches Feedback).
+                # Completion signal (operator, 31.10.): only AFTER output has
+                # completed successfully. The sound means "text is ready and
+                # can now be pasted" (Kimi semantics: after triggering the
+                # chord, only "triggered", never "received"). On an exception
+                # above: NO sound (honest feedback).
                 self._play_done_sound()
         except Exception as exc:  # noqa: BLE001
-            log.error("Schluss-Transkription fehlgeschlagen: %s", exc)
+            log.error("Final transcription failed: %s", exc)
         finally:
             with self._lock:
                 self._transcriber = None
                 self.state = ControllerState.IDLE
                 self._stop_entered_at = 0.0
-                log.info("Aufnahme beendet (%d bytes Audio)", self._total_bytes)
+                log.info("Recording finished (%d bytes of audio)", self._total_bytes)
                 self._total_bytes = 0
-                # Nachgeholt wird der Start nur, wenn die Taste noch
-                # gehalten wird - Pruefung und Start atomar unter dem
-                # selben Lock (kein Handoff-Fenster fuer Races).
+                # The deferred start occurs only if the key is still held;
+                # check and start are atomic under the same lock (no handoff
+                # window for races).
                 if self._key_down:
-                    log.info("Taste gehalten - neue Aufnahme starten")
+                    log.info("Key held - starting new recording")
                     self._start_now()
                 self._notify_work()
 
     def _dump_audio(self, transcriber) -> None:
-        """Speichert die komplette Aufnahme als Debug-WAV.
+        """Save the complete recording as a debug WAV.
 
-        Modi (config.audio_dump_mode):
-        * ``"sync"`` (Default, bisheriges Verhalten): schreibt sofort im
-          Aufrufer-Thread (Finalizer).
-        * ``"async"``: Snapshot der Bytes, Schreiben in einem eigenen
-          Thread - der Finalizer wartet auf keinen File-I/O. Der Thread
-          haelt ausschliesslich das Immutables Snapshot, NIEMALS eine
-          Referenz auf den (ggf. weiter genutzten) Transcriber-Puffer.
-        * ``"off"``: kein Dump.
+        Modes (config.audio_dump_mode):
+        * ``"sync"`` (default, previous behavior): write immediately in the
+          caller thread (finalizer).
+        * ``"async"``: snapshot the bytes and write in a separate thread; the
+          finalizer does not wait for file I/O. The thread holds only the
+          immutable snapshot, NEVER a reference to the transcriber buffer
+          (which may still be in use).
+        * ``"off"``: no dump.
         """
         if self._audio_dump_mode == "off" or transcriber is None:
             return
@@ -606,7 +598,7 @@ class PushToTalkController:
             snapshot = bytes(transcriber._buffer)
             sample_rate = transcriber.sample_rate
         except Exception as exc:  # noqa: BLE001
-            log.debug("Audio-Dump fehlgeschlagen: %s", exc)
+            log.debug("Audio dump failed: %s", exc)
             return
 
         if self._audio_dump_mode == "async":
@@ -620,7 +612,7 @@ class PushToTalkController:
             self._write_wav(snapshot, sample_rate)
 
     def _write_wav(self, pcm: bytes, sample_rate: int) -> None:
-        """Schreibt s16le-Mono-Bytes als WAV (Debug-Dump)."""
+        """Write s16le mono bytes as a WAV (debug dump)."""
         try:
             import wave
 
@@ -629,6 +621,6 @@ class PushToTalkController:
                 w.setsampwidth(2)
                 w.setframerate(sample_rate)
                 w.writeframes(pcm)
-            log.info("Aufnahme gespeichert: %s", self._dump_path)
+            log.info("Recording saved: %s", self._dump_path)
         except Exception as exc:  # noqa: BLE001
-            log.debug("Audio-Dump fehlgeschlagen: %s", exc)
+            log.debug("Audio dump failed: %s", exc)

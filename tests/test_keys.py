@@ -1,7 +1,7 @@
-"""Tests fuer die Tastenerkennung (TDD-Kette 4).
+"""Tests for key detection (TDD chain 4).
 
-Der KeyListener liest /dev/input/event* direkt (reines Python, kein evdev-Paket
-noetig). Getestet wird gegen eine gefaelschte Event-Quelle.
+KeyListener reads /dev/input/event* directly (pure Python, no evdev package
+required). Tests use a fake event source.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from stt_button.keys import (
 
 
 class FakeDevice:
-    """Simuliert ein /dev/input/eventX."""
+    """Simulate a /dev/input/eventX device."""
 
     def __init__(self, path: str, name: str = "keyd virtual keyboard") -> None:
         self.path = path
@@ -158,7 +158,7 @@ class TestKeyListener:
         )
         dev.push(EV_KEY, 194, 1)
         listener.process_pending()
-        # Nur F24 gedrueckt -> noch kein Trigger
+        # Only F24 pressed -> no trigger yet
         assert presses == []
         dev.push(EV_KEY, 193, 1)
         listener.process_pending()

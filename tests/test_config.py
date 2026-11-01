@@ -1,4 +1,4 @@
-"""Tests fuer die Konfiguration (TDD-Kette 1)."""
+"""Tests for configuration (TDD chain 1)."""
 from __future__ import annotations
 
 import textwrap
@@ -163,10 +163,10 @@ class TestTypingDelays:
 
 
 class TestFinalPaste:
-    """Final-Delta-Paste: finales Delta beim Abschluss per Zwischenablage."""
+    """Final delta paste: paste the final delta via the clipboard on completion."""
 
     def test_final_paste_defaults_and_toml(self, tmp_path: Path) -> None:
-        """Defaults: final_paste aus, ctrl+v, wl-copy; TOML uebernimmt alle drei."""
+        """Defaults: final_paste off, ctrl+v, wl-copy; TOML accepts all three."""
         cfg = Config()
         assert cfg.final_paste is False
         assert cfg.paste_key == "ctrl+v"
@@ -183,17 +183,17 @@ class TestFinalPaste:
         assert cfg2.paste_binary == "wl-copy"
 
     def test_invalid_paste_key_is_rejected(self, tmp_path: Path) -> None:
-        """Nur "ctrl+v" und "ctrl+shift+v" sind erlaubte Einfuege-Chords."""
+        """Only "ctrl+v" and "ctrl+shift+v" are allowed paste chords."""
         p = write_config(tmp_path, 'paste_key = "ctrl+b"')
         with pytest.raises(ConfigError) as exc:
             load_config(p)
         assert "paste_key" in str(exc.value)
-        # Validierung (nicht nur "unbekannter Schluessel"): erlaubte Werte nennen.
+        # Validation (not just "unknown key"): list the allowed values.
         assert "ctrl+v" in str(exc.value)
 
 
 class TestCapslockAutocorrect:
-    """Die App darf CapsLock standardmaessig NICHT umschalten."""
+    """The app must NOT toggle CapsLock by default."""
 
     def test_default_is_off(self) -> None:
         assert Config().capslock_autocorrect is False
@@ -209,13 +209,13 @@ class TestCapslockAutocorrect:
         assert "capslock_autocorrect" in str(exc.value)
 
     def test_capslock_led_inverted_key_accepted(self, tmp_path: Path) -> None:
-        """Der Schluessel `capslock_led_inverted` ist bekannt und wird uebernommen."""
+        """The `capslock_led_inverted` key is recognized and accepted."""
         p = write_config(tmp_path, "capslock_led_inverted = true")
         cfg = load_config(p)
         assert cfg.capslock_led_inverted is True
 
     def test_capslock_led_inverted_key_accepted_false(self, tmp_path: Path) -> None:
-        """Auch `false` wird uebernommen (kein ConfigError)."""
+        """`false` is also accepted (no ConfigError)."""
         p = write_config(tmp_path, "capslock_led_inverted = false")
         cfg = load_config(p)
         assert cfg.capslock_led_inverted is False
@@ -225,10 +225,10 @@ class TestCapslockAutocorrect:
 
 
 class TestLatencyStage1Keys:
-    """STUFE 1: finalize_mode / audio_dump_mode / latency_trace."""
+    """STAGE 1: finalize_mode / audio_dump_mode / latency_trace."""
 
     def test_defaults_are_previous_behaviour(self) -> None:
-        """Ohne Config gilt genau das bisherige Verhalten."""
+        """Without configuration, behavior is exactly as before."""
         cfg = Config()
         assert cfg.finalize_mode == "full"
         assert cfg.audio_dump_mode == "sync"
@@ -266,10 +266,10 @@ class TestLatencyStage1Keys:
 
 
 class TestLiveTypingModeKeys:
-    """STUFE 2: live_typing_mode 'committed' (Default) | 'full' (Opt-in)."""
+    """STAGE 2: live_typing_mode 'committed' (default) | 'full' (opt-in)."""
 
     def test_default_is_committed(self) -> None:
-        """Ohne Config gilt der Produktiv-Default (Kimi-Entscheidung)."""
+        """Without configuration, the production default applies (Kimi decision)."""
         cfg = Config()
         assert cfg.live_typing_mode == "committed"
 
@@ -288,9 +288,9 @@ class TestLiveTypingModeKeys:
 
 
 class TestLiveAsrUntilKeys:
-    """STUFE 3: live_asr_until_s (Default 15.0: int8-RTF ~0,05 macht den
-    15-s-Vollpuffer-Tick ~0,75s < asr_interval_s 1,0s; 0.0 bleibt der
-    ausdrueckliche Opt-in 'immer live')."""
+    """STAGE 3: live_asr_until_s (default 15.0: int8 RTF ~0.05 makes the
+    15s full-buffer tick ~0.75s < asr_interval_s 1.0s; 0.0 remains the
+    explicit opt-in for 'always live')."""
 
     def test_default_is_off(self) -> None:
         assert Config().live_asr_until_s == 15.0
@@ -311,7 +311,7 @@ class TestLiveAsrUntilKeys:
 
 
 class TestBufferedMode:
-    """STUFE 3: streaming_mode='buffered' + buffered_* Felder (Default AUS)."""
+    """STAGE 3: streaming_mode='buffered' + buffered_* fields (default OFF)."""
 
     def test_buffered_is_valid_streaming_mode(self) -> None:
         cfg = Config(streaming_mode="buffered")
@@ -319,11 +319,11 @@ class TestBufferedMode:
         assert cfg.streaming_mode == "buffered"
 
     def test_default_streaming_mode_stays_whole_buffer(self) -> None:
-        """Feature-Flag bleibt Default AUS - kein Produktiv-Umschalten."""
+        """Feature flag remains OFF by default - no production switch."""
         assert Config().streaming_mode == "whole_buffer"
 
     def test_buffered_defaults_match_transcriber_signature(self) -> None:
-        """Config-Defaults == BufferedTranscriber-Defaults (Kimi-Plan)."""
+        """Config defaults == BufferedTranscriber defaults (Kimi plan)."""
         import inspect
 
         from stt_button.buffered import BufferedTranscriber
@@ -367,7 +367,7 @@ class TestBufferedMode:
             load_config(p)
 
     def test_right_context_larger_than_chunk_allowed(self) -> None:
-        """Nur positive Werte sind Pflicht; Groessenverhaeltnisse sind frei."""
+        """Only positive values are required; size ratios are unrestricted."""
         cfg = Config(buffered_chunk_s=0.5, buffered_right_context_s=4.0)
         cfg.validate()
 

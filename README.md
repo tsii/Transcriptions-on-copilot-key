@@ -1,24 +1,24 @@
 # STT-Button
 
-Push-to-Talk Diktat über die **Copilot-Taste** des ThinkPad X1: Taste halten → sprechen → Text erscheint wortweise an der Cursor-Position.
+Push-to-talk dictation using the **Copilot key** on the ThinkPad X1: hold the key → speak → text appears word by word at the cursor position.
 
-## So funktioniert's
+## How it works
 
-- **Transkription:** NVIDIA Parakeet TDT 0.6B (lokal, CPU-only, DE+EN automatisch)
-- **Streaming:** Fenster-basiert mit Zeitstempel-Commit (Whisper-ähnlich, ohne Halluzinationen)
-- **Ausgabe:** `dotool` (uinput) mit deutschem Tastaturlayout
-- **Trigger:** `keyd` mappt die Copilot-Taste auf `F24`
+- **Transcription:** NVIDIA Parakeet TDT 0.6B (local, CPU-only, automatic DE+EN)
+- **Streaming:** window-based with timestamp commits (Whisper-like, without hallucinations)
+- **Output:** `dotool` (uinput) with a German keyboard layout
+- **Trigger:** `keyd` maps the Copilot key to `F24`
 
 ## Installation
 
 ```bash
 cd ~/pi-web-ui/STT-Button
-./install.sh        # venv + systemd-User-Dienst einrichten
+./install.sh        # set up venv + systemd user service
 ```
 
-### Als Debian/Ubuntu-Paket (.deb)
+### As a Debian/Ubuntu package (.deb)
 
-Ein schlankes `.deb` bauen (nur Code + Launcher + Unit, kein venv, kein Modell):
+Build a lightweight `.deb` (code + launcher + unit only, no venv, no model):
 
 ```bash
 ./tools/build-deb.sh
@@ -26,40 +26,40 @@ Ein schlankes `.deb` bauen (nur Code + Launcher + Unit, kein venv, kein Modell):
 sudo dpkg -i dist/stt-button_<version>_amd64.deb
 ```
 
-Das Paket enthaelt bewusst **kein** Python-venv und **kein** ASR-Modell:
-- **venv + ML-Stack** (`torch[cpu]`, `transformers`, `onnxruntime`, …) werden
-  beim **ersten Aufruf** von `/usr/bin/stt-button` (oder `stt-button setup`)
-  pro User unter `~/.local/stt-button/venv` aufgebaut (~5–15 min, einmalig).
-- Das **ASR-Modell** laedt die Engine beim ersten Diktat von Hugging Face
-  (~200 MB, danach gecacht unter `~/.cache/huggingface`).
+The package deliberately contains **no** Python venv and **no** ASR model:
+- The **venv + ML stack** (`torch[cpu]`, `transformers`, `onnxruntime`, …) are set up
+  per user under `~/.local/stt-button/venv` on the **first invocation** of
+  `/usr/bin/stt-button` (or `stt-button setup`) (~5–15 min, one time only).
+- The engine downloads the **ASR model** from Hugging Face on the first dictation
+  (~200 MB, then cached under `~/.cache/huggingface`).
 
-Installation erfordert (werden automatisch mitgezogen): `python3`,
+Installation requires (pulled in automatically): `python3`,
 `python3-venv`, `python3-pip`, `pipewire-bin`, `pulseaudio-utils`, `wtype`.
-Optional: `wl-clipboard`, `dotool` (Standard-Typer ist `wtype`), `gnome-shell`.
+Optional: `wl-clipboard`, `dotool` (the default typer is `wtype`), `gnome-shell`.
 
-Nach der Installation:
+After installation:
 
 ```bash
-stt-button setup            # venv bauen + config.seed + User-Unit
-# ~/.config/stt-button/config.toml anpassen (Taste, Audioquelle, Typer)
+stt-button setup            # build venv + config.seed + user unit
+# adjust ~/.config/stt-button/config.toml (key, audio source, typer)
 systemctl --user start stt-button
 journalctl --user -u stt-button -f
 ```
 
-## Nutzung
+## Usage
 
 ```bash
-systemctl --user status stt-button          # Status
-journalctl --user -u stt-button -f          # Live-Log
-stt-button run                              # manuell starten
-stt-button calibrate                        # Taste neu kalibrieren
+systemctl --user status stt-button          # status
+journalctl --user -u stt-button -f          # live log
+stt-button run                              # start manually
+stt-button calibrate                        # recalibrate key
 ```
 
-Config liegt unter `~/.config/stt-button/config.toml`.
+The configuration is located at `~/.config/stt-button/config.toml`.
 
-## Entwicklung
+## Development
 
 ```bash
 .venv/bin/pip install -e '.[dev]'
-.venv/bin/python -m pytest                  # 167 Tests
+.venv/bin/python -m pytest                  # 167 tests
 ```

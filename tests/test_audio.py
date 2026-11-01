@@ -1,7 +1,7 @@
-"""Tests fuer die Audio-Aufnahme (TDD-Kette 5).
+"""Tests for audio recording (TDD chain 5).
 
-Die ``PwRecordSource`` kapselt einen ``pw-record``-Subprozess. Getestet wird
-gegen einen Fake-Prozess - es laeuft kein echtes Mikrofon.
+``PwRecordSource`` wraps a ``pw-record`` subprocess. Tests use a fake process;
+no real microphone is used.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from stt_button.audio import (
 
 
 class FakeProc:
-    """Simuliert einen pw-record-Subprozess."""
+    """Simulate a pw-record subprocess."""
 
     def __init__(self, chunks: list[bytes] | None = None) -> None:
         self.chunks = list(chunks or [])
@@ -32,7 +32,7 @@ class FakeProc:
         return self
 
     def fileno(self) -> int:
-        return -1  # non-blocking wird per Mock ignoriert
+        return -1  # non-blocking behavior is ignored by the mock
 
     def read(self, size: int = -1) -> bytes:
         if not self.chunks:
@@ -54,7 +54,7 @@ class FakeProc:
 
 
 class FakePopenFactory:
-    """Liefert vordefinierte FakeProc-Instanzen."""
+    """Return predefined FakeProc instances."""
 
     def __init__(self, procs: list[FakeProc]) -> None:
         self.procs = procs
@@ -96,10 +96,10 @@ class TestPwRecordSourceArgv:
         assert "--rate" in cmd and "16000" in cmd
         assert "--channels" in cmd and "1" in cmd
         assert "--format" in cmd and "s16" in cmd
-        # Quelle als --target
+        # Source as --target
         i = cmd.index("--target")
         assert cmd[i + 1] == "meine-quelle"
-        # stdout als Ziel (steht am Ende als "-")
+        # stdout as the destination (appears last as "-")
         assert cmd[-1] == "-"
 
     def test_start_failure_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -147,7 +147,7 @@ class TestPwRecordSourceRead:
 
 class TestFileAudioSource:
     def _wav(self, tmp_path, seconds: float, rate: int = 16000) -> str:
-        # Erzeugt eine kleine WAV-Datei (s16le mono).
+        # Create a small WAV file (s16le mono).
         import struct
         import wave
 
@@ -179,9 +179,9 @@ class TestFileAudioSource:
         path = self._wav(tmp_path, 0.5)
         src = FileAudioSource(path, chunk_s=0.25)
         src.start()
-        src.read(block=False)  # konsumiert einen Chunk (0.25s = 8000 bytes)
+        src.read(block=False)  # consume one chunk (0.25s = 8000 bytes)
         rest = src.stop()
-        assert len(rest) == 8000  # der zweite Chunk
+        assert len(rest) == 8000  # the second chunk
 
 
 class TestProtocol:

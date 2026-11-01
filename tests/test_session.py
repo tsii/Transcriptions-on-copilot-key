@@ -1,6 +1,6 @@
-"""Tests für die StreamingAsrSession (Schritt 6).
+"""Tests for StreamingAsrSession (step 6).
 
-End-to-end mit Fake-Engine und Fake-Typer, kein echtes Modell.
+End-to-end with a fake engine and fake typer; no real model.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ def audio(seconds: float) -> bytes:
 
 
 class FakeEngine:
-    """Liefert pro Fenster skriptierte Transkriptionen."""
+    """Return scripted transcriptions for each window."""
 
     def __init__(self, results: dict[float, list[Token]] | None = None) -> None:
         self.results = results or {}
@@ -70,11 +70,11 @@ class TestSession:
         assert t.commits == []
 
     def test_tick_transcribes_window_and_commits(self) -> None:
-        # Fenster bei committed=0 -> offset 0, commit_horizon = chunk=1.0
+        # Window at committed=0 -> offset 0, commit_horizon = chunk=1.0
         tokens = [
             Token("So", 0.0, 0.3),
             Token(" jetzt", 0.3, 0.6),
-            Token(" weit", 0.6, 1.4),  # schneidet horizon=1.0
+            Token(" weit", 0.6, 1.4),  # crosses horizon=1.0
         ]
         e = FakeEngine({0.0: tokens})
         t = FakeTyper()
@@ -82,8 +82,8 @@ class TestSession:
         s.on_audio(audio(3.0))
         s.on_tick()
         assert e.calls
-        # " weit" schneidet den Horizont + ist Wortanfang -> wird
-        # konservativ zurueckgehalten, nicht committet.
+        # " weit" crosses the horizon and is a word start -> it is
+        # conservatively held back rather than committed.
         assert not any("weit" in c for c in t.commits)
 
     def test_release_finalizes(self) -> None:
@@ -92,7 +92,7 @@ class TestSession:
         s = self._session(e, t)
         s.on_audio(audio(4.0))
         s.on_release()
-        # Resttranskription wurde ausgeloest
+        # Final transcription was triggered
         assert t.revisions or t.commits
 
     def test_reset_clears_state(self) -> None:

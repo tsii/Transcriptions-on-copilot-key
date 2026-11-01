@@ -1,10 +1,10 @@
-"""Self-Healing-Bootstrap (Deb-Paket, Betreiber 31.10.).
+"""Self-healing bootstrap (deb package, operator, October 31).
 
-Das .deb ist schlank (kein venv, kein Modell): die Python-Umgebung und
-der ML-Stack werden beim Erststart in eine pro-User-venv nachgebaut.
-Diese Test decken die PLAN-Funktion ab (reine Logik, keine Subprozesse):
-die korrekte Folge der Installations-Commands, idempotentes Nichtstun,
-und der Fehlerweg, wenn ein Schritt scheitert.
+The .deb is lightweight (no venv, no model): the Python environment and ML
+stack are rebuilt in a per-user venv on first launch. These tests cover the
+PLAN function (pure logic, no subprocesses): the correct sequence of
+installation commands, idempotent no-op behavior, and the error path when a
+step fails.
 """
 from __future__ import annotations
 
@@ -17,18 +17,18 @@ from stt_button import bootstrap
 
 class TestBuildPlan:
     def test_plan_order_torch_before_reqs_before_code(self) -> None:
-        """Command-Reihenfolge: venv -> pip -> torch(CPU-Index) ->
-        ML-Stack(req) -> Code(--no-deps)."""
+        """Command order: venv -> pip -> torch (CPU index) ->
+        ML stack (req) -> code (--no-deps)."""
         plan = bootstrap.build_plan(
             install_root=Path("/opt/stt-button"),
             venv_dir=Path("/home/u/.local/stt-button/venv"),
             runtime_req=Path("/opt/stt-button/packaging/runtime-requirements.txt"),
             py_executable="python3",
         )
-        # venv-Erstellung zuerst, pip-Bootstrap zweiter
+        # venv creation first, pip bootstrap second
         assert plan[0][0] == "python3"
         assert "venv" in plan[0]
-        # torch kommt VOR den reqs und dem Code, mit CPU-Index-URL
+        # torch comes BEFORE the requirements and code, with CPU index URL
         torch_idx = next(i for i, c in enumerate(plan) if "torch" in " ".join(c))
         reqs_idx = next(i for i, c in enumerate(plan) if c[-1].endswith("runtime-requirements.txt"))
         code_idx = next(i for i, c in enumerate(plan) if "--no-deps" in c)
@@ -58,7 +58,7 @@ class TestBuildPlan:
 
 class TestEnsureRuntime:
     def test_ready_nothing_installed(self) -> None:
-        """Falls die venv schon alle Module hat: KEINE Installation."""
+        """If the venv already has all modules: NO installation."""
         calls: list[list[str]] = []
         ok = bootstrap.ensure_runtime(
             install_root=Path("/opt/stt-button"),
@@ -67,10 +67,10 @@ class TestEnsureRuntime:
             runner=lambda cmd: (calls.append(list(cmd)), 0)[1],
         )
         assert ok is True
-        assert calls == [], "bereits fertig -> kein einzelner Command"
+        assert calls == [], "already ready -> not a single command"
 
     def test_not_ready_installs_plan(self, tmp_path: Path) -> None:
-        """Falls die venv noch Module vermisst: der komplette Plan laeuft."""
+        """If the venv is still missing modules: run the complete plan."""
         calls: list[list[str]] = []
         req = tmp_path / "runtime-requirements.txt"
         req.write_text("numpy==2.5.4\n")
@@ -88,12 +88,12 @@ class TestEnsureRuntime:
             runtime_req=req,
             py_executable=bootstrap.DEFAULT_PY,
         )
-        # Jede geplante Command-Liste wurde (vorzeichenhaft) ausgefuehrt.
+        # Every planned command list was executed (in order).
         assert len(calls) == len(plan)
         assert calls == plan
 
     def test_install_failure_returns_false(self, tmp_path: Path) -> None:
-        """Ein fehlgeschlagener Schritt (rc!=0) -> False, kein Crash."""
+        """A failed step (rc!=0) -> False, no crash."""
         calls: list[list[str]] = []
         req = tmp_path / "runtime-requirements.txt"
         req.write_text("numpy==2.5.4\n")
@@ -110,12 +110,12 @@ class TestEnsureRuntime:
             runner=boom,
         )
         assert ok is False
-        # Der venv-Schritt lief, der folgend torch-Schritt schlug fehl ->
-        # kein weiterer pip-Install nach dem Fehler.
+        # The venv step ran, the following torch step failed ->
+        # no further pip install after the failure.
         assert any("torch" in " ".join(c) for c in calls)
 
     def test_missing_runtime_req_is_error(self, tmp_path: Path) -> None:
-        """Fehlende requirements-Datei = Bootstrap-Error (klare Meldung)."""
+        """Missing requirements file = bootstrap error (clear message)."""
         with pytest.raises(bootstrap.BootstrapError):
             bootstrap.ensure_runtime(
                 install_root=tmp_path,
@@ -149,7 +149,7 @@ class TestStamp:
         bootstrap.mark_ready(venv, req)
         req.write_text("numpy==2.6.0\n")
         assert not bootstrap.runtime_ready(tmp_path, venv, req), \
-            "requirements-Wechsel muss Rebuild erzwingen"
+            "requirements change must force a rebuild"
 
     def test_probe_venv_with_fake_interpreter(self, tmp_path: Path) -> None:
         venv = tmp_path / "venv"
@@ -165,9 +165,9 @@ class TestStamp:
 
 
 def _default_runtime_req_exists() -> None:
-    """Der default requirements-Pfad muss bei ausgeliefertem Code existieren
-    (sonst muesste der Bootstrap beim echten Einsatz fehlen)."""
+    """The default requirements path must exist in shipped code
+    (otherwise bootstrap would fail in real deployments)."""
     p = Path(bootstrap.DEFAULT_RUNTIME_REQ)
-    # Im Test-Workspace liegt das relativ zum Repo; hier nur pruefen, dass
-    # der Default ein sauberes, nicht-leeres Pfadfeld ist.
-    assert p.parts, "Default-Pfad darf nicht leer sein"
+    # In the test workspace this is relative to the repo; here only verify
+    # that the default is a valid, nonempty path field.
+    assert p.parts, "default path must not be empty"

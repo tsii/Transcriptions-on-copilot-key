@@ -1,8 +1,8 @@
-"""Tests fuer den Controller / Integration (TDD-Kette 6).
+"""Tests for the controller / integration (TDD chain 6).
 
-Der PushToTalkController verbindet Key-Trigger, Audioquelle, StreamTranscriber
-und DeltaTyper. Getestet wird end-to-end mit Fakes - kein Mikrofon, kein Modell,
-kein Wayland-Tool.
+PushToTalkController connects the key trigger, audio source, StreamTranscriber,
+and DeltaTyper. Tests run end-to-end with fakes—no microphone, model, or
+Wayland tool.
 """
 from __future__ import annotations
 
@@ -42,14 +42,14 @@ class FakeAudioSource:
 
 
 class FakeEngine:
-    """Transkribiert Audio deterministisch anhand der Pufferlaenge."""
+    """Transcribe audio deterministically based on buffer length."""
 
     def __init__(self) -> None:
         self.calls = 0
 
     def transcribe(self, data: bytes, initial_prompt: str = "") -> TranscriptionResult:
         self.calls += 1
-        # 0.5s = 16000 bytes -> ein "Wort" pro 0.5s
+        # 0.5s = 16000 bytes -> one "word" per 0.5s
         words = len(data) // 16000
         text = " ".join(f"wort{i}" for i in range(words))
         return TranscriptionResult(text=text)
@@ -81,14 +81,14 @@ class FakeTyper:
 
 
 class BlockingTranscriber:
-    """StreamTranscriber-Fake, dessen finalize() auf ein Event wartiert.
+    """Fake StreamTranscriber whose finalize() waits for an event.
 
-    Macht das Ende der Finalisierung deterministisch steuerbar: Ohne
-    threading.Events muessten die Tests sleeps raten (flaky).
+    Makes the end of finalization deterministically controllable; without
+    threading.Events, tests would have to guess sleep durations (flaky).
     """
     def __init__(self, unblock: threading.Event) -> None:
         self._unblock = unblock
-        self._buffer = b"\x00" * 16000  # fuer evtl. Audio-Dump
+        self._buffer = b"\x00" * 16000  # for a potential audio dump
         self.sample_rate = 16000
         self.finalized = threading.Event()
 
@@ -104,7 +104,7 @@ class BlockingTranscriber:
 
 
 class FakeSourceFactory:
-    """Zaehlt die erzeugten Quellen (je Aufnahme eine neue)."""
+    """Count created sources (one new source per recording)."""
 
     def __init__(self, chunks: list[bytes]) -> None:
         self._chunks = list(chunks)
@@ -167,7 +167,7 @@ def make_controller(**kwargs) -> tuple[PushToTalkController, dict]:
 
 def _wait_state(ctrl: PushToTalkController, target: ControllerState,
                 timeout: float = 5.0) -> None:
-    """Wartet (mit Deadline, ohne blindes Sleep) bis der Zustand erreicht ist."""
+    """Wait (with a deadline, no blind sleep) until the state is reached."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if ctrl.state == target:
@@ -199,7 +199,7 @@ class TestStateLifecycle:
         ctrl, ctx = make_controller()
         ctrl.start_recording()
         ctrl.stop_recording()
-        # Finalisierung laeuft im Hintergrund -> kurz warten.
+        # Finalization runs in the background -> wait briefly.
         for _ in range(100):
             if ctrl.state == ControllerState.IDLE:
                 break
@@ -208,81 +208,79 @@ class TestStateLifecycle:
         assert ctx["source"].stopped == 1
 
     def test_release_during_finalizing_updates_key_state(self) -> None:
-        """Fix: Release waehrend FINALIZING aktualisiert _key_down immer.
+        """Fix: release during FINALIZING always updates _key_down.
 
-        Vorher kehrte stop_recording() bei state != RECORDING kommentarlos
-        zurueck - der Release-Edge ging verloren und die Geisteraufnahme
-        startete spaeter trotzdem.
+        Previously, stop_recording() returned silently when state != RECORDING;
+        the release edge was lost and a ghost recording still started later.
         """
         ctrl, ctx = make_controller(blocking_transcriber=True)
         ctrl.start_recording()
         ctrl.stop_recording()            # -> FINALIZING
         assert ctrl.state == ControllerState.FINALIZING
-        ctrl.start_recording()           # press waehrend FINALIZING
+        ctrl.start_recording()           # press during FINALIZING
         assert ctrl._key_down is True
-        ctrl.stop_recording()            # release waehrend FINALIZING
-        # Der Release-Edge darf NIE verloren gehen:
+        ctrl.stop_recording()            # release during FINALIZING
+        # The release edge must NEVER be lost:
         assert ctrl._key_down is False
-        # Jetzt die Finalisierung abschliessen lassen.
+        # Now allow finalization to complete.
         ctrl._test_unblock_finalize.set()
         _wait_state(ctrl, ControllerState.IDLE)
-        # KEINE Geisteraufnahme: die Taste ist nicht gehalten.
+        # NO ghost recording: the key is not held.
         assert ctrl.state == ControllerState.IDLE
         assert ctx["source"].started == 1
 
     def test_key_held_through_finalize_restarts_recording(self) -> None:
-        """Taste bleibt gehalten: nach Finalisierung startet die Aufnahme."""
+        """Key remains held: recording starts after finalization."""
         ctrl, ctx = make_controller(blocking_transcriber=True)
         ctrl.start_recording()
         ctrl.stop_recording()            # -> FINALIZING
-        ctrl.start_recording()           # press (halten) waehrend FINALIZING
+        ctrl.start_recording()           # press (hold) during FINALIZING
         ctrl._test_unblock_finalize.set()
         ctrl._wait_state(ControllerState.RECORDING)
-        # Start nur, weil _key_down noch True ist.
+        # Starts only because _key_down is still True.
         assert ctrl.state == ControllerState.RECORDING
         assert ctrl._key_down is True
         assert ctx["source"].started == 2
 
     def test_start_after_finalizing_only_when_key_held(self) -> None:
-        """Alternierender Druck: press+release vor Finalisierungsende.
+        """Alternating press: press+release before finalization ends.
 
-        Die Taste wurde vor dem Ende der Finalisierung bereits wieder
-        losgelassen - es darf KEINE Aufnahme gestartet werden.
+        The key was released before finalization ended, so NO recording may start.
         """
         ctrl, ctx = make_controller(blocking_transcriber=True)
         ctrl.start_recording()
         ctrl.stop_recording()
-        ctrl.start_recording()           # vorgemerkt
-        ctrl.stop_recording()            # ... aber schon losgelassen
+        ctrl.start_recording()           # recorded
+        ctrl.stop_recording()            # ... but already released
         ctrl._test_unblock_finalize.set()
         _wait_state(ctrl, ControllerState.IDLE)
         assert ctrl.state == ControllerState.IDLE
         assert ctx["source"].started == 1
 
     def test_release_after_finalized_start_stops_fresh_recording(self) -> None:
-        """Release direkt nach dem automatischen Start stoppt die neue Aufnahme.
+        """Release immediately after automatic start stops the new recording.
 
-        Frueher scheiterte ein Release im Handoff-Fenster an state==IDLE
-        (bzw. der Start und das Release race-ten gegeneinander).
+        Previously, a release in the handoff window failed due to state==IDLE
+        (or the start and release raced each other).
         """
         ctrl, ctx = make_controller(blocking_transcriber=True)
         ctrl.start_recording()
         ctrl.stop_recording()            # -> FINALIZING
-        ctrl.start_recording()           # Taste gehalten
+        ctrl.start_recording()           # key held
         ctrl._test_unblock_finalize.set()
-        ctrl._wait_state(ControllerState.RECORDING)  # Auto-Start ist da
-        ctrl.stop_recording()           # Release danach
-        ctrl._test_unblock_finalize.set()  # 2. Finalisierung freigeben
+        ctrl._wait_state(ControllerState.RECORDING)  # automatic start has occurred
+        ctrl.stop_recording()           # release afterward
+        ctrl._test_unblock_finalize.set()  # release the second finalization
         _wait_state(ctrl, ControllerState.IDLE)
         assert ctrl._key_down is False
         assert ctx["source"].started == 2
         assert ctx["source"].stopped == 2
 
     def test_press_during_recording_is_idempotent(self) -> None:
-        """Mehrfaches Druecken waehrend RECORDING startet nichts Neues."""
+        """Repeated presses during RECORDING do not start anything new."""
         ctrl, ctx = make_controller(blocking_transcriber=True)
         ctrl.start_recording()
-        ctrl.start_recording()           # nochmal druecken
+        ctrl.start_recording()           # press again
         assert ctrl._key_down is True
         assert ctrl.state == ControllerState.RECORDING
         assert ctx["source"].started == 1
@@ -302,7 +300,7 @@ class TestStreaming:
     def test_run_once_feeds_and_transcribes(self) -> None:
         ctrl, ctx = make_controller()
         ctrl.start_recording()
-        # Zwei run_once = 2 Chunks a 0.5s = 1.0s >= min_audio_s (0.8s)
+        # Two run_once calls = 2 chunks of 0.5s = 1.0s >= min_audio_s (0.8s)
         ctrl.run_once()
         ctrl.run_once()
         assert ctx["engine"].calls >= 1
@@ -320,8 +318,8 @@ class TestStreaming:
         for _ in range(3):
             ctrl.run_once()
         ctrl.stop_recording()
-        # Die Finalisierung laeuft bewusst im Hintergrund-Thread; auf deren
-        # Abschluss warten (begrenzt), statt aufThread-Scheduling zu wetten.
+        # Finalization intentionally runs in a background thread; wait (with a bound)
+        # for completion instead of relying on thread scheduling.
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and ctrl.state != ControllerState.IDLE:
             time.sleep(0.005)
@@ -330,7 +328,7 @@ class TestStreaming:
 
 class TestTimeouts:
     def test_no_audio_timeout_aborts(self) -> None:
-        source = FakeAudioSource([])  # keine Audio-Daten
+        source = FakeAudioSource([])  # no audio data
         typer = FakeTyper()
         ctrl = PushToTalkController(
             config=None,
@@ -340,17 +338,17 @@ class TestTimeouts:
             no_audio_timeout_s=0.01,
         )
         ctrl.start_recording()
-        time.sleep(0.02)  # Timeout ueberschreiten
+        time.sleep(0.02)  # exceed the timeout
         ctrl.run_once()
         assert ctrl.state == ControllerState.IDLE
 
     def test_max_record_auto_finalizes(self) -> None:
-        """Max-Dauer finalisiert; ohne gehaltene Taste KEIN Auto-Neustart.
+        """Maximum duration finalizes; no automatic restart without a held key.
 
-        Wird die Taste (wie beim echten Loslassen) vor Finalisierungsende
-        losgelassen, bleibt der Controller in IDLE. Hielte der Nutzer die
-        Taste weiter, startete die naechste Aufnahme automatisch - das
-        testet test_key_held_through_finalize_restarts_recording.
+        If the key is released before finalization ends (as in a real release),
+        the controller remains IDLE. If the user keeps holding it, the next
+        recording starts automatically; this is covered by
+        test_key_held_through_finalize_restarts_recording.
         """
         ctrl, ctx = make_controller(blocking_transcriber=True)
         ctrl._max_record_s = 0.01
@@ -358,7 +356,7 @@ class TestTimeouts:
         time.sleep(0.02)
         ctrl._enforce_max_duration()
         assert ctrl.state == ControllerState.FINALIZING
-        ctrl.stop_recording()          # Taste loslassen
+        ctrl.stop_recording()          # release the key
         assert ctrl._key_down is False
         ctrl._test_unblock_finalize.set()
         _wait_state(ctrl, ControllerState.IDLE)
@@ -382,7 +380,7 @@ class TestErrors:
         )
         ctrl.start_recording()
         ctrl.run_once()
-        ctrl.run_once()  # genug Audio fuer eine Transkription
+        ctrl.run_once()  # enough audio for a transcription
         assert ctrl.state == ControllerState.IDLE
 
     def test_abort_resets_state(self) -> None:
@@ -403,13 +401,13 @@ class TestShutdown:
 
 class TestCaptureThread:
     def test_audio_not_lost_during_blocking_inference(self) -> None:
-        """Der Capture-Thread liest weiter, auch wenn die Engine blockiert.
+        """The capture thread keeps reading even when the engine blocks.
 
-        Reproduziert den Bug 'Taste laenger gehalten als gesprochen': die
-        Engine blockiert (ASR-Inferenz), aber die Quelle liefert weitere
-        Chunks. Ohne Capture-Thread gingen diese verloren.
+        Reproduces the 'key held longer than speech' bug: the engine blocks
+        (ASR inference), but the source provides more chunks. Without a capture
+        thread, these chunks were lost.
         """
-        # Quelle liefert laufend Chunks (mehr als der Hauptthread lesen kann).
+        # The source continuously provides chunks (more than the main thread can read).
         source = FakeAudioSource([b"\x00" * 16000] * 50)
         typer = FakeTyper()
         ctrl = PushToTalkController(
@@ -419,37 +417,36 @@ class TestCaptureThread:
             delta_typer=DeltaTyper(typer, append_space=True),
         )
         ctrl.start_recording()
-        # Der Capture-Thread hat Zeit, Chunks in die Queue zu lesen.
+        # Give the capture thread time to read chunks into the queue.
         time.sleep(0.3)
-        # Alle 50 Chunks muessen in der Queue gelandet sein (kein Verlust
-        # waehrend der Thread laeuft, egal ob die Engine blockiert).
+        # All 50 chunks must have reached the queue (no loss while the thread runs,
+        # regardless of whether the engine blocks).
         assert ctrl._audio_queue.qsize() == 50
         ctrl.stop_recording()
 
 class TestFinalizePasteLockHierarchy:
-    """Charakterisierung: FinalPaster-Hang blockiert den Key-Thread NICHT.
+    """Characterization: a FinalPaster hang does NOT block the key thread.
 
-    Die Lock-Hierarchie im Controller ist bewusst so gebaut:
+    The controller lock hierarchy is intentionally designed as follows:
 
-    * ``finalize``/``paste`` laufen IM FINALIZER-THREAD und greifen NICHT
-      auf das Controller-Lock zu (controller.py: _finish setzt nur den
-      kurzen Zustandswechsel unter Lock).
-    * ``start_recording``/``stop_recording`` holen das Lock nur kurz und
-      kehren auch dann sofort zurueck, wenn der Finalizer (noch) im
-      final_paste haengt.
+    * ``finalize``/``paste`` run IN THE FINALIZER THREAD and do NOT access
+      the controller lock (controller.py: _finish holds the lock only for the
+      brief state transition).
+    * ``start_recording``/``stop_recording`` acquire the lock only briefly
+      and return immediately even if the finalizer is still stuck in
+      final_paste.
 
-    Dieser Test charakterisiert dieses Verhalten: selbst wenn der
-    FinalPaster fuer immer blockiert, bleibt der Key-Thread ansprechbar
-    und die Key-Edges werden korrekt verarbeitet.
+    This test characterizes that behavior: even if FinalPaster blocks forever,
+    the key thread remains responsive and key edges are processed correctly.
     """
 
     def test_blocking_final_paster_does_not_block_key_thread(self) -> None:
-        """Haengendes final_paste: start/stop kehren ohne Blockade zurueck."""
+        """Hanging final_paste: start/stop return without blocking."""
         unblock_paste = threading.Event()
         paste_entered = threading.Event()
 
         class BlockingFinalPaster:
-            """FinalPaster-Fake, der auf ein nie (sofort) gesetztes Event wartet."""
+            """Fake FinalPaster that waits for an event never set (immediately)."""
 
             def paste(self, text: str) -> None:
                 paste_entered.set()
@@ -469,16 +466,16 @@ class TestFinalizePasteLockHierarchy:
         ctrl.start_recording()
         for _ in range(3):
             ctrl.run_once()
-        # Loslassen: Finalizer startet im Hintergrund und haengt im Paste.
+        # Release: the finalizer starts in the background and hangs in paste.
         ctrl.stop_recording()
         assert ctrl.state == ControllerState.FINALIZING
         assert paste_entered.wait(timeout=2.0)
 
-        # Kern-Charakterisierung: Der Key-Thread (dieser Thread simuliert
-        # ihn) kehrt trotz haengendem Paste sofort zurueck - start/stop
-        # nehmen nur kurz das Lock, paste() laeuft lock-frei im Finalizer.
+        # Core characterization: the key thread (simulated by this thread) returns
+        # immediately despite the hanging paste; start/stop hold the lock only
+        # briefly, while paste() runs lock-free in the finalizer.
         t0 = time.monotonic()
-        ctrl.start_recording()  # press waehrend FINALIZING
+        ctrl.start_recording()  # press during FINALIZING
         assert ctrl._key_down is True
         ctrl.stop_recording()  # release
         assert ctrl._key_down is False
@@ -488,7 +485,7 @@ class TestFinalizePasteLockHierarchy:
         )
         assert ctrl.state == ControllerState.FINALIZING
 
-        # Jetzt das Paste freigeben: Finalizer laeuft zu Ende.
+        # Now unblock paste: the finalizer completes.
         unblock_paste.set()
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
@@ -496,15 +493,15 @@ class TestFinalizePasteLockHierarchy:
                 break
             time.sleep(0.005)
         assert ctrl.state == ControllerState.IDLE
-        # KEINE Geisteraufnahme: die Taste wurde losgelassen.
+        # NO ghost recording: the key was released.
         assert ctrl._key_down is False
 
 
 class RestAudioSource:
-    """Quelle, die beim stop() zusaetzlich den Pipe-Rest ``rest`` liefert.
+    """Source that additionally returns pipe remainder ``rest`` from stop().
 
-    Der Capture-Thread liest nur ``chunks``; die letzten Bytes des Pipes
-    (``rest``) erscheinen erst beim Drain in ``stop()`` - wie bei pw-record.
+    The capture thread reads only ``chunks``; the final pipe bytes (``rest``)
+    appear only when drained in ``stop()``, as with pw-record.
     """
 
     def __init__(self, chunks: list[bytes], rest: bytes) -> None:
@@ -528,18 +525,17 @@ class RestAudioSource:
 
 
 class TestLatencyLockDecoupling:
-    """STUFE 1: Release darf nicht auf laufender Live-Inferenz warten.
+    """STAGE 1: release must not wait for ongoing live inference.
 
-    Der Controller-Lock ``_lock`` schuetzt nur noch kurze Zustandswechsel;
-    die Live-/Final-Kette laeuft unter ``_exec_lock``. Dadurch stoppt ein
-    Release die Audioquelle sofort, auch wenn gerade eine mehrsekundige
-    Live-Inferenz laeuft.
+    Controller lock ``_lock`` now protects only brief state transitions; the
+    live/final chain runs under ``_exec_lock``. Therefore, release stops the
+    audio source immediately even during multi-second live inference.
     """
 
     def test_release_during_live_asr_stops_audio_before_inference_returns(
         self,
     ) -> None:
-        """Release bei blockierender Live-Inferenz: Audio stoppt < 0,3s."""
+        """Release during blocking live inference: audio stops in < 0.3s."""
         engine = BlockingEngine()
         source = FakeAudioSource([b"\x00" * 16000] * 8)
         typer = FakeTyper()
@@ -554,15 +550,15 @@ class TestLatencyLockDecoupling:
         ctrl.start_recording()
         ticker = threading.Thread(target=ctrl.run_once, daemon=True)
         ticker.start()
-        # Live-Inferenz laeuft (Engine blockiert bis zu 2s im transcribe()).
+        # Live inference is running (engine blocks for up to 2s in transcribe()).
         assert engine.entered.wait(timeout=5.0), "Live-Inferenz started nicht"
 
         t0 = time.monotonic()
         ctrl.stop_recording()
         elapsed = time.monotonic() - t0
 
-        # Kern der STUFE 1: Die Quelle ist gestoppt, obwohl die Engine noch
-        # belegt ist, und stop_recording kehrte sofort zurueck.
+        # Core of STAGE 1: the source stopped even though the engine is still busy,
+        # and stop_recording returned immediately.
         assert not engine.release.is_set(), "Engine wurde vor Release freigegeben"
         assert source.stopped == 1, "Audioquelle beim Release nicht gestoppt"
         assert elapsed < 0.3, (
@@ -577,7 +573,7 @@ class TestLatencyLockDecoupling:
         assert ctrl.state == ControllerState.IDLE
 
     def test_live_tick_and_finalize_are_serialized(self) -> None:
-        """Live-Tick und Finalize rufen die Engine nie gleichzeitig auf."""
+        """Live tick and finalize never call the engine concurrently."""
         engine = ConcurrencyCountingEngine()
         source = FakeAudioSource([b"\x00" * 16000] * 8)
         typer = FakeTyper()
@@ -599,7 +595,7 @@ class TestLatencyLockDecoupling:
             daemon=True,
         )
         ticker.start()
-        time.sleep(0.3)  # mehrere Live-Ticks
+        time.sleep(0.3)  # multiple live ticks
         ctrl.stop_recording()
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and ctrl.state != ControllerState.IDLE:
@@ -610,12 +606,12 @@ class TestLatencyLockDecoupling:
             f"Engine {engine.max_active}x gleichzeitig aufgerufen - "
             "_exec_lock serialisiert Live/Final nicht"
         )
-        # Die finale Ausgabe stammt aus dem LETZTEN Engine-Aufruf (finalize),
-        # nicht aus einem spaeter fertig gewordenen Live-Tick.
+        # Final output comes from the LAST engine call (finalize), not from a live
+        # tick that completed later.
         assert delta.last_text == engine.last_text
 
     def test_release_feeds_exactly_capture_queue_then_source_rest(self) -> None:
-        """RC-Reihenfolge: alle Queue-Chunks, dann der stop()-Rest - exakt einmal."""
+        """RC order: all queue chunks, then the stop() remainder, exactly once."""
         recorder = RecordingTranscriber()
         chunks = [bytes([i]) * 16000 for i in range(6)]
         source = RestAudioSource(chunks, rest=b"REST")
@@ -627,7 +623,7 @@ class TestLatencyLockDecoupling:
             transcriber_factory=lambda *a, **kw: recorder,
         )
         ctrl.start_recording()
-        time.sleep(0.3)  # Capture-Thread fuellt die Queue, KEIN run_once
+        time.sleep(0.3)  # Capture thread fills the queue; NO run_once
         ctrl.stop_recording()
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and ctrl.state != ControllerState.IDLE:
@@ -640,10 +636,10 @@ class TestLatencyLockDecoupling:
 
 
 class BlockingEngine:
-    """Engine, deren transcribe() auf ein Event wartet (Live-Inferenz-Fake).
+    """Engine whose transcribe() waits for an event (live inference fake).
 
-    Die Wartezeit ist bewusst begrenzt (2s), damit ein fehlschlagender
-    Test (alt: stop_recording blockiert am Lock) nicht endlos haengt.
+    The wait is intentionally bounded (2s) so a failing test (previously:
+    stop_recording blocked on the lock) does not hang indefinitely.
     """
 
     def __init__(self) -> None:
@@ -660,7 +656,7 @@ class BlockingEngine:
 
 
 class ConcurrencyCountingEngine:
-    """Engine, die Gleichzeitigkeit der Aufruefe zaehlt."""
+    """Engine that counts concurrent calls."""
 
     def __init__(self) -> None:
         self.calls = 0
@@ -680,7 +676,7 @@ class ConcurrencyCountingEngine:
 
 
 class RecordingTranscriber:
-    """StreamTranscriber-Fake, der jedes feed()-Chunk protokolliert."""
+    """Fake StreamTranscriber that records every feed() chunk."""
 
     def __init__(self) -> None:
         self.feeds: list[bytes] = []
@@ -699,7 +695,7 @@ class RecordingTranscriber:
 
 
 class InstantTranscriber:
-    """StreamTranscriber-Fake mit sofortiger, deterministischer Finalisierung."""
+    """Fake StreamTranscriber with immediate, deterministic finalization."""
 
     def __init__(self) -> None:
         self._buffer = b"\x00" * 16000
@@ -716,17 +712,17 @@ class InstantTranscriber:
 
 
 class TestLiveAsrUntilController:
-    """STUFE 3: live_asr_until_s im Controller (Config durchgereicht).
+    """STAGE 3: live_asr_until_s in the controller (config passed through).
 
-    Nach dem Limit liefern run_once()-Ticks keinen Text mehr; der Finaltext
-    kommt vollstaendig aus finalize().
+    After the limit, run_once() ticks return no more text; the final text
+    comes entirely from finalize().
     """
 
     def test_ticks_stop_after_limit_final_text_complete(self) -> None:
         from stt_button.config import Config
 
         typer = FakeTyper()
-        # FakeEngine: 0.5s -> 1 Wort; Text waechst mit dem Puffer.
+        # FakeEngine: 0.5s -> 1 word; text grows with the buffer.
         class GrowingEngine:
             def __init__(self) -> None:
                 self.calls = 0
@@ -747,14 +743,14 @@ class TestLiveAsrUntilController:
             min_audio_s=0.1,
             asr_interval_s=0.1,
         )
-        # Limit 1.5s: nach 3 Chunks (1.5s) sind die Live-Ticks aus.
+        # Limit 1.5s: live ticks stop after 3 chunks (1.5s).
         ctrl.start_recording()
-        ctrl._transcriber.live_asr_until_s = 1.5  # nachtraeglich enger stellen
-        # Queue entleeren + Live-Tick erzwingen: 6 Chunks = 3s im Puffer.
+        ctrl._transcriber.live_asr_until_s = 1.5  # tighten it afterward
+        # Drain queue + force a live tick: 6 chunks = 3s buffered.
         for _ in range(6):
             ctrl.run_once()
         calls_before = engine.calls
-        # Weitere Ticks mit weiter gewachsenem Puffer -> KEIN Engine-Call.
+        # Further ticks with a larger buffer -> NO engine call.
         for _ in range(3):
             ctrl.run_once()
         assert engine.calls == calls_before, (
@@ -766,21 +762,20 @@ class TestLiveAsrUntilController:
             time.sleep(0.005)
 
         typed = "".join(c[1] for c in typer.calls if c[0] == "type")
-        # Der Finaltext umfasst ALLE 12 Chunks (6s, w0..w11) - feed() hat
-        # ungeachtet des Live-Limits weitergesammelt, finalize() sah alles.
+        # The final text includes ALL 12 chunks (6s, w0..w11); feed() kept collecting
+        # regardless of the live limit, and finalize() saw everything.
         assert typed.endswith("w0 w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11"), (
             typer.calls
         )
 
 
 class TestPauseIndicatorController:
-    """STUFE 4: Pausen-Indikator im Controller (live_asr_until_s > 0).
+    """STAGE 4: pause indicator in the controller (live_asr_until_s > 0).
 
-    Erreicht die Live-ASR das Limit, tippt der Controller den Indikator
-    GENAU EINMAL an den DeltaTyper; beim Release entfernt finalize() ihn
-    ueber die normale Differenz, und der finale Volltext enthaelt KEINEN
-    Indikator. Mit live_asr_until_s=0.0 (Default) erscheint NIE ein
-    Indikator.
+    When live ASR reaches the limit, the controller types the indicator
+    EXACTLY ONCE through DeltaTyper; on release, finalize() removes it via
+    the normal diff, and the final full text contains NO indicator. With
+    live_asr_until_s=0.0 (default), an indicator NEVER appears.
     """
 
     def _make(self, live_asr_until_s: float, *, mode: str = "full"):
@@ -823,12 +818,12 @@ class TestPauseIndicatorController:
         return [c for c in typer.calls if c == ("type", PAUSE_INDICATOR)]
 
     def test_limit_types_indicator_once_and_final_without_it(self) -> None:
-        """(6) Nach dem Limit EIN Indikator; Release -> Volltext ohne '...'."""
+        """(6) One indicator after the limit; release -> full text without '...'."""
         from stt_button.typing import PAUSE_INDICATOR
 
         ctrl, typer = self._make(live_asr_until_s=1.5)
         ctrl.start_recording()
-        # Live-Ticks laufen lassen, bis das Limit (1.5s Puffer) greift:
+        # Run live ticks until the limit (1.5s buffer) applies:
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             ctrl.run_once()
@@ -838,14 +833,14 @@ class TestPauseIndicatorController:
         assert self._indicator_calls(typer), (
             "Pausen-Indikator wurde nach dem Live-Limit nicht getippt"
         )
-        # Weitere Ticks tippen den Indikator NICHT noch einmal:
+        # Further ticks do NOT type the indicator again:
         for _ in range(5):
             time.sleep(0.02)
             ctrl.run_once()
         assert len(self._indicator_calls(typer)) == 1, typer.calls
 
-        # Release: finalize() entfernt den Indikator per Backspace (3
-        # Zeichen '...') und liefert den VOLLSTAENDIGEN Text ohne Indikator.
+        # Release: finalize() removes the indicator via backspace (3 characters,
+        # '...') and returns the COMPLETE text without the indicator.
         ctrl.stop_recording()
         self._wait_idle(ctrl)
         assert ("backspace", str(len(PAUSE_INDICATOR))) in typer.calls, typer.calls
@@ -859,7 +854,7 @@ class TestPauseIndicatorController:
         )
 
     def test_committed_mode_shows_indicator_too(self) -> None:
-        """(6b) live_typing_mode='committed': Indikator nach letztem Live-Commit."""
+        """(6b) live_typing_mode='committed': indicator after the last live commit."""
         from stt_button.typing import PAUSE_INDICATOR
 
         ctrl, typer = self._make(live_asr_until_s=1.5, mode="committed")
@@ -883,7 +878,7 @@ class TestPauseIndicatorController:
         )
 
     def test_default_limit_zero_never_shows_indicator(self) -> None:
-        """(7) Default live_asr_until_s=0: NIE ein Indikator (bisheriges Verhalten)."""
+        """(7) Default live_asr_until_s=0: NEVER an indicator (previous behavior)."""
         from stt_button.typing import PAUSE_INDICATOR
 
         ctrl, typer = self._make(live_asr_until_s=0.0)
@@ -902,15 +897,15 @@ class TestPauseIndicatorController:
         )
 
     def _make_short_session(self, live_asr_until_s: float):
-        """Kurze Session (Regression 11:56): letzter Tick UNTER dem Limit.
+        """Short session (11:56 regression): last tick BELOW the limit.
 
-        Echte Verdrahtung (echter StreamTranscriber, FakeEngine): 7 Chunks
-        (3.5s) kommen live in die Queue - KEIN Live-Tick sieht damit das
-        4s-Limit. Der 8. Chunk (1s) erscheint erst als stop()-Rest im
-        Finalizer: Dessen Queue-/Rest-Feed drueckt den Puffer auf 4.5s und
-        UEBERSCHREITET damit die Grenze - exakt die Realtest-Situation
-        (Audio lief waehrend der letzten Inferenz weiter, Release kam vor
-        dem naechsten Tick). Vor dem Fix zeigte der Indikator hier NIE.
+        Real wiring (real StreamTranscriber, FakeEngine): 7 chunks (3.5s)
+        enter the queue live, so NO live tick reaches the 4s limit. The 8th
+        chunk (1s) appears only as the stop() remainder in the finalizer.
+        Its queue/remainder feed grows the buffer to 4.5s, EXCEEDING the
+        limit—exactly the real-test situation (audio continued during the
+        last inference; release came before the next tick). Before the fix,
+        the indicator NEVER appeared here.
         """
         from stt_button.asr import StreamTranscriber
 
@@ -942,21 +937,20 @@ class TestPauseIndicatorController:
         return ctrl, typer
 
     def test_short_session_indicator_shown_in_finalizer(self) -> None:
-        """(BUG1/3) Letzter Tick unter Limit: Indikator im FINALIZER.
+        """(BUG1/3) Last tick below limit: indicator in the FINALIZER.
 
-        Der Live-Pfad sah das Limit nie; erst der Queue-Feed im
-        _finalize_worker drueckt den Puffer ueber die Grenze. Der dortige
-        take_live_paused()-Check tippt den Indikator GENAU EINMAL vor der
-        finalen Ausgabe; die Final-Diff entfernt ihn wieder (3 Backspaces,
-        kein '...' im Endergebnis).
+        The live path never reached the limit; only the queue feed in
+        _finalize_worker grows the buffer beyond it. Its take_live_paused()
+        check types the indicator EXACTLY ONCE before final output; the final
+        diff removes it again (3 backspaces, no '...' in the final result).
         """
         from stt_button.typing import PAUSE_INDICATOR
 
         ctrl, typer = self._make_short_session(live_asr_until_s=4.0)
         ctrl.start_recording()
-        # Ticks laufen, bis die Queue leer ist: alle 7 Chunks (3.5s) sind
-        # gefuettert, KEIN Live-Tick sah aber >= 4s (Limitschwelle live
-        # nie erreicht - Realtest-Situation).
+        # Run ticks until the queue is empty: all 7 chunks (3.5s) are fed, but NO
+        # live tick saw >= 4s (the limit was never reached live—the real-test
+        # situation).
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             ctrl.run_once()
@@ -969,7 +963,7 @@ class TestPauseIndicatorController:
         )
         ctrl.stop_recording()
         self._wait_idle(ctrl)
-        # GENAU EINMAL PAUSE_INDICATOR, zeitlich vor dem finalen Suffix:
+        # EXACTLY ONE PAUSE_INDICATOR, before the final suffix:
         indicators = [
             (i, c) for i, c in enumerate(typer.calls)
             if c == ("type", PAUSE_INDICATOR)
@@ -978,11 +972,10 @@ class TestPauseIndicatorController:
             f"Pausen-Indikator fehlt im Finalizer (Anzahl: {len(indicators)})",
             typer.calls,
         )
-        # Final-Diff entfernt ihn: 3 Backspaces vorhanden, Endergebnis
-        # ohne '...'-Rest (8 Chunks = 4.0s -> 8 Woerter). Ohne Final-Paster
-        # kommt das Leerzeichen als separates key('space') (FakeTyper zaehlt
-        # key-Aufruefe nicht zum Cursor-Text), der Aufruf selbst ist hier
-        # die Leerzeichen-Erwartung.
+        # The final diff removes it: 3 backspaces present, final result without a
+        # '...' remainder (8 chunks = 4.0s -> 8 words). Without FinalPaster,
+        # the space is a separate key('space') call (FakeTyper does not count
+        # key calls as cursor text); the call itself is the space expectation.
         assert ("backspace", str(len(PAUSE_INDICATOR))) in typer.calls, (
             typer.calls
         )
@@ -992,12 +985,11 @@ class TestPauseIndicatorController:
         assert ("key", "space") in typer.calls, typer.calls
 
     def test_indicator_live_shown_not_repeated_in_finalizer(self) -> None:
-        """(BUG1/4) Live angezeigter Indikator: im Finalizer KEIN zweiter.
+        """(BUG1/4) Indicator shown live: NO second one in the finalizer.
 
-        Die take_live_paused()-Meldung wird konsumiert: Der Finalizer-Check
-        darf sie nicht erneut tippen (DeltaTyper.show_paused() waere ohnehin
-        idempotent, aber auch der Aufruf ist nur bei anstehender Meldung
-        erlaubt).
+        The take_live_paused() notification is consumed: the finalizer check
+        must not type it again (DeltaTyper.show_paused() would be idempotent
+        anyway, but the call itself is allowed only for a pending notification).
         """
         ctrl, typer = self._make_short_session(live_asr_until_s=1.5)
         ctrl.start_recording()
@@ -1017,7 +1009,7 @@ class TestPauseIndicatorController:
         )
 
     def test_short_session_limit_zero_never_indicator(self) -> None:
-        """(BUG1/5) live_asr_until_s=0: auch im Finalizer NIE ein Indikator."""
+        """(BUG1/5) live_asr_until_s=0: NEVER an indicator in the finalizer either."""
         ctrl, typer = self._make_short_session(live_asr_until_s=0.0)
         ctrl.start_recording()
         for _ in range(10):
@@ -1030,7 +1022,7 @@ class TestPauseIndicatorController:
 
 
 class TestAudioDumpModes:
-    """STUFE 1: audio_dump_mode steuert den WAV-Dump (sync|async|off)."""
+    """STAGE 1: audio_dump_mode controls the WAV dump (sync|async|off)."""
 
     def _ctrl(self, tmp_path, mode: str):
         from stt_button.config import Config
@@ -1050,14 +1042,14 @@ class TestAudioDumpModes:
 
     def _run(self, ctrl) -> None:
         ctrl.start_recording()
-        time.sleep(0.2)  # Capture-Thread fuellt die Queue
+        time.sleep(0.2)  # Capture thread fills the queue
         ctrl.stop_recording()
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and ctrl.state != ControllerState.IDLE:
             time.sleep(0.005)
 
     def test_sync_default_writes_wav_before_worker_done(self, tmp_path) -> None:
-        """sync (Default): Dump ist fertig, bevor der Finalizer den Zustand schliesst."""
+        """sync (default): dump completes before the finalizer closes the state."""
         ctrl, dump = self._ctrl(tmp_path, "sync")
         self._run(ctrl)
         assert dump.exists(), "sync-Dump fehlt nach Finalisierung"
@@ -1069,13 +1061,12 @@ class TestAudioDumpModes:
         assert not dump.exists(), "off darf keine WAV-Datei schreiben"
 
     def test_async_writes_wav_from_snapshot(self, tmp_path) -> None:
-        """async: Dump laeuft im eigenen Thread und schreibt den Snapshot."""
+        """async: dump runs in its own thread and writes the snapshot."""
         ctrl, dump = self._ctrl(tmp_path, "async")
         self._run(ctrl)
-        # Der async-Thread darf den Prozess nicht blockieren; bis zum
-        # Testende muss die Datei aber geschrieben sein. Deadline 5 s:
-        # unter nice -n 19/Last darf ein Scheduler-Slot laenger brauchen
-        # (frueher 2 s -> sporadischer Last-Flaker).
+        # The async thread must not block the process, but the file must be written
+        # by test end. Deadline 5s: under nice -n 19/load, a scheduler slot may
+        # take longer (previously 2s -> sporadic load flakiness).
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and not dump.exists():
             time.sleep(0.01)
@@ -1084,7 +1075,7 @@ class TestAudioDumpModes:
 
 
 class TestLatencyTrace:
-    """latency_trace=True loggt die Debug-Messpunkte (Default: aus)."""
+    """latency_trace=True logs debug measurement points (default: off)."""
 
     def test_measurement_points_logged(self, tmp_path, caplog) -> None:
         import logging
@@ -1144,12 +1135,12 @@ class TestLatencyTrace:
 
 
 class BlockingLiveTickTranscriber:
-    """StreamTranscriber-Fake: maybe_transcribe() blockiert steuerbar.
+    """Fake StreamTranscriber: maybe_transcribe() blocks controllably.
 
-    Der Live-Tick hält ``_exec_lock`` (wie die echte Engine-Inferenz). Das
-    Freigeben des Resultats simuliert das Ende der Inferenz - NACH einem
-    Release im Key-Thread. Genau dann darf das Live-Ergebnis nicht mehr
-    getippt werden (STUFE 2: Post-Release-Discard).
+    The live tick holds ``_exec_lock`` (like real engine inference). Releasing
+    the result simulates inference ending AFTER a release in the key thread.
+    In exactly that case, the live result must no longer be typed (STAGE 2:
+    post-release discard).
     """
 
     def __init__(self, release: threading.Event) -> None:
@@ -1173,12 +1164,11 @@ class BlockingLiveTickTranscriber:
 
 
 class TwoPhaseLiveTranscriber:
-    """Zwei Live-Ticks + Finalize: committed-Praefix-Szenario.
+    """Two live ticks + finalize: committed-prefix scenario.
 
-    Tick 1 liefert "live wort0 wort1" (committed_len=6) und wird VOR dem
-    Release getippt. Tick 2 blockiert über den Release hinweg und liefert
-    danach einen abweichenden Text - genau dieses Ergebnis muss verworfen
-    werden. finalize() liefert die vollstaendige Fassung.
+    Tick 1 returns "live wort0 wort1" (committed_len=6) and is typed BEFORE
+    release. Tick 2 blocks across release and then returns different text;
+    exactly this result must be discarded. finalize() returns the complete text.
     """
 
     def __init__(self) -> None:
@@ -1199,8 +1189,8 @@ class TwoPhaseLiveTranscriber:
             return TranscriptionResult(text="live wort0 wort1", committed_len=6)
         self.tick2_entered.set()
         self.tick2_release.wait(timeout=5.0)
-        # Wuerde dieser Text NACH dem Release getippt, entstuende Muell;
-        # der Finalizer muesste ihn per Backspace korrigieren.
+        # If this text were typed AFTER release, it would create garbage; the
+        # finalizer would have to correct it via backspace.
         return TranscriptionResult(text="live ganz anderer Muell", committed_len=6)
 
     def finalize(self):
@@ -1208,12 +1198,12 @@ class TwoPhaseLiveTranscriber:
 
 
 class TestPostReleaseDiscard:
-    """STUFE 2: Nach dem Release getippte Live-Ergebnisse verwerfen.
+    """STAGE 2: discard live results that would be typed after release.
 
-    Szenario: Der Nutzer lässt die Taste los, während eine Live-Inferenz
-    (unter ``_exec_lock``) noch läuft. Deren Ergebnis darf NIE mehr
-    getippt werden - es würde sonst dem Finaltext vorgreifen und der
-    Finalizer müsste ihn per Backspace zurücknehmen (fühlbare Latenz).
+    Scenario: the user releases the key while live inference (under
+    ``_exec_lock``) is still running. Its result must NEVER be typed; it would
+    otherwise preempt the final text, forcing the finalizer to retract it via
+    backspace (noticeable latency).
     """
 
     def _make_ctrl(
@@ -1237,7 +1227,7 @@ class TestPostReleaseDiscard:
     def _start_live_tick(
         self, ctrl: PushToTalkController, transcriber: BlockingLiveTickTranscriber
     ) -> threading.Thread:
-        """Startet einen Live-Tick und wartet, bis er in der Inferenz hängt."""
+        """Start a live tick and wait until it blocks in inference."""
         ticker = threading.Thread(target=ctrl.run_once, daemon=True)
         ticker.start()
         assert transcriber.entered.wait(timeout=5.0), (
@@ -1254,21 +1244,21 @@ class TestPostReleaseDiscard:
         )
 
     def test_live_result_after_release_is_not_typed(self, tmp_path) -> None:
-        """Release während blockierendem Live-Tick: kein type/backspace danach."""
+        """Release during a blocking live tick: no type/backspace afterward."""
         ctrl, transcriber, typer, live_release = self._make_ctrl(tmp_path)
         ctrl.start_recording()
         ticker = self._start_live_tick(ctrl, transcriber)
 
-        ctrl.stop_recording()  # Release: FINALIZING, Quelle stoppt sofort
+        ctrl.stop_recording()  # Release: FINALIZING, source stops immediately
         calls_at_release = list(typer.calls)
 
-        # Live-Inferenz "kommt zurueck" - ihr Ergebnis muss verworfen werden.
+        # Live inference "returns"; its result must be discarded.
         live_release.set()
         self._wait_idle(ctrl)
         ticker.join(timeout=5.0)
 
-        # KEIN Live-Ergebnis nach dem Release: Einziger type-Call ist der
-        # Finaltext aus dem Finalizer; keine Backspaces, kein "live ...".
+        # NO live result after release: the only type call is the final text from the
+        # finalizer; no backspaces, no "live ...".
         typed = [c for c in typer.calls if c[0] == "type"]
         assert typed == [("type", "finale wort0 wort1 wort2")], (
             f"Nach dem Release wurde getippt: {typer.calls}"
@@ -1277,7 +1267,7 @@ class TestPostReleaseDiscard:
         assert ("key", "space") in typer.calls
 
     def test_final_text_is_typed_exactly_once_by_finalizer(self, tmp_path) -> None:
-        """Der Finaltext kommt vollstaendig und genau einmal (aus finalize())."""
+        """The final text arrives completely and exactly once (from finalize())."""
         ctrl, transcriber, typer, live_release = self._make_ctrl(tmp_path)
         ctrl.start_recording()
         ticker = self._start_live_tick(ctrl, transcriber)
@@ -1290,17 +1280,17 @@ class TestPostReleaseDiscard:
         assert typed == "finale wort0 wort1 wort2", (
             f"Finaltext unvollstaendig: {typer.calls}"
         )
-        # Kein Backspace: der Live-Tick hat nie etwas getippt.
+        # No backspace: the live tick never typed anything.
         assert not any(c[0] == "backspace" for c in typer.calls)
 
     def test_final_text_with_committed_prefix_is_complete(self, tmp_path) -> None:
-        """Fortgeschrittener committed-Praefix: Finaltext bleibt vollstaendig.
+        """Advanced committed prefix: final text remains complete.
 
-        Vor dem Release wurde bereits live getippt ("live wort0 wort1" mit
-        committed-Praefix "live "); ein zweiter Live-Tick haengt ueber den
-        Release hinweg. Sein abweichendes Ergebnis muss verworfen werden;
-        der Finalizer rechnet das finale Delta gegen den effektiven Stand
-        und ergaenzt nur " wort2". Kein Backspace, kein Muell am Cursor.
+        Text was already typed live before release ("live wort0 wort1" with
+        committed prefix "live "); a second live tick blocks across release.
+        Its differing result must be discarded; the finalizer computes the
+        final delta against the effective state and appends only " wort2".
+        No backspace, no garbage at the cursor.
         """
         transcriber = TwoPhaseLiveTranscriber()
         source = FakeAudioSource([b"\x00" * 16000] * 6)
@@ -1313,23 +1303,23 @@ class TestPostReleaseDiscard:
             transcriber_factory=lambda *a, **kw: transcriber,
             dump_path=str(tmp_path / "last.wav"),
         )
-        # Tick 1: Ergebnis wird VOR dem Release getippt (committed "live ").
+        # Tick 1: result is typed BEFORE release (committed "live ").
         ctrl.start_recording()
         tick1 = threading.Thread(target=ctrl.run_once, daemon=True)
         tick1.start()
-        transcriber.tick1_release.set()  # Tick 1 sofort freigeben
+        transcriber.tick1_release.set()  # unblock tick 1 immediately
         tick1.join(timeout=5.0)
         assert "".join(c[1] for c in typer.calls if c[0] == "type") == (
             "live wort0 wort1"
         )
 
-        # Tick 2 haengt in der Inferenz - jetzt loslassen (Release).
+        # Tick 2 blocks in inference; release now.
         tick2 = threading.Thread(target=ctrl.run_once, daemon=True)
         tick2.start()
         assert transcriber.tick2_entered.wait(timeout=5.0)
         ctrl.stop_recording()
 
-        # Tick 2 kommt NACH dem Release zurueck -> Ergebnis verwerfen.
+        # Tick 2 returns AFTER release -> discard the result.
         transcriber.tick2_release.set()
         self._wait_idle(ctrl)
         tick2.join(timeout=5.0)
@@ -1343,7 +1333,7 @@ class TestPostReleaseDiscard:
 
 
 class TestLiveLatencyTrace:
-    """latency_trace: Live-Tick-Messpunkte (live asr/live typing)."""
+    """latency_trace: live tick measurement points (live asr/live typing)."""
 
     def test_live_tick_points_logged(self, tmp_path, caplog) -> None:
         import logging
@@ -1377,13 +1367,12 @@ class TestLiveLatencyTrace:
 
 
 class WaitProbe:
-    """Fuehrt wait_for_work() in einem Daemon-Thread aus.
+    """Run wait_for_work() in a daemon thread.
 
-    assert_returned() prueft mit begrenzter Frist, dass der Aufruf
-    sauber zurueckgekehrt ist - und dabei KEIN Fehler auftrat
-    (ROT-Phase: fehlende Methode schlaegt fehl, kein Vakuum-Gruen).
-    assert_blocked() stellt das Gegenteil fest: kein Rueckkehr ohne
-    Ereignis (sonst wuerde der Worker wieder pollen statt zu blocken).
+    assert_returned() uses a bounded deadline to verify that the call returns
+    cleanly and without errors (RED phase: missing method fails; no vacuous
+    green). assert_blocked() verifies the opposite: no return without an event
+    (otherwise the worker would poll again instead of blocking).
     """
 
     def __init__(self, ctrl: PushToTalkController) -> None:
@@ -1398,7 +1387,7 @@ class WaitProbe:
     def _run(self) -> None:
         try:
             self._ctrl.wait_for_work()
-        except BaseException as exc:  # noqa: BLE001 - Fehler protokollieren
+        except BaseException as exc:  # noqa: BLE001 - log errors
             self.error = exc
         self.returned.set()
 
@@ -1412,10 +1401,10 @@ class WaitProbe:
         )
 
     def assert_blocked(self, timeout: float = 0.3) -> None:
-        """Stellt fest, dass wait_for_work() noch blockt (kein Fail-Pass).
+        """Verify that wait_for_work() still blocks (no fail-pass).
 
-        Achtung: nur nach ausreichender Einschwingzeit aufrufen - der
-        Daemon-Thread muss erst in wait() hineinlaufen.
+        Note: call only after sufficient settling time; the daemon thread must
+        first enter wait().
         """
         assert not self.returned.wait(timeout=timeout), (
             "wait_for_work() ist ohne Ereignis zurueckgekehrt - der "
@@ -1424,10 +1413,10 @@ class WaitProbe:
 
 
 class FeedCountingTranscriber:
-    """StreamTranscriber-Fake: zaehlt feed()-Aufrufe, maybe_transcribe=None.
+    """Fake StreamTranscriber: count feed() calls; maybe_transcribe=None.
 
-    Fuer Wait-Tests: deterministisch zaehlen, welche Chunks ein Live-Tick
-    konsumiert - ohne echte ASR-Intervall- oder VAD-Logik.
+    For wait tests: deterministically count which chunks a live tick consumes,
+    without real ASR interval or VAD logic.
     """
 
     def __init__(self) -> None:
@@ -1446,11 +1435,11 @@ class FeedCountingTranscriber:
 
 
 class EmptyAudioSource:
-    """Liefert nie Audio (read() -> b""): Capture-Thread bleibt still.
+    """Never provides audio (read() -> b""): capture thread stays quiet.
 
-    Fuer Wait-Tests: Die Queue bleibt leer bis auf die vom Test selbst
-    gesteuerten puts - der Capture-Thread der FakeAudioSource wuerde
-    sie sonst unkontrolliert fuellen.
+    For wait tests: the queue remains empty except for puts controlled by the
+    test itself; otherwise FakeAudioSource's capture thread would fill it
+    uncontrollably.
     """
 
     def __init__(self) -> None:
@@ -1473,14 +1462,14 @@ def make_wait_controller(
     engine=None,
     **kwargs,
 ) -> PushToTalkController:
-    """Controller fuer Wait-Tests: ruhige Quelle, keine Wild-Chunks.
+    """Controller for wait tests: quiet source, no stray chunks.
 
-    Ohne engine wird ein FeedCountingTranscriber injiziert (zaehlt
-    konsumierte Chunks). VAD bleibt aus (StreamTranscriber-Default:
-    vad=None - nur wenn eine engine gegeben ist, siehe Test 7).
+    Without an engine, inject FeedCountingTranscriber (counts consumed chunks).
+    VAD remains disabled (StreamTranscriber default: vad=None; an engine is
+    provided only in test 7).
     """
     if engine is not None:
-        # Echter StreamTranscriber: Intervall-Semantik der asr.py testen.
+        # Real StreamTranscriber: test asr.py interval semantics.
         return PushToTalkController(
             config=None,
             source_factory=lambda: (source or EmptyAudioSource()),
@@ -1499,17 +1488,17 @@ def make_wait_controller(
 
 
 class TestWaitForWork:
-    """Feature 4: Event-gesteuertes Aufwecken statt 20-ms-Polling.
+    """Feature 4: event-driven wakeup instead of 20ms polling.
 
-    wait_for_work() ersetzt time.sleep(0.02) in Application.run_forever():
-    In IDLE/FINALIZING blockt es bis zum naechsten Ereignis (Notify), in
-    RECORDING maximal bis zur naechsten Frist (neuer Chunk, No-Audio-
-    Timeout, Max-Dauer, Release/Finalisierung). Alle Tests arbeiten mit
-    begrenzten Deadlines und threading.Events - kein Pollen, kein Raten.
+    wait_for_work() replaces time.sleep(0.02) in Application.run_forever().
+    In IDLE/FINALIZING it blocks until the next event (notify); in RECORDING
+    it blocks at most until the next deadline (new chunk, no-audio timeout,
+    maximum duration, release/finalization). All tests use bounded deadlines
+    and threading.Events—no polling, no guessing.
     """
 
     def test_idle_blocks_until_start(self) -> None:
-        """Test 1: In IDLE blockt wait_for_work bis start_recording()."""
+        """Test 1: in IDLE, wait_for_work blocks until start_recording()."""
         ctrl = make_wait_controller()
         probe = WaitProbe(ctrl)
         probe.assert_blocked(timeout=0.5)
@@ -1519,16 +1508,16 @@ class TestWaitForWork:
         ctrl.abort()
 
     def test_capture_chunk_wakes_worker(self) -> None:
-        """Test 2: Nicht-leerer Queue-Put weckt den Worker (Capture-Pfad).
+        """Test 2: nonempty queue put wakes the worker (capture path).
 
-        Der put ist das Pendant zu _capture_loop; der zurueckgekehrte
-        Worker konsumiert den Chunk via run_once() genau einmal
-        (feed_count am FeedCountingTranscriber).
+        The put is equivalent to _capture_loop; the returning worker consumes
+        the chunk via run_once() exactly once (feed_count on
+        FeedCountingTranscriber).
         """
         ctrl = make_wait_controller()
         ctrl.start_recording()
         assert ctrl.state == ControllerState.RECORDING
-        ctrl._audio_queue.put(b"\x00" * 16000)  # simuliert Capture-put
+        ctrl._audio_queue.put(b"\x00" * 16000)  # simulate capture put
         probe = WaitProbe(ctrl)
         probe.assert_returned(timeout=2.0)
         ctrl.run_once()
@@ -1542,69 +1531,68 @@ class TestWaitForWork:
         ctrl.abort()
 
     def test_nonempty_queue_returns_without_notify(self) -> None:
-        """Test 3: Lost-Wakeup-Schutz - nicht-leere Queue vor dem Wait.
+        """Test 3: lost-wakeup guard—nonempty queue before waiting.
 
-        Das Notify zum put-Zeitpunkt ist bereits verstrichen: Die
-        Nicht-Leer-Pruefung VOR wait() macht die Rueckkehr trotzdem
-        sofort - ohne dieses Guard wuerde der Worker bis zur Frist
-        blocken (klassisches Lost-Wakeup).
+        The notification from put time has already passed: the nonempty check
+        BEFORE wait() still returns immediately. Without this guard, the worker
+        would block until the deadline (classic lost wakeup).
         """
         ctrl = make_wait_controller()
         ctrl.start_recording()
-        ctrl._audio_queue.put(b"\x00" * 16000)  # Notify ist vorbei
+        ctrl._audio_queue.put(b"\x00" * 16000)  # notification has passed
         probe = WaitProbe(ctrl)
         probe.assert_returned(timeout=2.0)
         ctrl.abort()
 
     def test_no_audio_timeout_wakes_and_aborts(self) -> None:
-        """Test 4: No-Audio-Frist weckt; der folgende Tick bricht ab.
+        """Test 4: no-audio deadline wakes; the following tick aborts.
 
-        start_recording setzt _last_audio_at = now: Die Wartezeit muss
-        mindestens _no_audio_timeout_s betragen. Ein abgeschlossenes
-        Timeout endet in IDLE (Abort-Pfad) und weckt danach den Worker.
+        start_recording sets _last_audio_at = now: the wait must be at least
+        _no_audio_timeout_s. A completed timeout ends in IDLE (abort path)
+        and then wakes the worker.
         """
         ctrl = make_wait_controller(no_audio_timeout_s=0.2)
         ctrl.start_recording()
         probe = WaitProbe(ctrl)
         probe.assert_returned(timeout=2.0)
-        # Geweckt nicht frueher als die Frist (Toleranz 50 ms; das alte
-        # 20-ms-Polling waere bereits nach ~20 ms zurueckgekehrt).
+        # Not woken before the deadline (50ms tolerance; the old 20ms polling
+        # would already have returned after ~20ms).
         woke_at = time.monotonic()
         assert woke_at >= ctrl._last_audio_at + ctrl._no_audio_timeout_s - 0.05, (
             f"wait_for_work() weckte nach {woke_at - ctrl._last_audio_at:.3f}s "
             "- vor der No-Audio-Frist"
         )
-        # Der naechste Live-Tick sieht die Ueberschreitung und bricht ab
-        # (Grenzfall: Wecken exakt zur Frist -> kurzer Nachtick erlaubt).
+        # The next live tick sees the timeout and aborts (edge case: wakeup exactly
+        # at the deadline -> a brief follow-up tick is allowed).
         deadline = time.monotonic() + 2.0
         while ctrl.state == ControllerState.RECORDING:
             ctrl.run_once()
             if ctrl.state == ControllerState.RECORDING:
-                ctrl.wait_for_work()  # Frist abgelaufen -> sofortige Rueckkehr
+                ctrl.wait_for_work()  # deadline expired -> immediate return
             assert time.monotonic() < deadline, (
                 "Abbruch nach No-Audio-Timeout blieb aus"
             )
         assert ctrl.state == ControllerState.IDLE
-        # Nach dem Abbruch blockt ein frischer Worker wieder bis zum
-        # naechsten Ereignis (abort notifiziert).
+        # After aborting, a fresh worker blocks again until the next event (abort
+        # sends a notification).
         probe2 = WaitProbe(ctrl)
         probe2.assert_blocked(timeout=0.3)
 
     def test_max_record_deadline_wakes(self) -> None:
-        """Test 5: Max-Dauer-Frist weckt den Worker termingerecht."""
+        """Test 5: maximum-duration deadline wakes the worker on time."""
         ctrl = make_wait_controller(max_record_s=0.3)
         ctrl.start_recording()
         probe = WaitProbe(ctrl)
         probe.assert_returned(timeout=2.0)
-        # Geweckt nicht frueher als die Frist (Toleranz 50 ms; das alte
-        # 20-ms-Polling waere bereits nach ~20 ms zurueckgekehrt).
+        # Not woken before the deadline (50ms tolerance; the old 20ms polling
+        # would already have returned after ~20ms).
         woke_at = time.monotonic()
         assert woke_at >= ctrl._started_at + ctrl._max_record_s - 0.05, (
             f"wait_for_work() weckte nach {woke_at - ctrl._started_at:.3f}s "
             "- vor der Max-Dauer-Frist"
         )
-        # Taste loslassen (Release nach dem Wecken): Die Finalisierung
-        # schliesst ab, OHNE automatischen Neustart (kein Geisterlauf).
+        # Release the key (release after wakeup): finalization completes WITHOUT an
+        # automatic restart (no ghost run).
         ctrl.stop_recording()
         _wait_state(ctrl, ControllerState.IDLE, timeout=5.0)
         assert ctrl._key_down is False
@@ -1613,7 +1601,7 @@ class TestWaitForWork:
         probe2.assert_blocked(timeout=0.3)
 
     def test_stop_recording_wakes_and_no_ghost_restart(self) -> None:
-        """Test 6: Release weckt; kein Autostart bei losgelassener Taste."""
+        """Test 6: release wakes; no autostart with a released key."""
         ctrl = make_wait_controller()
         ctrl.start_recording()
         probe = WaitProbe(ctrl)
@@ -1623,18 +1611,18 @@ class TestWaitForWork:
         _wait_state(ctrl, ControllerState.IDLE, timeout=5.0)
         assert ctrl._key_down is False
         assert ctrl.state == ControllerState.IDLE, "Geisteraufnahme gestartet"
-        # In IDLE ohne weiteres Ereignis blockt der Worker weiter.
+        # In IDLE without another event, the worker keeps blocking.
         probe2 = WaitProbe(ctrl)
         probe2.assert_blocked(timeout=0.3)
 
     def test_asr_interval_gating_intact(self) -> None:
-        """Test 7: Das interval_s-Gating der asr.py bleibt wirksam.
+        """Test 7: asr.py interval_s gating remains effective.
 
-        Das Gate zaehlt PUFFERsekunden (audio_seconds - _last_transcribed_at
-        < interval_s -> kein Engine-Call), nicht Wandzeit. Mehrere Wakeups
-        mit < interval_s NEUEM Audio loesen keinen zusaetzlichen Call aus,
-        danach (>= interval_s Pufferanteil) GENAU EINEN weiteren. Echter
-        StreamTranscriber + FakeEngine, 32000 Bytes = 1.0 s Audio.
+        The gate counts BUFFER seconds (audio_seconds - _last_transcribed_at
+        < interval_s -> no engine call), not wall time. Multiple wakeups with
+        < interval_s of NEW audio trigger no additional call; afterward
+        (>= interval_s buffered), EXACTLY ONE more. Real StreamTranscriber +
+        FakeEngine; 32000 bytes = 1.0s audio.
         """
         engine = FakeEngine()
         ctrl = make_wait_controller(
@@ -1644,16 +1632,16 @@ class TestWaitForWork:
         )
         ctrl.start_recording()
         try:
-            chunk = b"\x00" * 32000  # 1.0 s Audio
-            # Phase 1: Ersttranskription feuert sofort (min_audio_s reicht).
+            chunk = b"\x00" * 32000  # 1.0s audio
+            # Phase 1: first transcription fires immediately (min_audio_s is sufficient).
             ctrl._audio_queue.put(chunk)
             WaitProbe(ctrl).assert_returned(timeout=2.0)
             ctrl.run_once()
             assert engine.calls == 1, (
                 f"Erste Transkription fehlt (calls={engine.calls})"
             )
-            # Phase 2: < interval_s NEUES Audio -> Wakeup + Tick, aber
-            # KEIN weiterer Engine-Call (Gate haelt).
+            # Phase 2: < interval_s of NEW audio -> wakeup + tick, but NO
+            # additional engine call (gate holds).
             ctrl._audio_queue.put(b"\x00" * 3200)  # 0.1 s < 0.15 s
             WaitProbe(ctrl).assert_returned(timeout=2.0)
             ctrl.run_once()
@@ -1661,8 +1649,8 @@ class TestWaitForWork:
                 f"Intervall-Gating verletzt: {engine.calls} statt 1 "
                 "Calls bei < interval_s neuem Audio"
             )
-            # Phase 3: >= interval_s neues Audio -> GENAU EIN weiterer
-            # Call (auch mehrfaches Wecken darf nicht uebertranskribieren).
+            # Phase 3: >= interval_s of new audio -> EXACTLY ONE additional
+            # call (even repeated wakeups must not over-transcribe).
             ctrl._audio_queue.put(b"\x00" * 8000)  # 0.25 s > 0.15 s
             WaitProbe(ctrl).assert_returned(timeout=2.0)
             ctrl.run_once()
@@ -1674,12 +1662,12 @@ class TestWaitForWork:
             ctrl.abort()
 
     def test_release_responsive_during_live_inference(self) -> None:
-        """Test 8: Release bleibt bei blockierender Live-Inferenz ansprechbar.
+        """Test 8: release remains responsive during blocking live inference.
 
-        wait_for_work() darf nie unter _exec_lock laufen: Der wartende
-        Worker haelt sonst die Live-Inferenz (und damit jeden Release)
-        gefangen. BlockingEngine im Live-Tick; stop_recording() muss ohne
-        Warten auf die Inferenz zurueckkehren und die Quelle stoppen.
+        wait_for_work() must never run under _exec_lock: otherwise the waiting
+        worker traps live inference (and therefore every release). Use
+        BlockingEngine in a live tick; stop_recording() must return without
+        waiting for inference and stop the source.
         """
         engine = BlockingEngine()
         ctrl = make_wait_controller(
@@ -1695,7 +1683,7 @@ class TestWaitForWork:
         assert engine.entered.wait(timeout=2.0), (
             "Live-Inferenz nicht gestartet"
         )
-        # Release im Key-Thread: ohne Warten auf die Inferenz (STUFE 1).
+        # Release in the key thread: without waiting for inference (STAGE 1).
         t0 = time.monotonic()
         ctrl.stop_recording()
         elapsed = time.monotonic() - t0
@@ -1703,29 +1691,29 @@ class TestWaitForWork:
             f"stop_recording() wartete {elapsed:.3f}s - Release blockiert "
             "an der laufenden Inferenz"
         )
-        # Quelle wurde sofort gestoppt (obwohl die Inferenz noch laeuft).
+        # The source stopped immediately (even though inference is still running).
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline and ctrl._source is not None:
             time.sleep(0.005)
         assert ctrl._source is None, "Quelle nicht gestoppt"
-        # Inferenz freigeben: Live-Ergebnis wird verworfen (Post-Release-
-        # Discard), der Finalizer schliesst ab (fuettert Rest + finalize).
+        # Unblock inference: the live result is discarded (post-release discard), and
+        # the finalizer completes (feeds remainder + finalize).
         engine.release.set()
         _wait_state(ctrl, ControllerState.IDLE, timeout=5.0)
         assert engine.calls >= 1
         worker.join(timeout=2.0)
-        # Nach Abschluss blockt ein frischer Worker wieder sauber bis
-        # zum naechsten Ereignis (Finalizer-Ende notifiziert).
+        # After completion, a fresh worker blocks cleanly again until the next event
+        # (finalizer completion sends a notification).
         probe = WaitProbe(ctrl)
         probe.assert_blocked(timeout=0.3)
 
 
 # ---------------------------------------------------------------------------
-# Fertig-Signal (Betreiber 31.10., Kimi-Folgegutachten): nach abgeschlossener
-# Finalisierung spielt der Controller einen Ton — der Nutzer weiss endlich,
-# dass der Text fertig in der Zwischenablage liegt und pasten kann.
-# Semantik (Kimi): Ton NACH ausgelöstem Paste = 'Einfuegen ausgeloest';
-# bei Exceptions kein Ton (ehrliches Feedback, kein 'fertig' bei Fehler).
+# Completion signal (operator, October 31; Kimi follow-up review): after
+# finalization, the controller plays a sound so the user knows the text is ready
+# in the clipboard and can be pasted.
+# Semantics (Kimi): sound AFTER paste is triggered = 'paste triggered'; no sound
+# on exceptions (honest feedback, no 'done' on failure).
 # ---------------------------------------------------------------------------
 
 
@@ -1782,7 +1770,7 @@ class TestDoneSound:
         recorder = RecordingTranscriber()
         source = RestAudioSource([b"\x00" * 16000] * 4, rest=b"")
         ctrl = PushToTalkController(
-            config=Config(),  # done_sound Default '' = aus
+            config=Config(),  # done_sound default '' = off
             source_factory=lambda: source,
             engine=FakeEngine(),
             delta_typer=DeltaTyper(FakeTyper(), append_space=True),
@@ -1826,9 +1814,9 @@ class TestDoneSound:
 
 
 class TestDoneSoundAbsolutePath:
-    """done_sound darf ein absoluter Dateipfad sein (eigener Klang,
-    Betreiber 31.10.: freedesktop-'complete' ist zu hell — ein selbst
-    generierter, tiefer Klang liegt ausserhalb des Soundverzeichnisses)."""
+    """done_sound may be an absolute file path (custom sound;
+    operator, October 31: freedesktop 'complete' is too high-pitched—a custom
+    generated lower-pitched sound resides outside the sound directory)."""
 
     def test_absolute_path_used_verbatim(self, monkeypatch, tmp_path) -> None:
         import stt_button.controller as ctrl_mod

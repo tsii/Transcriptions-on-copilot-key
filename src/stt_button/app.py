@@ -1,7 +1,7 @@
-"""Verdrahtung: baut die Anwendung aus den Einzelteilen zusammen.
+"""Wiring: assembles the application from its individual parts.
 
-Trennt die Komposition von der eigentlichen Logik, damit der Hauptlauf
-testbar bleibt und die CLI schlank ist.
+Separates composition from the actual logic so that the main loop
+stays testable and the CLI stays lean.
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 
 
 class Application:
-    """Haelt den laufenden Dienst zusammen."""
+    """Holds the running service together."""
 
     def __init__(self, config: Config) -> None:
         self.config = config
@@ -40,7 +40,7 @@ class Application:
         self._engine = self._build_engine()
 
     def _build_engine(self):
-        """Baut die ASR-Engine anhand der Konfiguration."""
+        """Builds the ASR engine based on the configuration."""
         cfg = self.config
         backend = getattr(cfg, "backend", "whisper")
         if backend == "parakeet":
@@ -78,7 +78,7 @@ class Application:
                     capslock_led_inverted=self.config.capslock_led_inverted,
                 )
             except TyperError as exc:
-                log.warning("dotool nicht verfuegbar (%s) - Fallback auf wtype", exc)
+                log.warning("dotool not available (%s) - falling back to wtype", exc)
                 try:
                     return WtypeTyper()
                 except TyperError:
@@ -86,16 +86,17 @@ class Application:
         try:
             return WtypeTyper()
         except TyperError:
-            log.warning("wtype nicht verfuegbar - nutze Clipboard-Fallback")
+            log.warning("wtype not available - using clipboard fallback")
             return ClipboardTyper()
 
     def _build_controller(self) -> PushToTalkController:
         typer = self._build_typer()
         cfg = self.config
 
-        # Final-Delta-Paste nur bei explizitem Flag: dann wird das finale
-        # Delta per Zwischenablage eingefuegt statt zeichenweise getippt.
-        # Ohne Flag bleibt es beim bisherigen Verhalten (final_paster=None).
+        # Final-delta paste only with an explicit flag: then the final
+        # delta is inserted via the clipboard instead of being typed
+        # character by character. Without the flag the previous behavior
+        # stays (final_paster=None).
         final_paster = None
         if cfg.final_paste:
             final_paster = ClipboardPaster(
@@ -130,8 +131,8 @@ class Application:
                     vad=SileroVadGate(),
                 )
             if cfg.streaming_mode == "buffered":
-                # STUFE 3: Hybrid Volllpuffer (<= whole_buffer_until_s) ->
-                # bounded Fenster. NUR bei explizitem Flag aktiv.
+                # STAGE 3: hybrid whole-buffer (<= whole_buffer_until_s) ->
+                # bounded window. Only active with an explicit flag.
                 return BufferedTranscriber(
                     engine,
                     interval_s=interval_s,
@@ -152,11 +153,11 @@ class Application:
                 sample_rate=cfg.sample_rate,
                 commit_agreements=cfg.commit_agreements,
                 vad=SileroVadGate(),
-                # STUFE 1: "cached" ueberspringt den finalen Engine-Call bei
-                # unveraendertem Puffer; "full" = bisheriges Verhalten.
+                # STAGE 1: "cached" skips the final engine call on an
+                # unchanged buffer; "full" = previous behavior.
                 finalize_mode=cfg.finalize_mode,
-                # STUFE 3: Live-Ticks nach dieser Pufferlaenge einstellen
-                # (0.0 = immer aktiv, bisheriges Verhalten).
+                # STAGE 3: stop live ticks after this buffer length
+                # (0.0 = always active, previous behavior).
                 live_asr_until_s=cfg.live_asr_until_s,
             )
 
@@ -172,9 +173,9 @@ class Application:
         )
 
     def start(self) -> None:
-        """Startet Key-Listener und Controller und laedt das Modell warm."""
+        """Starts the key listener and controller and warms up the model."""
         device = resolve_device(self.config.input_device_name)
-        log.info("Ueberwache %s (%s) auf Tasten %s",
+        log.info("Watching %s (%s) for keys %s",
                  device.path, device.name, self.config.key_codes)
 
         self._controller = self._build_controller()
@@ -187,10 +188,10 @@ class Application:
         )
         self._listener.open()
 
-        # Key-Monitoring in einen eigenen Thread auslagern: Die ASR-Inferenz
-        # blockiert die Hauptschleife, aber Press/Release muessen trotzdem
-        # sofort verarbeitet werden, sonst geht das Loslassen der Taste
-        # waehrend der Transkription verloren.
+        # Offload key monitoring to its own thread: ASR inference blocks
+        # the main loop, but press/release must still be processed
+        # immediately, otherwise the key release during transcription
+        # would be lost.
         self._listener_thread = threading.Thread(
             target=self._listener.run,
             name="key-listener",
@@ -198,11 +199,11 @@ class Application:
         )
         self._listener_thread.start()
 
-        # Modell bereits jetzt warm laden, damit der erste Tastendruck
-        # ohne Ladeverzoegerung sofort transkribieren kann.
-        log.info("Lade Modell warm ...")
+        # Load the model warm already now so that the first key press
+        # can transcribe immediately without a loading delay.
+        log.info("Loading model warm ...")
         self._engine.load()
-        log.info("Bereit. Bitte Copilot-Taste halten und sprechen.")
+        log.info("Ready. Hold the Copilot key and speak.")
 
     def _on_press(self, _event) -> None:
         assert self._controller is not None
@@ -213,10 +214,10 @@ class Application:
         self._controller.stop_recording()
 
     def run_forever(self) -> None:
-        """Hauptschleife: Audio lesen und transkribieren.
+        """Main loop: read audio and transcribe.
 
-        Der Key-Listener laeuft in einem eigenen Thread, damit das Loslassen
-        auch waehrend einer langen ASR-Inferenz sofort verarbeitet wird.
+        The key listener runs in its own thread so that the release is
+        processed immediately even during a long ASR inference.
         """
         self.start()
         assert self._controller is not None
@@ -229,7 +230,7 @@ class Application:
             self.shutdown()
 
     def shutdown(self) -> None:
-        """Beendet alles sauber (idempotent)."""
+        """Shuts everything down cleanly (idempotent)."""
         if self._listener is not None:
             self._listener.close()
             self._listener = None
@@ -239,12 +240,12 @@ class Application:
 
 
 def run(config: Config) -> int:
-    """Startet den Dienst und blockiert bis SIGINT/SIGTERM."""
+    """Starts the service and blocks until SIGINT/SIGTERM."""
     app = Application(config)
 
-    # Sauberer Shutdown bei Signalen.
+    # Clean shutdown on signals.
     def _handle_signal(signum, _frame):
-        log.info("Signal %s erhalten - beende", signum)
+        log.info("Received signal %s - shutting down", signum)
         app.shutdown()
         raise SystemExit(0)
 

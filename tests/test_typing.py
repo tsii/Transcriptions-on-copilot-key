@@ -1,11 +1,10 @@
-"""Tests fuer die Delta-Ausgabe (TDD-Kette 2).
+"""Tests for delta output (TDD chain 2).
 
-Der DeltaTyper vergleicht aufeinanderfolgende Transkriptionen und gibt nur
-die Differenz aus. Korrigiert wird per Backspace.
+DeltaTyper compares consecutive transcriptions and outputs only the difference.
+Corrections use backspace.
 
-Grundregel: Es wird immer der *minimale* Rueckbau verwendet - es werden nur
-die Zeichen geloescht, die sich geaendert haben. Der committete (bereits
-endgueltige) Praefix wird nie angefasst.
+Core rule: always use the *minimal* rollback—delete only characters that
+changed. The committed (already final) prefix is never touched.
 """
 from __future__ import annotations
 
@@ -25,7 +24,7 @@ from stt_button.typing import (
 
 
 class FakeTyper:
-    """Zeichnet alle Aufrufe auf."""
+    """Record all calls."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, ...]] = []
@@ -65,8 +64,7 @@ class TestRevision:
         d.update("Hallo Weld")
         t.calls.clear()
         d.update("Hallo Welt")
-        # Minimaler Rueckbau: gemeinsamer Praefix ist "Hallo Wel",
-        # also wird nur "d" -> "t" getauscht.
+        # Minimal rollback: common prefix is "Hallo Wel", so only "d" -> "t" changes.
         assert t.calls == [("backspace", "1"), ("type", "t")]
 
     def test_longer_text_only_appends(self) -> None:
@@ -116,8 +114,8 @@ class TestCommittedPrefix:
         d = DeltaTyper(t)
         d.update("Hallo Welt", committed_len=6)
         t.calls.clear()
-        # Das Modell korrigiert das letzte Wort: "Welt" -> "Welz".
-        # Der committete Praefix "Hallo " bleibt unangetastet.
+        # The model corrects the last word: "Welt" -> "Welz".
+        # The committed prefix "Hallo " remains untouched.
         d.update("Hallo Welz", committed_len=6)
         assert t.calls == [("backspace", "1"), ("type", "z")]
 
@@ -126,8 +124,8 @@ class TestCommittedPrefix:
         d = DeltaTyper(t)
         d.update("Hallo Welt", committed_len=6)
         t.calls.clear()
-        # Das Modell verliert den committeten Praefix ("Hall" statt "Hallo ").
-        # Wir uebernehmen nichts davon, der committete Teil bleibt stehen.
+        # The model loses the committed prefix ("Hall" instead of "Hallo ").
+        # We accept none of that; the committed part remains in place.
         d.update("Hall", committed_len=6)
         assert all(c[0] != "type" for c in t.calls)
 
@@ -144,10 +142,10 @@ class TestCommittedPrefix:
         d = DeltaTyper(t)
         d.update("Hallo Welt", committed_len=11)
         t.calls.clear()
-        # Kompletter Widerspruch: committeter Text darf nicht geloescht werden.
+        # Complete contradiction: committed text must not be deleted.
         d.update("Ganz anders", committed_len=11)
-        # Der committete Bereich "Hallo Welt" (11 Zeichen) bleibt, nur der
-        # Rest wird angepasst - aber hier ist der Modelltext kuerzer.
+        # The committed region "Hallo Welt" (11 characters) remains; only the
+        # remainder is adjusted, but here the model text is shorter.
         assert not any(c == ("backspace", "11") for c in t.calls)
 
 
@@ -158,7 +156,7 @@ class TestRevisionLimit:
         d.update("Ein sehr langer Text der sich komplett geaendert hat")
         t.calls.clear()
         d.update("voellig anderer Text")
-        # Statt 40 Backspaces nur anhaengen (kein zerstoerender Rueckbau)
+        # Append instead of 40 backspaces (no destructive rollback)
         assert t.calls == [("type", "voellig anderer Text")]
 
     def test_short_revision_still_allowed(self) -> None:
@@ -206,9 +204,9 @@ class TestFinalize:
         d = DeltaTyper(t, append_space=False, max_revision_chars=5)
         d.update("Ein sehr langer Text der sich geaendert hat")
         t.calls.clear()
-        # Finale Korrektur darf auch >5 Zeichen zuruecknehmen, statt zu duplizieren
+        # Final correction may retract >5 characters instead of duplicating
         d.finalize("Ein komplett anderer Text")
-        # Es muss ein Backspace geben (Rueckbau) und KEIN Duplikat:
+        # There must be a backspace (rollback) and NO duplicate:
         assert any(c[0] == "backspace" for c in t.calls)
         assert ("type", "Ein komplett anderer Text") not in t.calls
 
@@ -218,16 +216,16 @@ class TestFinalize:
         d.update("Hallo Welt")
         t.calls.clear()
         d.finalize("")
-        # Eine leere Endausgabe loescht nichts - ein ASR-Fehler darf den
-        # bereits getippten Text nicht vernichten.
+        # Empty final output deletes nothing; an ASR error must not destroy text that
+        # has already been typed.
         assert t.calls == []
 
 
 class TestFinalPaste:
-    """Final-Delta-Paste: finalize() pastet nur das berechnete Delta."""
+    """Final delta paste: finalize() pastes only the calculated delta."""
 
     def test_live_update_never_pastes(self) -> None:
-        """Live-Updates bleiben beim Typer (dotool), niemals Paste waehrend der Aufnahme."""
+        """Live updates use the typer (dotool), never paste during recording."""
         t = FakeTyper()
         pastes: list[str] = []
 
@@ -243,7 +241,7 @@ class TestFinalPaste:
         assert t.typed == "Hallo Welt und mehr"
 
     def test_finalize_pastes_only_suffix_after_committed_prefix(self) -> None:
-        """"Hallo Welt" -> "Hallo Welt und mehr": nur " und mehr" wird gepastet."""
+        """"Hallo Welt" -> "Hallo Welt und mehr": only " und mehr" is pasted."""
         t = FakeTyper()
         pastes: list[str] = []
 
@@ -254,13 +252,13 @@ class TestFinalPaste:
         d = DeltaTyper(t, final_paster=Recorder())
         d.update("Hallo Welt", committed_len=0)
         d.finalize("Hallo Welt und mehr", committed_len=11)
-        # append_space=True (Default): Das Leerzeichen haengt direkt am
-        # Paste - KEIN separater Space-Key (Space-Microfix).
+        # append_space=True (default): the space is directly appended to the paste;
+        # NO separate space key (space microfix).
         assert pastes == [" und mehr "]
-        assert t.typed == "Hallo Welt"  # kein doppeltes Tippen des Suffixes
+        assert t.typed == "Hallo Welt"  # do not type the suffix twice
 
     def test_finalize_backspaces_before_pasting_revision_delta(self) -> None:
-        """"Weld" -> "Welt": backspace 1, dann paste "t" - keine Neu-Eingabe des Praefixes."""
+        """"Weld" -> "Welt": backspace 1, then paste "t"; do not retype the prefix."""
         t = FakeTyper()
         pastes: list[str] = []
 
@@ -272,13 +270,13 @@ class TestFinalPaste:
         d.update("Hallo Weld")
         t.calls.clear()
         d.finalize("Hallo Welt")
-        # append_space=True (Default): Backspace, dann Paste inklusive
-        # Leerzeichen - KEIN separater Space-Key (Space-Microfix).
+        # append_space=True (default): backspace, then paste including the space;
+        # NO separate space key (space microfix).
         assert t.calls == [("backspace", "1")]
         assert pastes == ["t "]
 
     def test_finalize_empty_delta_only_appends_space(self) -> None:
-        """Kein Delta (Text unveraendert) => kein Paste, nur Leerzeichen."""
+        """No delta (text unchanged) => no paste, only a space."""
         t = FakeTyper()
         pastes: list[str] = []
 
@@ -294,7 +292,7 @@ class TestFinalPaste:
         assert t.calls == [("key", "space")]
 
     def test_finalize_appends_space_after_paste(self) -> None:
-        """Das Leerzeichen kommt nach dem Paste - beide Aufrufe in richtiger Reihenfolge."""
+        """The space comes after the paste; both calls in the correct order."""
         t = FakeTyper()
         events: list[tuple[str, str]] = []
 
@@ -307,14 +305,13 @@ class TestFinalPaste:
         t.calls.clear()
         d.finalize("Hallo Welt")
         assert events == [("paste", " Welt ")]
-        # Das Leerzeichen ist IM Paste enthalten - KEIN separater Space-Key
-        # (kein doppeltes Leerzeichen).
+        # The space is included IN the paste; NO separate space key (no double space).
         assert t.calls == [], t.calls
 
     def test_finalize_append_space_with_paster_empty_delta_only_key_space(
         self,
     ) -> None:
-        """(BUG2/7) Paster + to_add LEER: Space weiterhin via key('space')."""
+        """(BUG2/7) Paster + EMPTY to_add: still use key('space') for space."""
         t = FakeTyper()
         events: list[tuple[str, str]] = []
 
@@ -330,7 +327,7 @@ class TestFinalPaste:
         assert t.calls == [("key", "space")], t.calls
 
     def test_finalize_append_space_without_paster_separate_space(self) -> None:
-        """(BUG2/8) Ohne Paster: getrennter Space bleibt (bestehendes Verhalten)."""
+        """(BUG2/8) Without paster: keep the separate space (existing behavior)."""
         t = FakeTyper()
         d = DeltaTyper(t, append_space=True)
         d.update("Hallo")
@@ -340,35 +337,35 @@ class TestFinalPaste:
 
 
 class TestClipboardPaster:
-    """ClipboardPaster: wl-copy + Paste-Chord mit Fallback auf type_text."""
+    """ClipboardPaster: wl-copy + paste chord with fallback to type_text."""
 
     def test_clipboard_paster_copies_delta_and_uses_configured_chord(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Copy via paste_binary, Chord aus paste_key (ctrl+shift+v), kein Restore."""
+        """Copy via paste_binary, chord from paste_key (ctrl+shift+v), no restore."""
         calls = _capture(monkeypatch)
         t = FakeTyper()
         p = ClipboardPaster(t, copy_binary="wl-copy", paste_key="ctrl+shift+v")
         p.paste(" und mehr")
         assert calls == [
             ["wl-copy", " und mehr"],
-            # Chord via den normalen Typer (dotool-Format: ctrl+shift+v)
+            # Chord via the normal typer (dotool format: ctrl+shift+v)
         ]
         assert t.calls == [("key", "ctrl+shift+v")]
-        # KEIN wl-paste, kein Zurueckspielen des alten Clipboard-Inhalts
+        # NO wl-paste, no restoration of the old clipboard content
         assert all("wl-paste" not in " ".join(c) for c in calls)
 
     def test_missing_or_failing_wl_copy_falls_back_without_key(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Fehlt wl-copy oder schlaegt der Copy fehl => type_text-Fallback, KEIN Paste-Chord."""
+        """If wl-copy is missing or copy fails => type_text fallback, NO paste chord."""
         t = FakeTyper()
         monkeypatch.setattr("stt_button.typing.shutil.which", lambda b: None)
         p = ClipboardPaster(t, copy_binary="wl-copy")
         p.paste(" und mehr")
-        assert t.calls == [("type", " und mehr")]  # Alter Pfad
+        assert t.calls == [("type", " und mehr")]  # Legacy path
 
-        # Copy schlaegt fehl (rc != 0) => ebenfalls type_text, kein Chord
+        # Copy fails (rc != 0) => also type_text, no chord
         t2 = FakeTyper()
         monkeypatch.setattr("stt_button.typing.shutil.which", lambda b: "/usr/bin/wl-copy")
 
@@ -386,7 +383,7 @@ class TestClipboardPaster:
         assert t2.calls == [("type", " und mehr")]
 
     def test_paste_key_failure_is_not_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Chord-Fehler nach erfolgreichem Copy: NICHT mit type_text wiederholen."""
+        """Chord error after successful copy: do NOT repeat with type_text."""
         t = FakeTyper()
         monkeypatch.setattr("stt_button.typing.shutil.which", lambda b: "/usr/bin/wl-copy")
         monkeypatch.setattr(
@@ -399,16 +396,15 @@ class TestClipboardPaster:
             raise TyperError("chord fehlgeschlagen")
 
         t.key = failing_key  # type: ignore[method-assign]
-        p.paste(" und mehr")  # darf NICHT werfen und NICHT tippen
+        p.paste(" und mehr")  # must NOT raise and MUST NOT type
         assert t.calls == []
 
 
 class TestFinalizeTrace:
-    """latency_trace-Tracepunkte in DeltaTyper.finalize() (Debug-Stufe).
+    """latency_trace trace points in DeltaTyper.finalize() (debug level).
 
-    Die Meldungen muessen auf DEBUG erscheinen und die Domino-Groessen
-    (zu loeschende/zu tippende Zeichen) nennen, damit die gefuehlte
-    Release-Latenz ohne Raten zerlegbar ist.
+    Messages must appear at DEBUG and include the domino sizes (characters to
+    delete/type) so perceived release latency can be analyzed without guessing.
     """
 
     def test_finalize_logs_rev_and_backspace(self, caplog) -> None:
@@ -454,12 +450,11 @@ class TestFinalizeTrace:
 
 
 class TestCommittedLiveMode:
-    """live_typing_mode='committed': Live nur den gesicherten Zuwachs tippen.
+    """live_typing_mode='committed': type only confirmed growth live.
 
-    Der unstabile Partial wird intern weitergefuehrt, aber NIE getippt oder
-    zurueckgetippt: kein Flackern, keine Live-Backspaces. finalize() rechnet
-    gegen den effektiv getippten Stand - to_remove==0, das Suffix kommt als
-    ein Paste (null Backspaces).
+    The unstable partial is tracked internally but NEVER typed or retracted:
+    no flicker, no live backspaces. finalize() computes against the effectively
+    typed state—to_remove==0, and the suffix is pasted once (zero backspaces).
     """
 
     def _committed(self, typer, **kwargs):
@@ -467,14 +462,14 @@ class TestCommittedLiveMode:
                           **kwargs)
 
     def test_partial_without_commit_types_nothing(self) -> None:
-        """(1) Partial ohne Commit -> keine Ausgabe."""
+        """(1) Partial without commit -> no output."""
         t = FakeTyper()
         d = self._committed(t)
         d.update("Hallo Welt", committed_len=0)
         assert t.calls == []
 
     def test_correction_before_commit_is_silent(self) -> None:
-        """(2) Korrektur vor Commit -> keine Ausgabe, keine Backspaces."""
+        """(2) Correction before commit -> no output, no backspaces."""
         t = FakeTyper()
         d = self._committed(t)
         d.update("Hallo Weld", committed_len=0)
@@ -482,14 +477,14 @@ class TestCommittedLiveMode:
         assert t.calls == []
 
     def test_commit_types_exactly_once(self) -> None:
-        """(3) Commit -> genau einmal tippen (bis zum committeten Praefix)."""
+        """(3) Commit -> type exactly once (up to the committed prefix)."""
         t = FakeTyper()
         d = self._committed(t)
         d.update("Hallo Welt und", committed_len=11)
         assert t.calls == [("type", "Hallo Welt ")]
 
     def test_next_commit_types_only_increment(self) -> None:
-        """(4) Naechster Commit -> nur der Zuwachs wird getippt."""
+        """(4) Next commit -> type only the growth."""
         t = FakeTyper()
         d = self._committed(t)
         d.update("Hallo Welt und", committed_len=11)
@@ -498,7 +493,7 @@ class TestCommittedLiveMode:
         assert t.calls == [("type", "und ")]
 
     def test_finalize_pastes_suffix_without_backspaces(self) -> None:
-        """(5) Finaltext 'Hallo Welt und mehr' -> null Backspaces, paste(' und mehr')."""
+        """(5) Final text 'Hallo Welt und mehr' -> zero backspaces, paste(' und mehr')."""
         t = FakeTyper()
         pastes: list[str] = []
 
@@ -514,7 +509,7 @@ class TestCommittedLiveMode:
         assert not any(c[0] == "backspace" for c in t.calls), t.calls
 
     def test_no_live_commits_pastes_full_final_once(self) -> None:
-        """(6) Null Live-Commits -> kompletter Finaltext genau einmal gepastet."""
+        """(6) Zero live commits -> paste the complete final text exactly once."""
         t = FakeTyper()
         pastes: list[str] = []
 
@@ -523,7 +518,7 @@ class TestCommittedLiveMode:
                 pastes.append(text)
 
         d = self._committed(t, final_paster=Recorder())
-        d.update("Hallo Welt", committed_len=0)   # nie committet
+        d.update("Hallo Welt", committed_len=0)   # never committed
         d.update("Hallo Welt und", committed_len=0)
         d.finalize("Hallo Welt und mehr")
         assert pastes == ["Hallo Welt und mehr"]
@@ -531,8 +526,8 @@ class TestCommittedLiveMode:
         assert not any(c[0] == "type" for c in t.calls), t.calls
 
     def test_empty_final_and_committed_change_protections_stay(self) -> None:
-        """(7) Schutz: leerer Finaltext loescht nichts; weicht das Modell im
-        committeten Bereich ab, gewinnt die alte Fassung (kein Zuruecktippen)."""
+        """(7) Guard: empty final text deletes nothing; if the model differs in
+        the committed region, the old version wins (no retraction)."""
         t = FakeTyper()
         d = self._committed(t)
         d.update("Hallo Welt und", committed_len=10)
@@ -540,8 +535,8 @@ class TestCommittedLiveMode:
         d.finalize("")
         assert t.calls == []
 
-        # committed-Praefix-Abweichung im Finaltext: alter getippter Praefix
-        # gewinnt, nur das Suffix wird als Delta gepastet - null Backspaces.
+        # Committed-prefix difference in final text: the old typed prefix wins; only
+        # the suffix is pasted as a delta—zero backspaces.
         pastes: list[str] = []
 
         class Recorder:
@@ -557,9 +552,9 @@ class TestCommittedLiveMode:
         assert not any(c[0] == "backspace" for c in t2.calls), t2.calls
 
     def test_default_full_is_previous_behaviour(self) -> None:
-        """(8) Default 'full' = exakt bisheriges Verhalten (Partial live tippen)."""
+        """(8) Default 'full' = exactly the previous behavior (type partial live)."""
         t = FakeTyper()
-        d = DeltaTyper(t, append_space=False)  # kein live_typing_mode -> full
+        d = DeltaTyper(t, append_space=False)  # no live_typing_mode -> full
         d.update("Hallo Weld")
         assert t.calls == [("type", "Hallo Weld")]
         t.calls.clear()
@@ -569,15 +564,15 @@ class TestCommittedLiveMode:
 
 
 class TestPauseIndicator:
-    """STUFE 4: Pausen-Indikator, wenn die Live-ASR wegen des Limits abschaltet.
+    """STAGE 4: pause indicator when live ASR stops due to the limit.
 
-    ``show_paused()`` tippt den Indikator (``PAUSE_INDICATOR``) GENAU EINMAL
-    als echten getippten Stand (``_last_text`` wird verlaengert), sodass
-    die bestehende finalize()-Differenz ihn automatisch wieder entfernt.
+    ``show_paused()`` types the indicator (``PAUSE_INDICATOR``) EXACTLY ONCE
+    as actual typed state (extends ``_last_text``), so the existing finalize()
+    diff automatically removes it again.
     """
 
     def test_show_paused_types_indicator_exactly_once(self) -> None:
-        """(1) Indikator genau einmal tippen, erneuter Aufruf ist No-Op."""
+        """(1) Type the indicator exactly once; a repeated call is a no-op."""
         from stt_button.typing import PAUSE_INDICATOR
 
         t = FakeTyper()
@@ -585,15 +580,15 @@ class TestPauseIndicator:
         d.update("Hallo Welt")
         t.calls.clear()
         d.show_paused()
-        d.show_paused()  # idempotent: kein Doppeltippen
+        d.show_paused()  # idempotent: no duplicate typing
         assert t.calls == [("type", PAUSE_INDICATOR)], t.calls
-        # ASCII: drei Punkte (dotool kann U+2026 im de/nodeadkeys-Layout
-        # NICHT tippen - Ground-Truth-Experiment vom 11:36-Realtest).
+        # ASCII: three periods (dotool CANNOT type U+2026 in the de/nodeadkeys layout;
+        # ground-truth experiment from the 11:36 real test).
         assert PAUSE_INDICATOR == "..."
         assert len(PAUSE_INDICATOR) == 3
 
     def test_finalize_removes_indicator_and_pastes_suffix(self) -> None:
-        """(2) finalize: Diff entfernt den Indikator (3 Backspaces), Suffix ohne Rest."""
+        """(2) finalize: diff removes the indicator (3 backspaces), suffix without remainder."""
         from stt_button.typing import PAUSE_INDICATOR
 
         t = FakeTyper()
@@ -604,17 +599,17 @@ class TestPauseIndicator:
                 pastes.append(text)
 
         d = DeltaTyper(t, append_space=False, final_paster=Recorder())
-        d.update("Hallo Welt", committed_len=0)  # Modus 'full'
+        d.update("Hallo Welt", committed_len=0)  # mode 'full'
         d.show_paused()
         t.calls.clear()
         d.finalize("Hallo Welt und mehr")
-        # Nur der Indikator (3 Zeichen '...') wird zurueckgenommen:
+        # Only the indicator (3 characters, '...') is retracted:
         assert t.calls == [("backspace", str(len(PAUSE_INDICATOR)))], t.calls
         assert pastes == [" und mehr"]
         assert all(PAUSE_INDICATOR not in p for p in pastes)
 
     def test_finalize_without_paster_types_suffix_after_backspace(self) -> None:
-        """(2b) Ohne final_paster: Backspace(3), dann Suffix zeichenweise tippen."""
+        """(2b) Without final_paster: backspace(3), then type the suffix character by character."""
         from stt_button.typing import PAUSE_INDICATOR
 
         t = FakeTyper()
@@ -629,7 +624,7 @@ class TestPauseIndicator:
         ], t.calls
 
     def test_finalize_empty_keeps_indicator(self) -> None:
-        """(3) Leerer final_text: Indikator bleibt stehen, keine Ausgabe."""
+        """(3) Empty final_text: leave the indicator in place, no output."""
         from stt_button.typing import PAUSE_INDICATOR
 
         t = FakeTyper()
@@ -639,11 +634,11 @@ class TestPauseIndicator:
         t.calls.clear()
         d.finalize("")
         assert t.calls == [], t.calls
-        # Ehrlicher Zustand: Indikator bleibt am Cursor (und im Stand).
+        # Honest state: the indicator remains at the cursor (and in the state).
         assert d.last_text.endswith(PAUSE_INDICATOR)
 
     def test_reset_clears_pause_state(self) -> None:
-        """(4) reset() loescht die Indikator-Markierung (naechste Aufnahme sauber)."""
+        """(4) reset() clears the indicator state (clean next recording)."""
         from stt_button.typing import PAUSE_INDICATOR
 
         t = FakeTyper()
@@ -655,7 +650,7 @@ class TestPauseIndicator:
         assert t.calls == [("type", PAUSE_INDICATOR)], t.calls
 
     def test_committed_mode_same_mechanics(self) -> None:
-        """(6) live_typing_mode='committed': gleiche Mechanik, 3 Backspaces."""
+        """(6) live_typing_mode='committed': same mechanics, 3 backspaces."""
         from stt_button.typing import PAUSE_INDICATOR
 
         t = FakeTyper()
@@ -675,22 +670,20 @@ class TestPauseIndicator:
         t.calls.clear()
         d.finalize("Hallo Welt und mehr")
         assert t.calls == [("backspace", str(len(PAUSE_INDICATOR)))], t.calls
-        # Der Indikator haengt direkt an "Hallo Welt" (kein Leerzeichen
-        # dazwischen) -> gemeinsamer Praefix leer, ganzes Suffix gepastet.
+        # The indicator directly follows "Hallo Welt" (no space between) -> empty
+        # common prefix, entire suffix pasted.
         assert pastes == [" und mehr"]
 
     def test_indicator_dots_collision_real_text(self) -> None:
-        """(9) Indikator '...' vs. echte Punkte: kein Text-Fressen, kein Rest.
+        """(9) Indicator '...' vs. real periods: no swallowed text, no remainder.
 
-        Grund-Truth-Kante: Getippter Stand ist 'Hallo' + Indikator '...',
-        finaler Text 'HalloWelt.' endet auf ECHTEM Punkt. Die Differenz
-        rechnet praefixbasiert (common prefix von 'Hallo...' vs.
-        'HalloWelt.'): 'Hallo' bleibt stehen, die drei Indikator-Punkte
-        werden per Backspace(3) entfernt, 'Welt.' WIRD KOMPLETT neu
-        getippt/gepastet - inklusive des echten Punkts am Ende. Der
-        gemeinsame Praefix endet VOR den Punkten (punkt 6 von 'HalloWelt.'
-        ist 'W', nicht '.'), also kann die Diff keine echten Punkte
-        'fressen': to_remove zaehlt NUR den Indikator-Rest.
+        Ground-truth edge: typed state is 'Hallo' + indicator '...'; final text
+        'HalloWelt.' ends with a REAL period. The prefix-based diff (common
+        prefix of 'Hallo...' vs. 'HalloWelt.') keeps 'Hallo', removes the three
+        indicator periods via backspace(3), and types/pastes 'Welt.' COMPLETELY,
+        including the real final period. The common prefix ends BEFORE the
+        periods (character 6 of 'HalloWelt.' is 'W', not '.'), so the diff
+        cannot swallow real periods: to_remove counts ONLY the indicator tail.
         """
         from stt_button.typing import PAUSE_INDICATOR
 
@@ -703,23 +696,22 @@ class TestPauseIndicator:
                 pastes.append(text)
 
         d = DeltaTyper(t, append_space=False, final_paster=Recorder())
-        d.update("Hallo", committed_len=0)  # Modus 'full'
-        d.show_paused()  # tippt '...' -> Stand 'Hallo...'
+        d.update("Hallo", committed_len=0)  # mode 'full'
+        d.show_paused()  # type '...' -> state 'Hallo...'
         t.calls.clear()
         d.finalize("HalloWelt.")
-        # Exakt der Indikator (3 Punkte) wird zurueckgenommen, NICHT mehr:
+        # Exactly the indicator (3 periods) is retracted, NO more:
         assert t.calls == [("backspace", "3")], t.calls
-        # 'Welt.' als GANZES gepastet - der echte Punkt bleibt erhalten:
+        # 'Welt.' pasted as a WHOLE; the real period is preserved:
         assert pastes == ["Welt."], pastes
         assert d.last_text == "HalloWelt.", d.last_text
 
     def test_indicator_before_real_sentence_with_dots(self) -> None:
-        """(10) Exakte Kante aus dem Bugfix-Auftrag: letzter getippter Text
-        '... ', final '...und so weiter' - der gemeinsame Praefix '...'
-        deckt die Punkte ab, NUR der Unterschied (das Leerzeichen) wird
-        per Backspace entfernt und 'und so weiter' gepastet. KEIN echter
-        Punkt wird gefressen: die Diff ist praefixbasiert, zurueckgenommen
-        wird ausschliesslich old_tail[common:].
+        """(10) Exact edge from the bugfix request: last typed text '... ',
+        final '...und so weiter'. The common prefix '...' covers the periods;
+        ONLY the difference (the space) is removed via backspace, and
+        'und so weiter' is pasted. NO real period is swallowed: the diff is
+        prefix-based and retracts exclusively old_tail[common:].
         """
         from stt_button.typing import PAUSE_INDICATOR
 
@@ -732,42 +724,41 @@ class TestPauseIndicator:
 
         d = DeltaTyper(t, append_space=False, final_paster=Recorder())
         d.update("", committed_len=0)
-        d.show_paused()  # tippt '...' -> Stand '...'
-        # Letzter committeter/live getippter Text war '... ' (Indikator
-        # plus Leerzeichen): Stand per normalem update()-Pfaf:
+        d.show_paused()  # type '...' -> state '...'
+        # Last committed/live typed text was '... ' (indicator plus space); state via
+        # the normal update() path:
         d.update("... ", committed_len=0)
         assert d.last_text == "... ", d.last_text
         t.calls.clear()
         d.finalize("...und so weiter")
-        # Common prefix von '... ' vs. '...und so weiter' ist '...' (3):
-        # to_remove == 1 (nur das Leerzeichen), Rest als Paste.
+        # Common prefix of '... ' vs. '...und so weiter' is '...' (3):
+        # to_remove == 1 (only the space), remainder pasted.
         assert t.calls == [("backspace", "1")], t.calls
-        # Kein echter Text gefressen: die Punkte bleiben, Suffix ab 'und'.
+        # No real text swallowed: periods remain, suffix starts at 'und'.
         assert pastes == ["und so weiter"], pastes
         assert d.last_text == "...und so weiter", d.last_text
 
     def test_final_dots_equal_indicator_is_noop(self) -> None:
-        """(11b) Stoerste Kollisionskette ueberhaupt: finaler Text endet
-        SELBST auf '...' - deckungsgleich mit dem Indikator. Die Diff ist
-        ein No-Op (common prefix == ganze Laenge): kein Backspace, kein
-        Paste, keine echten Punkte angefasst.
+        """(11b) Most disruptive collision chain: the final text itself ends
+        with '...', identical to the indicator. The diff is a no-op (common
+        prefix == full length): no backspace, no paste, no real periods touched.
         """
         from stt_button.typing import PAUSE_INDICATOR
 
         t = FakeTyper()
         d = DeltaTyper(t, append_space=False)
         d.update("Hallo Welt", committed_len=0)
-        d.show_paused()  # Stand 'Hallo Welt...'
+        d.show_paused()  # state 'Hallo Welt...'
         t.calls.clear()
-        d.finalize("Hallo Welt...")  # echter Text endet zufaellig auf '...'
+        d.finalize("Hallo Welt...")  # real text happens to end with '...'
         assert t.calls == [], t.calls
         assert d.last_text == "Hallo Welt...", d.last_text
 
     def test_final_text_ending_with_dots_after_indicator(self) -> None:
-        """(11) Kollisionskante: finaler Text ENDET selbst auf '...' -
-        der gemeinsame Praefix verlaengert sich dann UEBER den Indikator
-        hinaus (bis min(len(old), len(new))), to_remove==0, nichts wird
-        zurueckgenommen und der Resttext unveraendert gepastet.
+        """(11) Collision edge: final text itself ENDS with '...'. The common
+        prefix then extends BEYOND the indicator (up to min(len(old), len(new))),
+        to_remove==0, nothing is retracted, and the remaining text is pasted
+        unchanged.
         """
         from stt_button.typing import PAUSE_INDICATOR
 
@@ -780,12 +771,12 @@ class TestPauseIndicator:
 
         d = DeltaTyper(t, append_space=False, final_paster=Recorder())
         d.update("Hallo Welt", committed_len=0)
-        d.show_paused()  # Stand 'Hallo Welt...'
+        d.show_paused()  # state 'Hallo Welt...'
         t.calls.clear()
         d.finalize("Tschuess...")
-        # Common prefix: 'Hallo Welt...' vs. 'Tschuess...' -> '' ->
-        # Backspace(13) nimmt ALLES zurueck (volle finale Korrektur,
-        # force_revision-Semantik in finalize), dann alles neu pasten.
+        # Common prefix: 'Hallo Welt...' vs. 'Tschuess...' -> '' -> backspace(13)
+        # retracts EVERYTHING (full final correction, force_revision semantics
+        # in finalize), then paste everything anew.
         assert t.calls == [("backspace", "13")], t.calls
         assert pastes == ["Tschuess..."], pastes
         assert d.last_text == "Tschuess...", d.last_text
@@ -810,13 +801,13 @@ def _capture(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
         return subprocess_result()
 
     monkeypatch.setattr("stt_button.typing.subprocess.run", fake_run)
-    # CapsLock-LED "aus" = keine Diagnose-Warnung, kein Toggle.
+    # CapsLock LED "off" = no diagnostic warning, no toggle.
     monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "aus")
     return calls
 
 
 def _capture_stdin(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Zeichnet den stdin-Payload statt des Returncodes auf."""
+    """Record the stdin payload instead of the return code."""
     stdin: list[str] = []
 
     def fake_run(cmd, *args, **kwargs):
@@ -824,7 +815,7 @@ def _capture_stdin(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         return subprocess_result()
 
     monkeypatch.setattr("stt_button.typing.subprocess.run", fake_run)
-    # CapsLock-LED "aus" = keine Diagnose-Warnung, kein Toggle.
+    # CapsLock LED "off" = no diagnostic warning, no toggle.
     monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "aus")
     return stdin
 
@@ -945,7 +936,7 @@ class TestDotoolTyper:
             DotoolTyper()
 
     def test_dotool_env_sets_de_nodeadkeys(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """dotool bekommt DOTOOL_XKB_LAYOUT=de und VARIANT=nodeadkeys in der Env."""
+        """dotool receives DOTOOL_XKB_LAYOUT=de and VARIANT=nodeadkeys in its env."""
         captured: dict[str, object] = {}
         stdin: list[str] = []
 
@@ -965,18 +956,18 @@ class TestDotoolTyper:
 
 class TestAppendTrap:
     def test_large_revision_replaces_when_anchor_matches(self) -> None:
-        """Fix D: Grosse Revision mit passendem committed-Anker -> ersetzen, nicht anhaengen."""
+        """Fix D: large revision with matching committed anchor -> replace, not append."""
         t = FakeTyper()
         d = DeltaTyper(t, append_space=False, max_revision_chars=60)
-        # Langer Text mit committed-Prefix
+        # Long text with committed prefix
         d.update("Das ist der Anfang eines sehr langen Textes mit vielen Woertern hier", committed_len=20)
         t.calls.clear()
-        # Neue Fassung: gleicher committed-Prefix (20 Zeichen), aber langer Tail geaendert
+        # New version: same committed prefix (20 characters), but long tail changed
         new = "Das ist der Anfang voellig anderer weiterer Text hier und noch mehr"
         d.update(new, committed_len=20)
-        # Es MUSS zurueckgenommen werden (kein blindes Anhaengen des neuen Tails)
+        # It MUST be retracted (do not blindly append the new tail)
         assert any(c[0] == "backspace" for c in t.calls)
-        # Und der neue Tail muss dem revidierten Rest entsprechen (ab common prefix)
+        # The new tail must match the revised remainder (from the common prefix)
         typed = "".join(c[1] for c in t.calls if c[0] == "type")
         assert typed != ""
         assert "anderer weiterer Text" in typed
@@ -984,7 +975,7 @@ class TestAppendTrap:
 
 class TestCapslockDiagnostics:
     def test_capslock_state_returns_valid_value(self) -> None:
-        """Diagnose-Funktion liefert 'an', 'aus' oder '?' (nie Exception)."""
+        """Diagnostic function returns 'on', 'off', or '?' (never raises)."""
         from stt_button.typing import _capslock_state
         assert _capslock_state() in ("an", "aus", "?")
 
@@ -994,7 +985,7 @@ class TestCapslockDiagnostics:
         assert _capslock_state() == "?"
 
     def test_capslock_leds_per_device(self, monkeypatch) -> None:
-        """_capslock_leds() liefert pro Device-Name den Wert 'an'/'aus'/'?'."""
+        """_capslock_leds() returns 'on'/'off'/'?' for each device name."""
         import builtins
         from stt_button.typing import _capslock_leds
 
@@ -1007,7 +998,7 @@ class TestCapslockDiagnostics:
         contents = {
             paths[0]: "1",
             paths[1]: "0",
-            paths[2]: "\n",  # unlesbar/unbekannt -> "?"
+            paths[2]: "\n",  # unreadable/unknown -> "?"
         }
         real_open = builtins.open
 
@@ -1027,7 +1018,7 @@ class TestCapslockDiagnostics:
         }
 
     def test_send_diagnose_mentions_unreliable_state(self, monkeypatch, caplog) -> None:
-        """Der Diagnose-Log enthaelt den Hinweis 'LED ist kein verlaesslicher State'."""
+        """The diagnostic log contains the unreliable-LED-state warning."""
         import logging as _l
         monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "aus")
         monkeypatch.setattr(
@@ -1037,10 +1028,10 @@ class TestCapslockDiagnostics:
         with caplog.at_level(_l.WARNING, logger="stt_button.typing"):
             DotoolTyper().type_text("Test")
         messages = [r.message for r in caplog.records]
-        assert any("kein verlaesslicher State" in m or "LED != State" in m for m in messages), messages
+        assert any("LED is not a reliable state" in m for m in messages), messages
 
     def test_send_logs_capslock_when_active(self, monkeypatch, caplog) -> None:
-        """Wenn CapsLock aktiv ist (LED aus, invertiert), wird eine Warnung geloggt."""
+        """When CapsLock is active (LED off, inverted), a warning is logged."""
         import logging as _l
         monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "aus")
         calls = []
@@ -1054,11 +1045,11 @@ class TestCapslockDiagnostics:
 
 
 class TestCapslockReset:
-    """Standard: CapsLock wird NIE getoggelt, nur gewarnt.
+    """Default: NEVER toggle CapsLock, only warn.
 
-    Ground Truth (empirisch belegt auf diesem System): LED **aus** =
-    CapsLock aktiv = invertierter Text; LED **an** = normale Schreibung.
-    Die LED-Semantik ist also INVERTIERT zur ueblichen Konvention.
+    Empirically verified ground truth on this system: LED **off** = CapsLock
+    active = inverted text; LED **on** = normal typing. LED semantics are
+    therefore INVERTED relative to the usual convention.
     """
 
     def _capture_payloads(self, monkeypatch) -> list[str]:
@@ -1070,7 +1061,7 @@ class TestCapslockReset:
         return payloads
 
     def _led_sequence(self, monkeypatch, states: list[str]) -> None:
-        """Liefert die Zustaende der Reihe nach; danach bleibt der letzte."""
+        """Return states in sequence; thereafter, keep returning the last one."""
         seq = iter(states)
         last = states[-1]
         monkeypatch.setattr(
@@ -1078,7 +1069,7 @@ class TestCapslockReset:
         )
 
     def test_default_never_toggles_even_when_led_off(self, monkeypatch) -> None:
-        """LED aus (= invertiert, CapsLock aktiv) -> im Default KEIN Toggle."""
+        """LED off (= inverted, CapsLock active) -> NO toggle by default."""
         monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "aus")
         payloads = self._capture_payloads(monkeypatch)
         DotoolTyper().type_text("Das")
@@ -1086,7 +1077,7 @@ class TestCapslockReset:
         assert any("type Das" in p for p in payloads), payloads
 
     def test_default_warns_when_led_off(self, monkeypatch, caplog) -> None:
-        """Bei aktivem CapsLock (LED aus, invertiert) wird gewarnt."""
+        """Warn when CapsLock is active (LED off, inverted)."""
         import logging as _l
         monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "aus")
         self._capture_payloads(monkeypatch)
@@ -1096,21 +1087,21 @@ class TestCapslockReset:
         assert any("CapsLock" in m for m in messages), messages
 
     def test_autocorrect_inverted_toggles_when_led_off(self, monkeypatch) -> None:
-        """inverted=True: LED aus ist CapsLock aktiv -> Ziel 'an' -> toggle."""
+        """inverted=True: LED off means CapsLock active -> target 'on' -> toggle."""
         self._led_sequence(monkeypatch, ["aus", "an"])
         payloads = self._capture_payloads(monkeypatch)
         DotoolTyper(capslock_autocorrect=True, capslock_led_inverted=True).type_text("Das")
         assert any("key capslock" in p for p in payloads), payloads
 
     def test_autocorrect_conventional_toggles_when_led_on(self, monkeypatch) -> None:
-        """inverted=False: LED an ist CapsLock aktiv -> Ziel 'aus' -> toggle."""
+        """inverted=False: LED on means CapsLock active -> target 'off' -> toggle."""
         self._led_sequence(monkeypatch, ["an", "aus"])
         payloads = self._capture_payloads(monkeypatch)
         DotoolTyper(capslock_autocorrect=True, capslock_led_inverted=False).type_text("Das")
         assert any("key capslock" in p for p in payloads), payloads
 
     def test_autocorrect_inverted_led_on_sends_no_toggle(self, monkeypatch) -> None:
-        """inverted=True, LED an = bereits normal -> kein Toggle."""
+        """inverted=True, LED on = already normal -> no toggle."""
         monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "an")
         payloads = self._capture_payloads(monkeypatch)
         DotoolTyper(capslock_autocorrect=True, capslock_led_inverted=True).type_text("Das")
@@ -1118,12 +1109,12 @@ class TestCapslockReset:
         assert any("type Das" in p for p in payloads)
 
     def test_autocorrect_gives_up_after_two_attempts(self, monkeypatch) -> None:
-        """Toggeln ist nicht verifizierbar -> nach 2 Versuchen aufgeben."""
+        """Toggle cannot be verified -> give up after 2 attempts."""
         self._led_sequence(monkeypatch, ["aus", "aus", "aus"])
         payloads = self._capture_payloads(monkeypatch)
         DotoolTyper(capslock_autocorrect=True, capslock_led_inverted=True).type_text("Das")
         assert sum("key capslock" in p for p in payloads) == 2, payloads
-        # Der Text wird trotzdem getippt (Diktat darf nicht ausfallen).
+        # The text is typed anyway (dictation must not be dropped).
         assert any("type Das" in p for p in payloads)
 
     def test_unknown_state_never_toggles(self, monkeypatch) -> None:
@@ -1135,40 +1126,40 @@ class TestCapslockReset:
 
 
 class TestSubprocessHaertung:
-    """Haertung gegen den Daemon-Pipe-Hang (final_paste-Freeze).
+    """Hardening against the daemon pipe hang (final_paste freeze).
 
-    Root Cause: ``wl-copy`` forked einen residenten Daemon-Prozess und
-    vererbt diestdout/stderr-Pipe-FDs an ENKEL-Prozesse. ``subprocess.run``
-    mit ``capture_output=True`` (implizit ohne Timeout) wartet in
-    ``communicate()`` auf EOF dieser Pipes - das kommt nie, also haengt
-    der Finalizer-Thread fuer immer und der Dienst friert ein.
+    Root cause: ``wl-copy`` forks a resident daemon process and inherits the
+    stdout/stderr pipe FDs to GRANDCHILD processes. ``subprocess.run`` with
+    ``capture_output=True`` (implicitly without a timeout) waits in
+    ``communicate()`` for EOF on these pipes; it never arrives, so the
+    finalizer thread hangs forever and the service freezes.
 
-    Fix: ``_run()`` nutzt DEVNULL fuer alle drei FDs und ein Timeout;
-    ``DotoolTyper._send_raw`` behaelt capture_output (dotool forked
-    nicht), bekommt aber ein payload-abhaengiges Timeout.
+    Fix: ``_run()`` uses DEVNULL for all three FDs and a timeout;
+    ``DotoolTyper._send_raw`` retains capture_output (dotool does not fork)
+    but receives a payload-dependent timeout.
     """
 
     def _make_paster_with_blocking_copy(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> tuple[ClipboardPaster, FakeTyper]:
-        """Erzeugt einen Paster, dessen wl-copy wie ein Daemon haengt.
+        """Create a paster whose wl-copy hangs like a daemon.
 
-        Der Fake simuliert ``wl-copy`` VOR der Haertung: ein subprocess.run
-        OHNE ``timeout``-Kwarg blockiert fuer immer (Event wird nie gesetzt).
-        Ein Aufruf MIT ``timeout`` blockiert nur kurz und wirft
-        ``TimeoutExpired`` - dann greift der Timeout-Fallback.
+        The fake simulates ``wl-copy`` BEFORE hardening: subprocess.run WITHOUT
+        a ``timeout`` kwarg blocks forever (the event is never set). A call
+        WITH ``timeout`` blocks only briefly and raises ``TimeoutExpired``;
+        then the timeout fallback applies.
         """
         entered = threading.Event()
-        never = threading.Event()  # wird nie gesetzt -> unendliches Blocken
+        never = threading.Event()  # never set -> blocks indefinitely
 
         def fake_run(cmd, *args, **kwargs):
             entered.set()
             if "timeout" in kwargs and kwargs["timeout"] is not None:
-                # Haertung aktiv: kurz warten, dann wie subprocess werfen.
+                # Hardening active: wait briefly, then raise like subprocess.
                 raise subprocess.TimeoutExpired(cmd, timeout=kwargs["timeout"])
-            # Vor der Haertung: fuer immer blocken (kein Timeout-Kwarg).
+            # Before hardening: block forever (no timeout kwarg).
             never.wait(10.0)
-            raise AssertionError("unreachable")  # nur zur Sicherheit
+            raise AssertionError("unreachable")  # just as a safeguard
 
         monkeypatch.setattr("stt_button.typing.subprocess.run", fake_run)
         monkeypatch.setattr(
@@ -1182,34 +1173,34 @@ class TestSubprocessHaertung:
     def test_blocking_copy_does_not_freeze_paste(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Freeze-Repro: haengendes wl-copy darf paste() nicht blockieren.
+        """Freeze reproduction: hanging wl-copy must not block paste().
 
-        Reproduziert den final_paste-Freeze: Ohne Timeout in ``_run()``
-        wuerde der Daemon-Pipe-Hang paste() fuer immer blockieren. Nach der
-        Haertung wirft das Timeout einen TyperError und der Fallback tippt
-        das Delta zeichenweise via type_text.
+        Reproduces the final_paste freeze: without a timeout in ``_run()``,
+        the daemon pipe hang would block paste() forever. After hardening,
+        the timeout raises TyperError and the fallback types the delta
+        character by character via type_text.
         """
         p, t = self._make_paster_with_blocking_copy(monkeypatch)
 
         worker = threading.Thread(target=p.paste, args=("Delta",))
         worker.start()
         worker.join(timeout=0.15)
-        # Kern-Assertion: paste() muss zurueckkehren (kein Daemon-Hang).
+        # Core assertion: paste() must return (no daemon hang).
         assert not worker.is_alive(), (
             "paste() haengt am blockierenden wl-copy - "
             "_run() braucht DEVNULL+Timeout"
         )
-        # Fallback: das Delta wurde zeichenweise getippt.
+        # Fallback: the delta was typed character by character.
         assert t.calls == [("type", "Delta")]
 
     def test_run_uses_devnull_and_timeout(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """_run() nutzt DEVNULL-FDs und ein Timeout, kein capture_output.
+        """_run() uses DEVNULL FDs and a timeout, not capture_output.
 
-        DEVNULL ist der eigentliche Fix gegen den Daemon-Pipe-Hang: ohne
-        geoeffnete Pipe-FDs kann communicate() nie auf ein nie kommendes
-        EOF warten. Das Timeout ist die zweite Verteidigungslinie.
+        DEVNULL is the actual fix for the daemon pipe hang: without open pipe
+        FDs, communicate() can never wait for an EOF that never arrives. The
+        timeout is the second line of defense.
         """
         captured: dict[str, object] = {}
 
@@ -1234,7 +1225,7 @@ class TestSubprocessHaertung:
     def test_run_timeout_raises_typer_error(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """subprocess.TimeoutExpired wird in TyperError uebersetzt."""
+        """subprocess.TimeoutExpired is translated into TyperError."""
 
         def fake_run(cmd, *args, **kwargs):
             raise subprocess.TimeoutExpired(cmd, timeout=kwargs.get("timeout"))
@@ -1242,16 +1233,16 @@ class TestSubprocessHaertung:
         monkeypatch.setattr("stt_button.typing.subprocess.run", fake_run)
         from stt_button.typing import _run
 
-        with pytest.raises(TyperError, match="Timeout"):
+        with pytest.raises(TyperError, match="timeout"):
             _run(["wtype", "-k", "space"])
 
     def test_send_raw_timeout_scales_with_payload(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """_send_raw: Timeout wächst mit der Payload-Groesse (type-Zeilen).
+        """_send_raw: timeout grows with payload size (type lines).
 
-        Budget: max(5.0, chars*(typedelay+typehold)/1000 + 5.0) - damit
-        lange Diktate nicht am Fixed-Timeout scheitern.
+        Budget: max(5.0, chars*(typedelay+typehold)/1000 + 5.0), so long
+        dictations do not fail due to a fixed timeout.
         """
         timeouts: list[float | None] = []
 
@@ -1265,23 +1256,23 @@ class TestSubprocessHaertung:
             "stt_button.typing.shutil.which", lambda b: "/usr/bin/dotool"
         )
 
-        # kurzer Payload: kleinines Budget (5 s + 0 + 5 s Puffer = 10 s)
+        # short payload: small budget (5s + 0 + 5s buffer = 10s)
         DotoolTyper(typedelay_ms=20, typehold_ms=15).type_text("Hi")
         short = timeouts[-1]
         assert short is not None and short >= 5.0
 
-        # langer Payload (500 Zeichen): Budget muss deutlich groesser sein.
+        # long payload (500 characters): budget must be substantially larger.
         DotoolTyper(typedelay_ms=20, typehold_ms=15).type_text("x" * 500)
         long = timeouts[-1]
         assert long is not None
         assert long > short
-        # Erwartung: 500*(20+15)/1000 + 5.0 = 22.5 s
+        # expected: 500*(20+15)/1000 + 5.0 = 22.5s
         assert long == pytest.approx(22.5, rel=0.01)
 
     def test_send_raw_timeout_expired_raises_typer_error(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Auch dotool haengt ggf. -> TimeoutExpired wird zu TyperError."""
+        """dotool may also hang -> TimeoutExpired becomes TyperError."""
 
         def fake_run(cmd, *args, **kwargs):
             raise subprocess.TimeoutExpired(cmd, timeout=kwargs.get("timeout"))
@@ -1291,16 +1282,15 @@ class TestSubprocessHaertung:
         monkeypatch.setattr(
             "stt_button.typing.shutil.which", lambda b: "/usr/bin/dotool"
         )
-        with pytest.raises(TyperError, match="Timeout"):
+        with pytest.raises(TyperError, match="timeout"):
             DotoolTyper().type_text("Hallo")
 
 
 class TestPasteDebugLogs:
-    """Debug-Logs im Paste-Pfad (Root-Cause-Diagnose final_paste-Freeze).
+    """Debug logs in the paste path (final_paste freeze root-cause diagnosis).
 
-    Die Logs duerfen den Diktatinhalt NICHT enthalten (Dataminimierung im
-    Log), aber Laenge und Phasen (copy start/done, chord) fuer die
-    Nachvollziehbarkeit eines Freezes.
+    Logs must NOT contain dictated content (log data minimization), but must
+    include length and phases (copy start/done, chord) to diagnose a freeze.
     """
 
     def test_paste_logs_phases_without_text(
@@ -1321,22 +1311,22 @@ class TestPasteDebugLogs:
             p.paste("Streng geheim")
         messages = [r.message for r in caplog.records]
         joined = "\n".join(messages)
-        # Phasen sichtbar:
+        # phases visible:
         assert "copy start" in joined
         assert "copy done" in joined
         assert "chord" in joined
-        # Laenge wird geloggt:
-        assert "13 Zeichen" in joined
-        # Diktatinhalt darf NICHT im Log landen:
+        # length is logged:
+        assert "13 characters" in joined
+        # dictated content must NOT appear in the log:
         assert "Streng geheim" not in joined
 
 
 
 
 # ---------------------------------------------------------------------------
-# OPT1 (Betreiber 29.10.): Finalize-Backspace + Paste-Chord in EINEM
-# dotool-Prozess — die ~0,7s Kosten sind der Prozessstart, nicht die
-# Tasten. Combined-Aufruf spart einen gesamten Round-Trip.
+# OPT1 (operator, October 29): finalize backspace + paste chord in ONE dotool
+# process—the ~0.7s cost is process startup, not the keys. The combined call
+# saves an entire round trip.
 # ---------------------------------------------------------------------------
 
 
@@ -1344,7 +1334,7 @@ class TestOpt1CombinedBackspacePaste:
     def test_dotool_backspace_and_key_single_process(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """backspace_and_key sendt Backspaces + Chord in EINEM _send."""
+        """backspace_and_key sends backspaces + chord in ONE _send."""
         stdin = _capture_stdin(monkeypatch)
         DotoolTyper().backspace_and_key(3, "ctrl+v")
         assert len(stdin) == 1, "genau ein dotool-Prozess erwartet"
@@ -1355,7 +1345,7 @@ class TestOpt1CombinedBackspacePaste:
     def test_dotool_backspace_and_key_zero_is_plain_key(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """n=0 verhaelt sich exakt wie key(name) — ein Prozess, nur Chord."""
+        """n=0 behaves exactly like key(name)—one process, chord only."""
         stdin = _capture_stdin(monkeypatch)
         DotoolTyper().backspace_and_key(0, "ctrl+v")
         assert stdin == ["key ctrl+v\n"]
@@ -1363,7 +1353,7 @@ class TestOpt1CombinedBackspacePaste:
     def test_paster_combined_copies_then_one_chord(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """paste_combined: erst wl-copy, dann EIN Combined-Aufruf (kein zweiter Chord)."""
+        """paste_combined: first wl-copy, then ONE combined call (no second chord)."""
         calls: list[list[str]] = []
         monkeypatch.setattr("stt_button.typing.shutil.which",
                             lambda b: "/usr/bin/wl-copy")
@@ -1395,9 +1385,9 @@ class TestOpt1CombinedBackspacePaste:
     def test_paster_combined_never_double_inserts(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Chord-Fehler NACH erfolgreichem Copy: TyperError (Zustand
-        unbekannt) — KEIN still-es False, kein Zurueckfallen auf
-        paste()/type_text (Doppel-Einfuege- bzw. Loesch-Gefahr)."""
+        """Chord error AFTER successful copy: TyperError (state unknown)—NO
+        silent False, no fallback to paste()/type_text (risk of duplicate
+        insertion or deletion)."""
         monkeypatch.setattr("stt_button.typing.shutil.which",
                             lambda b: "/usr/bin/wl-copy")
         monkeypatch.setattr("stt_button.typing._run", lambda cmd, *a, **k: None)
@@ -1417,7 +1407,7 @@ class TestOpt1CombinedBackspacePaste:
             p.paste_combined("Hallo", backspaces=3)
 
     def test_paster_combined_empty_text_no_chord(self) -> None:
-        """Leerer Text: kein Copy, kein Chord, ok=False (Caller macht alt)."""
+        """Empty text: no copy, no chord, ok=False (caller uses legacy path)."""
 
         class Never:
             def key(self, name):  # pragma: no cover
@@ -1430,8 +1420,8 @@ class TestOpt1CombinedBackspacePaste:
         assert p.paste_combined("", backspaces=3) is False
 
     def test_finalize_uses_combined_path(self) -> None:
-        """finalize() mit to_remove>0 und combined-faehigem Paster ruft
-        genau EINMAL combined — und kein separates backspace()/paste()."""
+        """finalize() with to_remove>0 and a combined-capable paster calls
+        combined EXACTLY ONCE, with no separate backspace()/paste()."""
 
         class TyperRec:
             def __init__(self):
@@ -1463,15 +1453,15 @@ class TestOpt1CombinedBackspacePaste:
         d = DeltaTyper(typer, append_space=True, final_paster=paster)  # type: ignore[arg-type]
         d.update("abcd efgh", committed_len=0, force_revision=True)
         typer.backspaces.clear()
-        # Finale Fassung weicht an Position 0 ab -> to_remove=8, to_add neu
+        # Final version differs at position 0 -> to_remove=8, new to_add
         d.finalize("Xbcd efgh")
-        # old enthaelt das append_space-Leerzeichen: 8+1=9 Zeichen weg
+        # old contains the append_space space: 8+1=9 characters removed
         assert paster.combined == [("Xbcd efgh ", 9)]
         assert typer.backspaces == [], "separater backspace-Lauf waere ein zweiter Prozess"
 
     def test_finalize_plain_paster_path_unchanged(self) -> None:
-        """Paster ohne paste_combined (z.B. Fake/Alter Paster): bisheriger
-        Pfad backspace() + paste() bleibt unveraendert in Kraft."""
+        """Paster without paste_combined (e.g., fake/legacy paster): retain the
+        previous backspace() + paste() path unchanged."""
         events: list = []
 
         class TyperRec:

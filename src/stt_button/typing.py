@@ -1,12 +1,12 @@
-"""Ausgabe des Transkripts an die Cursor-Position.
+"""Output the transcript at the cursor position.
 
-Der :class:`DeltaTyper` vergleicht aufeinanderfolgende Transkriptionen und
-tippt nur die Differenz. Wird ein bereits getippter Teil korrigiert, wird er
-per Backspace zurueckgenommen und neu getippt.
+:class:`DeltaTyper` compares consecutive transcriptions and types only the
+difference. If an already typed portion is corrected, it is removed with
+backspaces and typed again.
 
-Genutzt wird ``wtype`` (Wayland, kein X-Toolkit noetig). Als Fallback gibt es
-den Clipboard-Modus, der den Text ueber ``wl-copy`` und Ctrl+V einfuegt --
-der funktioniert auch in Fenstern, in denen ``wtype`` nicht wirkt.
+``wtype`` is used (Wayland, no X toolkit required). A clipboard mode is
+available as a fallback; it inserts text via ``wl-copy`` and Ctrl+V and also
+works in windows where ``wtype`` has no effect.
 """
 from __future__ import annotations
 
@@ -19,55 +19,54 @@ from typing import Protocol, runtime_checkable
 
 log = logging.getLogger(__name__)
 
-#: Maximale Anzahl Backspaces pro wtype-Aufruf (haelt die Kommandozeile kurz).
+#: Maximum number of backspaces per wtype call (keeps the command line short).
 BACKSPACE_BATCH = 20
 
-#: Standard-Timeout fuer _run()-Befehle in Sekunden. Schutz gegen
-#: Daemon-Pipe-Hangs: ``wl-copy`` forked einen residenten Daemon-Prozess,
-#: der die (bei capture_output geoeffneten) Pipe-FDs erbt. subprocess.run
-#: wartet dann in communicate() auf ein nie kommendes EOF. DEVNULL-FDs +
-#: Timeout schliessen beide Angriffspfade.
+#: Default timeout for _run() commands in seconds. Protection against
+#: daemon pipe hangs: ``wl-copy`` forks a resident daemon process that
+#: inherits the pipe FDs (opened by capture_output). subprocess.run then
+#: waits in communicate() for an EOF that never arrives. DEVNULL FDs and
+#: a timeout close both attack paths.
 COMMAND_TIMEOUT_S = 2.0
 
-#: Pausen-Indikator (STUFE 4): wird GENAU EINMAL getippt, wenn die Live-ASR
-#: wegen ``live_asr_until_s`` abschaltet ("ich hoere noch zu, schreibe aber
-#: gerade nicht mit"). Bewusst drei ASCII-Punkte statt des EINEN
-#: Unicode-Zeichens U+2026: Ground-Truth-Experiment (11:36-Realtest) hat
-#: gezeigt, dass dotool U+2026 im aktiven Layout de/nodeadkeys NICHT
-#: tippen kann ('dotool: WARNING: impossible character for layout: …',
-#: rc=0, Zeichen wird STILL VERWORFEN) - der Indikator erschien also nie
-#: in der Zielanwendung. '...' ist in jedem Layout tippbar.
-#: Kollisions-Unbedenklichkeit: die finalize()-Differenz ist praefixbasiert
-#: (common prefix). Endet der finale Text selbst auf Punkte, verlaengert
-#: sich der gemeinsame Praefix einfach ueber die Punkte (bis zur ersten
-#: Abweichung) - es werden ausschliesslich old_tail[common:] zurueck-
-#: genommen und new_tail[common:] ausgegeben, echte Punkte koennen dabei
-#: weder gefressen noch verduennt werden.
+#: Pause indicator (STAGE 4): typed EXACTLY ONCE when live ASR shuts off
+#: due to ``live_asr_until_s`` ("still listening, but not writing right
+#: now"). Deliberately three ASCII dots instead of the SINGLE Unicode
+#: character U+2026: a Ground-Truth experiment (11:36 live test) showed
+#: that dotool CANNOT type U+2026 in the active de/nodeadkeys layout
+#: ('dotool: WARNING: impossible character for layout: …', rc=0, character
+#: SILENTLY DISCARDED), so the indicator never appeared in the target
+#: application. '...' can be typed in every layout.
+#: Collision safety: the finalize() difference is prefix-based (common
+#: prefix). If the final text itself ends in dots, the common prefix simply
+#: extends across the dots (up to the first difference); only
+#: old_tail[common:] is removed and new_tail[common:] is output, so actual
+#: dots can neither be swallowed nor diluted.
 PAUSE_INDICATOR = "..."
 
 
 def _capslock_leds() -> dict[str, str]:
-    """Liest den CapsLock-LED-Zustand pro Device (Diagnose).
+    """Read the CapsLock LED state per device (diagnostics).
 
-    Hintergrund: Ein invertierter CapsLock-Zustand in der Input-Pipeline
-    verfaelscht den getippten Text zeichengenau ("Das" -> "dAS"). Das ist
-    NICHT der ASR-Text. Deshalb loggen wir den Lock-Zustand vor/nach jedem
-    Tippvorgang, um die Quelle eindeutig zu identifizieren.
+    Background: An inverted CapsLock state in the input pipeline corrupts
+    typed text character by character ("Das" -> "dAS"). This is NOT the ASR
+    text. We therefore log the lock state before and after each typing
+    operation to identify the source unambiguously.
 
     Returns:
-        Mapping Device-Name -> "an" (=1), "aus" (=0) oder "?" (nicht lesbar).
-        Der Device-Name ist der Basename des LED-Dirnames, z.B.
+        Mapping device name -> "an" (=1), "aus" (=0), or "?" (unreadable).
+        The device name is the basename of the LED directory name, e.g.,
         "input3::capslock".
     """
     result: dict[str, str] = {}
     try:
         leds = glob.glob("/sys/class/leds/*capslock*/brightness")
-    except Exception:  # noqa: BLE001 - Diagnose darf nie den Betrieb stoeren
+    except Exception:  # noqa: BLE001 - diagnostics must never disrupt operation
         return result
     for path in leds:
         import os
-        # Basename des LED-Dirnames, z.B. "/sys/class/leds/input3::capslock"
-        # -> "input3::capslock".
+        # Basename of the LED directory name, e.g.,
+        # "/sys/class/leds/input3::capslock" -> "input3::capslock".
         device = os.path.basename(os.path.dirname(path))
         try:
             with open(path) as fh:
@@ -84,17 +83,17 @@ def _capslock_leds() -> dict[str, str]:
 
 
 def _capslock_state() -> str:
-    """Liest den aggregierten CapsLock-LED-Zustand (Diagnose).
+    """Read the aggregate CapsLock LED state (diagnostics).
 
-    Baut auf :func:`_capslock_leds` auf: "an", wenn irgendein Device "an"
-    meldet, sonst "aus"; bei keiner LED "?".
+    Builds on :func:`_capslock_leds`: "an" if any device reports "an",
+    otherwise "aus"; "?" if there is no LED.
 
     Returns:
-        "an", "aus" oder "?" (kein LED gefunden).
+        "an", "aus", or "?" (no LED found).
     """
     try:
         leds = _capslock_leds()
-    except Exception:  # noqa: BLE001 - Diagnose darf nie den Betrieb stoeren
+    except Exception:  # noqa: BLE001 - diagnostics must never disrupt operation
         return "?"
     if not leds:
         return "?"
@@ -102,44 +101,44 @@ def _capslock_state() -> str:
 
 
 class TyperError(RuntimeError):
-    """Die Ausgabe in das fokussierte Fenster ist fehlgeschlagen."""
+    """Output to the focused window failed."""
 
 
 @runtime_checkable
 class Typer(Protocol):
-    """Schnittstelle aller Ausgabe-Adapter."""
+    """Interface for all output adapters."""
 
     def type_text(self, text: str) -> None:
-        """Tippt den Text literal in das fokussierte Fenster."""
+        """Type the text literally into the focused window."""
 
     def backspace(self, n: int) -> None:
-        """Loescht ``n`` Zeichen vor dem Cursor."""
+        """Delete ``n`` characters before the cursor."""
 
     def key(self, name: str) -> None:
-        """Drueckt eine Taste, z.B. ``"space"`` oder ``"ctrl+v"``."""
+        """Press a key, e.g., ``"space"`` or ``"ctrl+v"``."""
 
 
 @runtime_checkable
 class FinalPaster(Protocol):
-    """Schnittstelle fuer das Einfuegen des finalen Deltas per Clipboard.
+    """Interface for inserting the final delta via the clipboard.
 
-    Wird beim Abschluss (finalize) statt des zeichenweisen Tippens genutzt,
-    um lange Diktate ohne ~35 ms pro Zeichen auszugeben. Bekommt nur das
-    berechnete Delta - niemals den Volltext.
+    Used during finalization instead of character-by-character typing to
+    output long dictations without ~35 ms per character. Receives only the
+    calculated delta, never the full text.
     """
 
     def paste(self, text: str) -> None:
-        """Fuegt ``text`` an der Cursor-Position ein."""
+        """Insert ``text`` at the cursor position."""
 
 
 def _run(cmd: list[str], *, timeout_s: float = COMMAND_TIMEOUT_S) -> None:
-    """Fuehrt einen Befehl aus und wandelt Fehler in :class:`TyperError` um.
+    """Run a command and convert errors to :class:`TyperError`.
 
-    Haertung gegen Daemon-Pipe-Hangs (final_paste-Freeze): alle drei
-    Standard-FDs zeigen auf DEVNULL statt auf Pipes. ``wl-copy`` forked
-    naemlich einen residenten Daemon und vererbt offene Pipe-FDs an
-    Enkel-Prozesse - communicate() wuerde sonst auf ein nie kommendes EOF
-    warten. Das Timeout ist die zweite Verteidigungslinie.
+    Hardening against daemon pipe hangs (final_paste freeze): all three
+    standard FDs point to DEVNULL instead of pipes. ``wl-copy`` forks a
+    resident daemon and passes open pipe FDs to child processes;
+    communicate() would otherwise wait for an EOF that never arrives.
+    The timeout is the second line of defense.
     """
     try:
         proc = subprocess.run(
@@ -152,21 +151,21 @@ def _run(cmd: list[str], *, timeout_s: float = COMMAND_TIMEOUT_S) -> None:
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        raise TyperError(f"{cmd[0]}: Timeout nach {timeout_s:.1f}s") from exc
+        raise TyperError(f"{cmd[0]}: timeout after {timeout_s:.1f}s") from exc
     except FileNotFoundError as exc:
-        raise TyperError(f"{cmd[0]} ist nicht installiert") from exc
+        raise TyperError(f"{cmd[0]} is not installed") from exc
     except OSError as exc:
-        raise TyperError(f"{cmd[0]} konnte nicht gestartet werden: {exc}") from exc
+        raise TyperError(f"{cmd[0]} could not be started: {exc}") from exc
     if proc.returncode != 0:
-        raise TyperError(f"{cmd[0]} fehlgeschlagen (rc={proc.returncode})")
+        raise TyperError(f"{cmd[0]} failed (rc={proc.returncode})")
 
 
 class DotoolTyper:
-    """Tippt ueber ``dotool`` (uinput, funktioniert auch unter GNOME-Wayland).
+    """Type via ``dotool`` (uinput, also works under GNOME Wayland).
 
-    ``dotool`` liest Befehle von stdin: ``type TEXT`` fuer Text, ``key NAME``
-    fuer einzelne Tasten. Es braucht die udev-Regel, die User aus Gruppe
-    ``input`` Zugriff auf /dev/uinput gewaehrt.
+    ``dotool`` reads commands from stdin: ``type TEXT`` for text and
+    ``key NAME`` for individual keys. It requires the udev rule that grants
+    users in the ``input`` group access to /dev/uinput.
     """
 
     binary = "dotool"
@@ -185,87 +184,87 @@ class DotoolTyper:
         if binary:
             self.binary = binary
         if shutil.which(self.binary) is None:
-            raise TyperError(f"{self.binary} wurde nicht gefunden")
-        # dotool tippt Zeichen ueber das XKB-Layout. Ohne deutsches Layout
-        # entstehen Fehler wie z<->y vertauscht oder ? vs _ (US-Layout).
+            raise TyperError(f"{self.binary} was not found")
+        # dotool types characters via the XKB layout. Without the German
+        # layout, errors such as swapped z<->y or ? vs _ (US layout) occur.
         self._xkb_layout = xkb_layout
         self._xkb_variant = xkb_variant
-        # Antipp-Verzoegerung erhoehen: bei den dotool-Defaults (2ms) haengt
-        # Shift beim Folgebuchstaben nach -> "So" wird zu "SO".
+        # Increase the key-press delay: with the dotool defaults (2 ms),
+        # Shift remains active for the following letter -> "So" becomes "SO".
         self._typedelay_ms = typedelay_ms
         self._typehold_ms = typehold_ms
-        # Standard: NICHT eingreifen. Der CapsLock-Lock-State ist nicht
-        # zuverlaessig lesbar (LED != State, xset != State) - die App darf
-        # ihn deshalb nur erkennen und warnen.
+        # Default: DO NOT intervene. The CapsLock lock state cannot be read
+        # reliably (LED != State, xset != State), so the app may only detect
+        # it and warn.
         self._capslock_autocorrect = capslock_autocorrect
-        # LED-Semantik dieses Systems (empirisch belegt): True = LED aus
-        # bedeutet CapsLock aktiv (= invertiert). False = konventionelle
-        # Zuordnung (LED an = CapsLock aktiv).
+        # LED semantics of this system (empirically verified): True = LED off
+        # means CapsLock is active (= inverted). False = conventional mapping
+        # (LED on = CapsLock active).
         self._capslock_led_inverted = capslock_led_inverted
 
     def _capslock_leds_target(self) -> str:
-        """Ziel-LED-Zustand fuer normale Schreibung.
+        """Target LED state for normal typing.
 
-        Bei invertierter Semantik ist LED "an" normal, sonst "aus".
+        With inverted semantics, LED "an" is normal; otherwise "aus".
         """
         return "an" if self._capslock_led_inverted else "aus"
 
     def _ensure_capslock_normal(self) -> None:
-        """Warnt, wenn CapsLock den Text invertiert - toggelt im Default nie.
+        """Warn if CapsLock inverts text; never toggle by default.
 
-        Ground Truth (empirisch belegt): LED **aus** = CapsLock aktiv =
-        invertierter Text; LED **an** = normale Schreibung. Das Ziel ist
-        ueber ``capslock_led_inverted`` konfigurierbar.
+        Ground Truth (empirically verified): LED **off** = CapsLock active =
+        inverted text; LED **on** = normal typing. The target is configurable
+        via ``capslock_led_inverted``.
 
-        ``key capslock`` ist ein TOGGLE und der Lock-State nicht verlaesslich
-        verifizierbar. Deshalb wird standardmaessig nur gewarnt. Nur bei
-        explizitem ``capslock_autocorrect=True`` wird umgeschaltet, mit
-        hoechstens zwei Versuchen.
+        ``key capslock`` is a TOGGLE, and the lock state cannot be verified
+        reliably. Therefore, only a warning is issued by default. Toggling
+        occurs only with explicit ``capslock_autocorrect=True``, with at
+        most two attempts.
         """
         target = self._capslock_leds_target()
         state = _capslock_state()
         if state == "?":
-            # Keine LED gefunden - nicht blind toggeln (Desync-Gefahr).
-            log.debug("CapsLock-Zustand unbekannt (keine LED) - kein Eingriff")
+            # No LED found - do not toggle blindly (desynchronization risk).
+            log.debug("CapsLock state unknown (no LED) - no intervention")
             return
         if state == target:
             return
 
         if not self._capslock_autocorrect:
             log.warning(
-                "CapsLock-LED steht auf %r, Ziel %r - getippter Text kann "
-                "invertiert erscheinen. Es wird NICHT umgeschaltet "
-                "(capslock_autocorrect = false). Abhilfe: physische "
-                "CapsLock-Taste druecken oder ab-/anmelden.",
+                "CapsLock LED is %r, target %r - typed text may appear "
+                "inverted. It will NOT be toggled "
+                "(capslock_autocorrect = false). Remedy: press the physical "
+                "CapsLock key or log out and back in.",
                 state, target,
             )
             return
 
         log.warning(
-            "CapsLock-LED steht auf %r, Ziel %r -> wird umgeschaltet",
+            "CapsLock LED is %r, target %r -> toggling",
             state, target,
         )
         for attempt in (1, 2):
             self._send_raw("key capslock\n")
             time.sleep(0.08)
             if _capslock_state() == target:
-                log.info("CapsLock auf Ziel %r gesetzt (Versuch %d)", target, attempt)
+                log.info("CapsLock set to target %r (attempt %d)", target, attempt)
                 return
         log.error(
-            "CapsLock liess sich nicht auf Ziel %r setzen - Text kann invertiert "
-            "sein. Manuell: stt-button reset-capslock",
+            "Could not set CapsLock to target %r - text may be inverted. "
+            "Manual fix: stt-button reset-capslock",
             target,
         )
 
     def type_text(self, text: str) -> None:
         if not text:
             return
-        # CapsLock darf das Diktat nicht invertieren.
+        # CapsLock must not invert the dictation.
         self._ensure_capslock_normal()
-        # Antipp-Verzoegerung setzen, damit Shift nicht nachhaengt ("So"
-        # statt "SO").
+        # Set the key-press delay so Shift does not remain active ("So"
+        # instead of "SO").
         pre = f"typedelay {self._typedelay_ms}\ntypehold {self._typehold_ms}\n"
-        # Text literal via ``type``. Newlines werden zu ``enter``.
+        # Literal text via ``type``. Newlines become ``enter``.
         parts = [pre]
         for i, line in enumerate(text.split("\n")):
             if i:
@@ -283,12 +282,12 @@ class DotoolTyper:
         self._send(lines)
 
     def backspace_and_key(self, n: int, name: str) -> None:
-        """Ruecknamen und Chord in EINEM dotool-Prozess (OPT1).
+        """Backspaces and chord in ONE dotool process (OPT1).
 
-        Die ~0,7s Kosten im Finalize-Pfad sind der dotool-Prozessstart,
-        nicht die Tasten: n Backspaces und der Paste-Chord (z.B. 'ctrl+v')
-        laufen in einem einzigen stdin-Stream. Reihenfolge bleibt
-        garantiert: erst zurueck, dann Chord.
+        The ~0.7 s cost in the finalize path comes from starting the dotool
+        process, not from the keys: n backspaces and the paste chord (e.g.,
+        'ctrl+v') run in a single stdin stream. Ordering remains guaranteed:
+        backspaces first, then the chord.
         """
         if n <= 0:
             self.key(name)
@@ -301,34 +300,33 @@ class DotoolTyper:
     def key(self, name: str) -> None:
         if not name:
             return
-        # dotool kennt nur Einzelnamen ohne +; ctrl+v -> separate keys
+        # dotool only knows individual names without +; ctrl+v -> separate keys
         keys = name.split("+")
         if len(keys) == 1:
             self._send(f"key {keys[0]}\n")
         else:
-            # Modifier + Taste: dotool erwartet "mod+taste" als CHORD.
+            # Modifier + key: dotool expects "mod+key" as a CHORD.
             chord = "+".join(keys)
             self._send(f"key {chord}\n")
 
     def _send_raw(self, payload: str) -> None:
-        """Schickt einen Payload an dotool - ohne CapsLock-Behandlung.
+        """Send a payload to dotool without CapsLock handling.
 
-        Wird auch von :meth:`_ensure_capslock_normal` genutzt, daher bewusst
-        ohne erneute CapsLock-Pruefung (kein Rekursionsrisiko).
+        Also used by :meth:`_ensure_capslock_normal`, so it deliberately
+        does not repeat the CapsLock check (no recursion risk).
 
-        Im Gegensatz zu :func:`_run` bleibt ``capture_output`` aktiv: dotool
-        forked keinen Daemon-Prozess, Pipes schliessen also sauber. Aber
-        auch dotool kann haengen - deshalb ein payload-abhaengiges
-        Timeout-Budget: pro zu tippendem Zeichen fallen typedelay+typehold
-        Millisekunden an, plus 5 s Puffer fuer Prozessstart und Layout-
-        Aufbau.
+        Unlike :func:`_run`, ``capture_output`` remains active: dotool does
+        not fork a daemon process, so pipes close cleanly. However, dotool
+        can also hang, hence a payload-dependent timeout budget: each
+        character to type costs typedelay+typehold milliseconds, plus a 5 s
+        buffer for process startup and layout initialization.
         """
         import os
 
         env = os.environ.copy()
         env["DOTOOL_XKB_LAYOUT"] = self._xkb_layout
         env["DOTOOL_XKB_VARIANT"] = self._xkb_variant
-        # Nur 'type '-Zeilen kosten Zeit: key/typedelay/typehold sind fix.
+        # Only 'type ' lines cost time: key/typedelay/typehold are fixed.
         typed_chars = sum(
             len(line) for line in payload.split("\n") if line.startswith("type ")
         )
@@ -345,24 +343,24 @@ class DotoolTyper:
             )
         except subprocess.TimeoutExpired as exc:
             raise TyperError(
-                f"{self.binary}: Timeout nach {timeout_s:.1f}s "
-                f"({typed_chars} Zeichen)"
+                f"{self.binary}: timeout after {timeout_s:.1f}s "
+                f"({typed_chars} characters)"
             ) from exc
         except FileNotFoundError as exc:
-            raise TyperError(f"{self.binary} ist nicht installiert") from exc
+            raise TyperError(f"{self.binary} is not installed") from exc
         except OSError as exc:
-            raise TyperError(f"{self.binary} konnte nicht starten: {exc}") from exc
+            raise TyperError(f"{self.binary} could not start: {exc}") from exc
         if proc.returncode != 0:
             raise TyperError(
-                f"{self.binary} fehlgeschlagen (rc={proc.returncode}): "
+                f"{self.binary} failed (rc={proc.returncode}): "
                 f"{(proc.stderr or '').strip()}"
             )
 
     def _send(self, payload: str) -> None:
-        # Diagnose: Lock-Zustand vor dem Tippen erfassen. Der sichtbare Text
-        # wird naemlich von einer invertierten CapsLock-Ebene verfaelscht
-        # ("Das" -> "dAS") - das passiert NICHT im ASR, sondern durch den
-        # Modifier-/Lock-Zustand der Input-Pipeline.
+        # Diagnostics: capture the lock state before typing. The visible text
+        # is corrupted by an inverted CapsLock level ("Das" -> "dAS"); this
+        # does NOT happen in ASR, but through the modifier/lock state of the
+        # input pipeline.
         led_before = _capslock_state()
         leds_before = _capslock_leds()
         self._send_raw(payload)
@@ -371,25 +369,25 @@ class DotoolTyper:
         target = self._capslock_leds_target()
         if led_before != target or led_after != target:
             log.warning(
-                "CAPSLOCK-Diagnose: LED vor=%s nach=%s - CapsLock ist "
-                "vermutlich aktiv (LED ist kein verlaesslicher State), der "
-                "Text kann invertiert erscheinen. payload=%r",
+                "CAPSLOCK diagnostics: LED before=%s after=%s - CapsLock is "
+                "probably active (LED is not a reliable state); text may "
+                "appear inverted. payload=%r",
                 led_before, led_after, payload[:80],
             )
         else:
             log.debug("capslock ok (%s) payload=%r", target, payload[:60])
 
-        # Pro-Device-Diagnose: die LED <-> State-Zuordnung ist nicht
-        # verlaesslich; mehrere Devices koennen widersprechen.
+        # Per-device diagnostics: the LED <-> state mapping is unreliable;
+        # multiple devices can disagree.
         if leds_before:
             log.debug(
-                "CAPSLOCK-LEDs pro Device: %s (LED != State, nur Diagnose)",
+                "CAPSLOCK LEDs per device: %s (LED != State, diagnostics only)",
                 leds_before,
             )
 
 
 class WtypeTyper:
-    """Tippt ueber ``wtype`` direkt in das fokussierte Fenster."""
+    """Type directly into the focused window via ``wtype``."""
 
     binary = "wtype"
 
@@ -397,7 +395,7 @@ class WtypeTyper:
         if binary:
             self.binary = binary
         if shutil.which(self.binary) is None:
-            raise TyperError(f"{self.binary} wurde nicht gefunden (bitte installieren)")
+            raise TyperError(f"{self.binary} was not found (please install it)")
 
     def type_text(self, text: str) -> None:
         if not text:
@@ -431,18 +429,18 @@ class WtypeTyper:
 
 
 class ClipboardTyper:
-    """Legt den Text in die Zwischenablage und fuegt ihn per Ctrl+V ein.
+    """Place text on the clipboard and insert it with Ctrl+V.
 
-    Backspace wird nicht unterstuetzt: der Clipboard-Modus ist als Fallback
-    fuer den Fallback gedacht, in dem ``wtype`` nicht wirkt. Er eignet sich
-    deshalb nur fuer die finale Ausgabe.
+    Backspace is not supported: clipboard mode is intended as a fallback
+    for the fallback where ``wtype`` has no effect. It is therefore suitable
+    only for final output.
     """
 
     def __init__(self, copy_binary: str = "wl-copy", paste_binary: str = "wtype") -> None:
         self.copy_binary = copy_binary
         self.paste_binary = paste_binary
         if shutil.which(self.copy_binary) is None:
-            raise TyperError(f"{self.copy_binary} wurde nicht gefunden")
+            raise TyperError(f"{self.copy_binary} was not found")
 
     def type_text(self, text: str) -> None:
         if not text:
@@ -451,7 +449,7 @@ class ClipboardTyper:
         self.key("ctrl+v")
 
     def backspace(self, n: int) -> None:
-        raise TyperError("Clipboard-Typing kann keinen Text zuruecknehmen")
+        raise TyperError("Clipboard typing cannot remove text")
 
     def key(self, name: str) -> None:
         if not name:
@@ -463,22 +461,21 @@ class ClipboardTyper:
 
 
 class ClipboardPaster:
-    """Fuegt das finale Delta per ``wl-copy`` + Paste-Chord ein.
+    """Insert the final delta via ``wl-copy`` + paste chord.
 
-    Der Copy-Schritt folgt dem Muster von :class:`ClipboardTyper`: das
-    Binary (z.B. ``wl-copy``) bekommt den Text als Argument, der Chord wird
-    ueber den normalen Typer (``typer.key``) gedrueckt.
+    The copy step follows the :class:`ClipboardTyper` pattern: the binary
+    (e.g., ``wl-copy``) receives the text as an argument, and the chord is
+    pressed through the normal typer (``typer.key``).
 
-    Fallback-Regeln:
+    Fallback rules:
 
-    * Fehlt das Copy-Binary oder schlaegt der Copy fehl, wird das Delta
-      zeichenweise getippt (``type_text``) - der alte Pfad bleibt nutzbar.
-    * Schlaegt der Paste-Chord NACH erfolgreichem Copy, wird NICHT mit
-      ``type_text`` wiederholt: das Delta kann bereits eingefuegt worden
-      sein (Doppel-Einfuege-Gefahr). Der Fehler wird geloggt und liegen
-      gelassen.
-    * Der bisherige Clipboard-Inhalt wird NICHT zurueckgespielt (Race mit
-      Clipboard-Managern, kein ``wl-paste``).
+    * If the copy binary is missing or copying fails, type the delta
+      character by character (``type_text``); the old path remains usable.
+    * If the paste chord fails AFTER a successful copy, do NOT repeat with
+      ``type_text``: the delta may already have been inserted (risk of
+      duplicate insertion). Log the error and leave the state unchanged.
+    * The previous clipboard contents are NOT restored (race with clipboard
+      managers, no ``wl-paste``).
     """
 
     def __init__(
@@ -493,23 +490,23 @@ class ClipboardPaster:
         self.paste_key = paste_key
 
     def paste(self, text: str) -> None:
-        """Kopiert ``text`` in die Zwischenablage und drueckt den Paste-Chord."""
+        """Copy ``text`` to the clipboard and press the paste chord."""
         if not text:
             return
         if shutil.which(self.copy_binary) is None:
             log.warning(
-                "%s nicht verfuegbar - tippe das Delta zeichenweise",
+                "%s unavailable - typing the delta character by character",
                 self.copy_binary,
             )
             self._typer.type_text(text)
             return
         try:
-            log.debug("final paste: copy start (%d Zeichen)", len(text))
+            log.debug("final paste: copy start (%d characters)", len(text))
             _run([self.copy_binary, text])
             log.debug("final paste: copy done")
         except TyperError as exc:
             log.warning(
-                "Copy nach %s fehlgeschlagen (%s) - tippe das Delta zeichenweise",
+                "Copy via %s failed (%s) - typing the delta character by character",
                 self.copy_binary, exc,
             )
             self._typer.type_text(text)
@@ -518,34 +515,34 @@ class ClipboardPaster:
             log.debug("final paste: chord %s", self.paste_key)
             self._typer.key(self.paste_key)
         except TyperError as exc:
-            # Bewusst KEIN Retry mit type_text: der Chord kann teilweise
-            # gewirkt haben, das Delta koennte bereits eingefuegt sein.
+            # Deliberately NO retry with type_text: the chord may have had a
+            # partial effect, and the delta could already be inserted.
             log.error(
-                "Paste-Chord %r fehlgeschlagen (%s) - kein Retry "
-                "(Doppel-Einfuege-Gefahr)",
+                "Paste chord %r failed (%s) - no retry "
+                "(risk of duplicate insertion)",
                 self.paste_key, exc,
             )
 
     def paste_combined(self, text: str, *, backspaces: int = 0) -> bool:
-        """OPT1: Copy + (Backspaces & Chord) in einem dotool-Prozess.
+        """OPT1: Copy + (backspaces & chord) in one dotool process.
 
-        Wie :meth:`paste`, aber die ``backspaces`` Ruecknamen und der
-        Paste-Chord laufen — wenn der Typer ``backspace_and_key``
-        unterstuetzt (DotoolTyper) — in EINEM dotool-Aufruf. Spart den
-        zweiten Prozessstart (~0,7s im Finalize-Pfad).
+        Like :meth:`paste`, but the ``backspaces`` deletions and the paste
+        chord run in ONE dotool call if the typer supports
+        ``backspace_and_key`` (DotoolTyper). Saves the second process start
+        (~0.7 s in the finalize path).
 
         Returns:
-            True  = Combined-Pfad komplett durchgefuehrt.
-            False = NICHT versucht (leerer Text, Typer ohne Support,
-            Copy-Binary fehlt, Copy fehlgeschlagen) — der Caller kann
-            sicher auf den bisherigen Pfad (backspace + paste)
-            zurueckfallen; es wurde nichts getippt oder geloescht.
+            True  = combined path completed.
+            False = NOT attempted (empty text, typer without support,
+            missing copy binary, or failed copy). The caller can safely fall
+            back to the existing path (backspace + paste); nothing was typed
+            or deleted.
 
         Raises:
-            TyperError: Copy gelang, aber der Chord schlug fehl. Der
-            Zustand ist unbekannt (Backspaces/Chord koennen teilweise
-            gewirkt haben) — der Caller darf dann NICHT den alten Pfad
-            nachschieben (Doppel-Einfuege-Gefahr), sondern muss ruhen.
+            TyperError: Copy succeeded, but the chord failed. The state is
+            unknown (backspaces/chord may have had a partial effect); the
+            caller must NOT follow up with the old path (risk of duplicate
+            insertion) and must leave the state unchanged.
         """
         if not text:
             return False
@@ -554,17 +551,17 @@ class ClipboardPaster:
             return False
         if shutil.which(self.copy_binary) is None:
             log.warning(
-                "%s nicht verfuegbar - Combined-Pfad nicht moeglich",
+                "%s unavailable - combined path not possible",
                 self.copy_binary,
             )
             return False
         try:
-            log.debug("final paste combined: copy start (%d Zeichen, %d bs)",
+            log.debug("final paste combined: copy start (%d characters, %d bs)",
                       len(text), backspaces)
             _run([self.copy_binary, text])
         except TyperError as exc:
             log.warning(
-                "Copy nach %s fehlgeschlagen (%s) - Combined-Pfad abgesagt",
+                "Copy via %s failed (%s) - combined path canceled",
                 self.copy_binary, exc,
             )
             return False
@@ -575,18 +572,18 @@ class ClipboardPaster:
             return True
         except TyperError as exc:
             log.error(
-                "Combined-Chord %r fehlgeschlagen (%s) - Zustand unbekannt, "
-                "kein Retry (Doppel-Einfuege-Gefahr)",
+                "Combined chord %r failed (%s) - state unknown, "
+                "no retry (risk of duplicate insertion)",
                 self.paste_key, exc,
             )
             raise
 
 
 class DeltaTyper:
-    """Tippt nur die Differenz zwischen zwei Transkriptionen.
+    """Type only the difference between two transcriptions.
 
-    ``committed_len`` bezeichnet die Laenge des Praefixes, der bereits
-    endgueltig ist und deshalb nie mehr zurueckgenommen wird.
+    ``committed_len`` is the length of the prefix that is already final and
+    therefore never removed again.
     """
 
     def __init__(
@@ -602,63 +599,62 @@ class DeltaTyper:
         self._typer = typer
         self._append_space = append_space
         self._max_revision_chars = max_revision_chars
-        # Optional: pastet das finale Delta per Zwischenablage statt es zu
-        # tippen. Live-Updates bleiben immer beim normalen Typer (dotool).
+        # Optional: paste the final delta via the clipboard instead of typing
+        # it. Live updates always use the normal typer (dotool).
         self._final_paster = final_paster
-        # Latenz-Trace (config.latency_trace): loggt in finalize() auf
-        # Debug-Stufe die Domino-Groessen (rev/backspace/paste/space).
+        # Latency trace (config.latency_trace): logs the domino sizes
+        # (rev/backspace/paste/space) at debug level in finalize().
         self._latency_trace = latency_trace
-        # Live-Vorschau-Modus: "full" (Default) tippt auch unstabile Partials
-        # (mit Backspace-Korrekturen); "committed" tippt nur den gesicherten
-        # (committeten) Zuwachs - der Partial wird intern weitergefuehrt,
-        # aber nie getippt oder zurueckgetippt (STUFE 2).
+        # Live preview mode: "full" (default) also types unstable partials
+        # (with backspace corrections); "committed" types only the stable
+        # (committed) addition. The partial is tracked internally but never
+        # typed or removed (STAGE 2).
         self._live_typing_mode = live_typing_mode
         self._last_text = ""
         self._last_committed = 0
-        # STUFE 4: Pausen-Indikator bereits getippt? Wird nur in
-        # show_paused() gesetzt und nur in reset() zurueckgenommen.
+        # STAGE 4: pause indicator already typed? Set only in show_paused()
+        # and reset only in reset().
         self._pause_shown = False
 
     def _trace(self, point: str) -> None:
-        """Debug-Messpunkt der Finalisierung (nur bei latency_trace)."""
+        """Debug measurement point for finalization (only with latency_trace)."""
         if not self._latency_trace:
             return
         log.debug("latency[%s]", point)
 
     @property
     def last_text(self) -> str:
-        """Der zuletzt ausgegebene Text."""
+        """The most recently output text."""
         return self._last_text
 
     def reset(self) -> None:
-        """Vergisst den bisherigen Zustand (z.B. nach einer neuen Aufnahme).
+        """Forget the previous state (e.g., after a new recording).
 
-        Setzt auch die Pausen-Indikator-Markierung zurueck: die naechste
-        Aufnahme beginnt sauber (der Indikator der vorherigen Aufnahme bleibt
-        ggf. physisch am Cursor stehen - abort() tippt bewusst nichts).
+        Also reset the pause indicator flag: the next recording starts clean
+        (the previous recording's indicator may remain physically at the
+        cursor; abort() deliberately types nothing).
         """
         self._last_text = ""
         self._last_committed = 0
         self._pause_shown = False
 
     def show_paused(self) -> None:
-        """Tippt den Pausen-Indikator GENAU EINMAL ("ich hoere noch zu").
+        """Type the pause indicator EXACTLY ONCE ("still listening").
 
-        Aufgerufen vom Controller, wenn die Live-ASR wegen des
-        ``live_asr_until_s``-Limits abschaltet. Der Indikator wird als
-        ECHTER getippter Stand gefuehrt (``_last_text`` wird verlaengert),
-        damit ihn die bestehende finalize()-Differenz automatisch wieder
-        entfernt (to_remove == len(PAUSE_INDICATOR) == 3 Backspaces):
-        Backspace loescht in der Ziel-App genau so viele Codepoints.
+        Called by the controller when live ASR shuts off due to the
+        ``live_asr_until_s`` limit. The indicator is tracked as ACTUAL typed
+        text (``_last_text`` is extended) so that the existing finalize()
+        difference automatically removes it again
+        (to_remove == len(PAUSE_INDICATOR) == 3 backspaces): backspace
+        deletes exactly that many code points in the target app.
 
-        Ist der finale Text leer (Modell-Ausfall), bleibt der Indikator
-        bewusst stehen (ehrlicher Zustand). Wird die Aufnahme ABGEBROCHEN,
-        nachdem der Indikator getippt wurde, bleibt er ebenfalls am
-        Cursor - abort() tippt grundsaetzlich nichts (kein Sonderfall).
+        If the final text is empty (model failure), the indicator deliberately
+        remains (an honest state). If recording is ABORTED after the indicator
+        was typed, it likewise remains at the cursor; abort() fundamentally
+        types nothing (no special case).
 
-        Erneute Aufrufe sind No-Ops: der Indikator wird pro Aufnahme
-        genau einmal getippt (ein einziger type_text-Aufruf, kein
-        Unterbuchstaben-Timing).
+        Repeated calls are no-ops: the indicator is typed exactly once per
+        recording (a single type_text call, no sub-letter timing).
         """
         if self._pause_shown:
             return
@@ -667,30 +663,29 @@ class DeltaTyper:
         self._pause_shown = True
 
     def update(self, text: str, committed_len: int = 0, *, force_revision: bool = False) -> None:
-        """Gibt die Differenz zwischen dem letzten und dem neuen Text aus.
+        """Output the difference between the previous and new text.
 
-        Nur der *nicht* committete Teil darf zurueckgenommen werden. Fuer den
-        committeten Teil gilt: er wird nie angefasst.
+        Only the *non*-committed part may be removed. The committed part is
+        never touched.
 
-        ``force_revision`` deaktiviert die ``max_revision_chars``-Schutzgrenze:
-        fuer die *Schluss*-Transkription ist das noetig, weil dort der Cursor
-        sicher hinter dem eigenen Text steht und der Endtext den bereits
-        getippten Text ersetzen soll (nicht duplizieren).
+        ``force_revision`` disables the ``max_revision_chars`` safety limit.
+        This is necessary for the *final* transcription because the cursor is
+        known to be after our own text, and the final text should replace (not
+        duplicate) the text already typed.
         """
         old = self._last_text
         committed_len = max(0, committed_len)
 
-        # Wuerde der committete Bereich verloren gehen, ignorieren wir die
-        # neue Fassung komplett - der bereits getippte Text bleibt stehen.
+        # If the committed region would be lost, ignore the new version
+        # entirely; the text already typed remains in place.
         if len(text) < committed_len:
             return
 
-        # STUFE 2 (live_typing_mode='committed'): Nur der gesicherte Zuwachs
-        # wird getippt. Der interne Stand fuehrt ausschliesslich den effektiv
-        # getippten Text - der unstabile Partial wird nie getippt und nie
-        # zurueckgetippt (keine Live-Backspaces, kein Flackern). finalize()
-        # rechnet dadurch gegen den effektiven Cursor-Stand: to_remove==0,
-        # das Suffix kommt als ein Paste.
+        # STAGE 2 (live_typing_mode='committed'): Only the stable addition is
+        # typed. The internal state tracks only the text actually typed; the
+        # unstable partial is never typed or removed (no live backspaces, no
+        # flickering). finalize() therefore calculates against the effective
+        # cursor state: to_remove==0, and the suffix arrives as one paste.
         if self._live_typing_mode == "committed":
             stable = text[:committed_len]
             if stable.startswith(old):
@@ -700,18 +695,18 @@ class DeltaTyper:
                 self._last_text = stable
                 self._last_committed = len(stable)
             else:
-                # Gesicherter Bereich widerspricht dem Getippten (per
-                # LocalAgreement praktisch ausgeschlossen): Live nichts
-                # anfassen, finalize() korrigiert abschliessend.
+                # The stable region contradicts the typed text (practically
+                # impossible with LocalAgreement): do not change anything live;
+                # finalize() applies the final correction.
                 log.debug(
-                    "committed-Live: Praefix-Widerspruch - update verworfen"
+                    "committed live: prefix conflict - update discarded"
                 )
             return
 
         committed = min(committed_len, len(old), len(text))
 
-        # Weicht das Modell im committeten Bereich ab, uebernehmen wir dort
-        # die alte Fassung.
+        # If the model differs in the committed region, retain the old
+        # version there.
         if old[:committed] != text[:committed]:
             text = old[:committed] + text[committed:]
 
@@ -728,8 +723,8 @@ class DeltaTyper:
         to_add = new_tail[common:]
 
         if to_remove and not force_revision and to_remove > self._max_revision_chars:
-            # Zu lange Ruecknahme: haeufig bedeutet das, dass der Cursor
-            # nicht mehr hinter unserem Text steht. Dann nur anhaengen.
+            # An overly long removal often means that the cursor is no longer
+            # after our text. In that case, only append.
             to_add = new_tail
             to_remove = 0
 
@@ -742,21 +737,20 @@ class DeltaTyper:
         self._last_committed = committed
 
     def finalize(self, final_text: str, committed_len: int = 0) -> None:
-        """Gibt den endgueltigen Text aus und schliesst mit einem Leerzeichen ab.
+        """Output the final text and finish with a space.
 
-        Mit konfiguriertem ``final_paster`` wird das berechnete Delta
-        (``to_add``) genau einmal per Zwischenablage eingefuegt - der
-        committete Praefix und bereits getippter Text werden niemals mit-
-        gesendet. Ohne ``final_paster`` gilt der bisherige Pfad: Backspace
-        und Delta ueber den normalen Typer.
+        With a configured ``final_paster``, the calculated delta (``to_add``)
+        is inserted exactly once via the clipboard; the committed prefix and
+        text already typed are never included. Without ``final_paster``, the
+        existing path applies: backspace and delta via the normal typer.
 
-        Eine leere Endausgabe darf den bereits getippten Text nicht loeschen
-        (z.B. wenn das Modell bei der Schluss-Transkription gescheitert ist).
+        Empty final output must not delete text already typed (e.g., if the
+        model failed during the final transcription).
 
-        Bracketed-Paste-Marker (Betreiber 31.10.): Handschalliges Paste mit
-        aktiviertem Bracketed-Paste bringt '^[[200~' ... '~' in den Text.
-        Entfernt AN DER EINLAUFSEITE, damit Delta/Backspace/Paste saubere
-        Werte sehen (kein Datenverlust: nur nachgewiesene Marker).
+        Bracketed paste markers (operator, 31.10.): manual pasting with
+        bracketed paste enabled inserts '^[[200~' ... '~' into the text.
+        Removed AT THE INPUT BOUNDARY so delta/backspace/paste see clean
+        values (no data loss: only verified markers).
         """
         final_text = strip_paste_markers(final_text)
         if not final_text.strip():
@@ -764,23 +758,22 @@ class DeltaTyper:
 
         old = self._last_text
         committed_len = max(0, committed_len)
-        # Committed-Schutz: der hoehere Stand gewinnt, damit ein kleinerer
-        # committed_len beim Abschluss nichts bereits Gesichertes oeffnet.
+        # Committed protection: the higher state wins so that a smaller
+        # committed_len at completion does not reopen anything already stable.
         effective_committed = max(committed_len, self._last_committed)
 
-        # Space-Microfix: Bei vorhandenem final_paster und nicht-leerem
-        # Delta wird das abschliessende Leerzeichen direkt an das Paste
-        # angehaengt - ein separater key("space") faellt weg (kein zweites
-        # Leerzeichen, ein Tastendruck weniger). Bei leerem to_add gibt es
-        # kein Paste, dann bleibt der separate Space-Key. Ohne Paster und
-        # bei append_space=False aendert sich nichts.
+        # Space micro-fix: with a final_paster and a non-empty delta, append
+        # the trailing space directly to the paste; a separate key("space")
+        # is omitted (no second space, one less key press). With an empty
+        # to_add there is no paste, so the separate space key remains. Without
+        # a paster and with append_space=False, nothing changes.
         space_in_paste = False
 
         if len(final_text) >= effective_committed:
             committed = min(effective_committed, len(old), len(final_text))
 
-            # Weicht das Modell im committeten Bereich ab, uebernehmen wir
-            # dort die alte Fassung.
+            # If the model differs in the committed region, retain the old
+            # version there.
             if old[:committed] != final_text[:committed]:
                 final_text = old[:committed] + final_text[committed:]
 
@@ -791,15 +784,15 @@ class DeltaTyper:
             to_remove = len(old_tail) - common
             to_add = new_tail[common:]
 
-            # Backspace bleibt immer beim normalen Typer (dotool), auch im
-            # final_paste-Modus. Die finale Korrektur ist voll korrigierend:
-            # keine max_revision_chars-Schutzgrenze (force_revision im alten
-            # Pfad).
+            # Backspace always uses the normal typer (dotool), even in
+            # final_paste mode. The final correction is fully corrective:
+            # no max_revision_chars safety limit (force_revision in the old
+            # path).
             self._trace(f"rev {to_remove}/{len(to_add)}")
-            # OPT1: Backspace + Paste-Chord in EINEM dotool-Prozess, wenn
-            # ein paste_combined-Paster vorhanden ist und Ruecknamen
-            # anfallen. combined_pasted=True verbietet den alten
-            # backspace()-/paste()-Nachschlag.
+            # OPT1: Backspace + paste chord in ONE dotool process when a
+            # paste_combined paster is available and deletions are needed.
+            # combined_pasted=True prohibits the old backspace()/paste()
+            # follow-up.
             combined_pasted = False
             if to_remove and to_add and self._final_paster is not None:
                 paste_combined = getattr(
@@ -815,8 +808,8 @@ class DeltaTyper:
                             paste_combined(combined_text, backspaces=to_remove)
                         )
                     except TyperError:
-                        # Zustand unbekannt (Backspaces koennen gewirkt
-                        # haben): nichts nachschieben, Textstand lassen.
+                        # State unknown (backspaces may have taken effect):
+                        # do not follow up; leave the text state unchanged.
                         combined_pasted = True
                     if combined_pasted:
                         space_in_paste = self._append_space
@@ -833,15 +826,15 @@ class DeltaTyper:
             if to_add:
                 t0 = time.monotonic()
                 if self._final_paster is not None:
-                    # Angehaengtes Leerzeichen statt separatem Space-Key
-                    # (kein doppeltes Leerzeichen, siehe oben).
+                    # Appended space instead of a separate space key
+                    # (no duplicate space; see above).
                     space_in_paste = self._append_space
                     self._final_paster.paste(
                         to_add + " " if space_in_paste else to_add
                     )
                     self._trace("paste")
                     if space_in_paste:
-                        self._trace("space 0.000s (im Paste)")
+                        self._trace("space 0.000s (in paste)")
                 else:
                     self._typer.type_text(to_add)
                     self._trace("type")
@@ -857,9 +850,9 @@ class DeltaTyper:
         self._last_text = final_text
 
 
-# Bracketed-Paste-Marker in den drei relevanten Darstellungen:
-# raw mit echtem ESC-Zeichen (0x1b), # ^notiert (Terminal-Ansicht) und
-# Hex-Textform "\x1b[200~" (was Dumps zeigen koennen).
+# Bracketed paste markers in the three relevant representations:
+# raw with an actual ESC character (0x1b), ^ notation (terminal view), and
+# hexadecimal text form "\x1b[200~" (as dumps may show).
 _RAW_200 = "\x1b[200~"
 _RAW_201 = "\x1b[201~"
 _LIT_200 = "\\x1b[200~"
@@ -869,22 +862,22 @@ _MARKER_201 = ("^[[201~", _RAW_201, _LIT_201)
 
 
 def strip_paste_markers(text: str) -> str:
-    """Entfernt Bracketed-Paste-Marker aus ``text`` (Betreiber 31.10.).
+    """Remove bracketed paste markers from ``text`` (operator, 31.10.).
 
-    Paste mit eingeschaltetem Bracketed-Paste (Shell z.B. nach
-    vorherigem Strg+V im quoted-insert) bringt ESC[200~/ESC[201~
-    buechlerichtig in den Text: sichtbar als '^[[200~' am Anfang und
-    (nach verendetem ESC) ein uebriggebliebenes '~' am Ende.
+    Pasting with bracketed paste enabled (in a shell, e.g., after previous
+    Ctrl+V in quoted-insert) literally inserts ESC[200~/ESC[201~ into the
+    text: visible as '^[[200~' at the beginning and (after ESC is consumed)
+    a leftover '~' at the end.
 
-    Regeln (bewusst konservativ):
-      * nur die MARKER (^notiert UND roh) werden entfernt;
-      * ein nacktes '~' wird NUR dann am Ende gefressen, wenn vorher
-        ein Anfangs-Marker nachgewiesen wurde (sonst bleibt jedes
-        legitime '~', z.B. in '~/Dokumente', unverletzt);
-      * alles uebrige bleibt unverandert.
+    Rules (deliberately conservative):
+      * only the MARKERS (^ notation AND raw) are removed;
+      * a bare '~' is removed at the end ONLY if a start marker was found
+        beforehand (otherwise every legitimate '~', e.g., in '~/Documents',
+        remains intact);
+      * everything else remains unchanged.
 
-    Wird in finalize() AN DER EINLAUFSEITE angewendet, damit
-    Delta-Berechnung, Backspace-Zahl und Paste saubere Werte sehen.
+    Applied in finalize() AT THE INPUT BOUNDARY so delta calculation,
+    backspace count, and paste see clean values.
     """
     had_start = any(m in text for m in _MARKER_200)
     for m in _MARKER_200 + _MARKER_201:
@@ -895,7 +888,7 @@ def strip_paste_markers(text: str) -> str:
 
 
 def _common_prefix_len(a: str, b: str) -> int:
-    """Laenge des gemeinsamen Praefixes von ``a`` und ``b``."""
+    """Length of the common prefix of ``a`` and ``b``."""
     limit = min(len(a), len(b))
     i = 0
     while i < limit and a[i] == b[i]:

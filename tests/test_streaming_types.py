@@ -1,7 +1,7 @@
-"""Tests für den windowed Streaming-Ansatz (Schritt 1+2).
+"""Tests for the windowed streaming approach (steps 1+2).
 
-Getestet wird die WindowingPolicy: reine Funktion, die entscheidet, welches
-Audio-Fenster als nächstes transkribiert wird. Kein Modell nötig.
+These tests cover WindowingPolicy, a pure function that decides which
+audio window to transcribe next. No model is required.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ class TestToken:
         assert tr.text == "So jetzt"
 
     def test_word_boundary_detection(self) -> None:
-        # Tokens mit führendem Leerzeichen sind Wortanfänge
+        # Tokens with a leading space are word starts
         t1 = Token(text="So", start=0.0, end=0.16)
         t2 = Token(text=" jetzt", start=0.16, end=0.40)
         assert not _is_word_start(t1)
@@ -50,19 +50,19 @@ class TestStreamWindowPolicy:
         window = self._policy().next_window(committed_s=0.0, audio_len_s=3.0)
         assert window is not None
         assert window.start == 0.0
-        # chunk endet bei committed + chunk, gedeckelt auf audio_len
+        # The chunk ends at committed + chunk, capped at audio_len
         assert window.end == pytest.approx(3.0)
         assert window.commit_horizon <= window.end
 
     def test_window_bounded_even_for_long_stream(self) -> None:
-        """Fenster bleibt begrenzt, auch bei 60s Stream (Skalierungs-Fix)."""
+        """The window remains bounded, even for a 60s stream (scaling fix)."""
         policy = self._policy()
         committed_s = 30.0
         audio_len_s = 60.0
         window = policy.next_window(committed_s=committed_s, audio_len_s=audio_len_s)
         assert window is not None
         assert window.start >= committed_s - policy.left_context_s
-        # Begrenzung: max. das Doppelte der Nominalgroesse (Deadlock-Schutz).
+        # Bound: at most twice the nominal size (deadlock protection).
         nominal = policy.left_context_s + policy.chunk_s + policy.right_context_s
         assert window.end - window.start <= nominal * 2
 
@@ -72,20 +72,20 @@ class TestStreamWindowPolicy:
         audio_len_s = 20.0
         window = policy.next_window(committed_s=committed_s, audio_len_s=audio_len_s)
         assert window is not None
-        # Commit-Horizont darf nie über das Audioende hinausragen
+        # The commit horizon must never extend beyond the end of the audio
         assert window.commit_horizon <= audio_len_s
-        # Und liegt normalerweise um right_context vor dem Fensterende
+        # It is normally right_context ahead of the window end
         if window.end < audio_len_s:
             assert window.commit_horizon == pytest.approx(window.end - policy.right_context_s)
 
     def test_no_new_chunk_after_commit_returns_none(self) -> None:
         policy = self._policy()
-        # committed steht bereits am Ende -> kein neuer chunk verfügbar
+        # committed is already at the end -> no new chunk available
         window = policy.next_window(committed_s=19.0, audio_len_s=20.0)
-        # Falls der verbleibende Rest < chunk, darf trotzdem finalisiert werden
-        # (unten separat getestet); hier: wenn kaum noch audio da ist, None oder
-        # ein letztes kleines Fenster.
-        # Wir testen nur, dass es nicht crasht und bounded bleibt.
+        # If the remainder is < chunk, it may still be finalized
+        # (tested separately below); here: with almost no audio left, return None
+        # or one final small window.
+        # We only test that it does not crash and remains bounded.
         if window is not None:
             assert window.end <= 20.0
 

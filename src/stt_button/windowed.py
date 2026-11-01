@@ -1,12 +1,12 @@
-"""WindowedTranscriber: windowed Streaming mit dem StreamTranscriber-Interface.
+"""WindowedTranscriber: windowed streaming with the StreamTranscriber interface.
 
-Erfüllt dasselbe Interface wie ``StreamTranscriber`` (``feed`` /
-``maybe_transcribe`` / ``finalize`` / ``reset``), damit der Controller den
-Modus per Konfiguration tauschen kann.
+Implements the same interface as ``StreamTranscriber`` (``feed`` /
+``maybe_transcribe`` / ``finalize`` / ``reset``), allowing the controller to
+switch modes through configuration.
 
-Intern: gleitende Fenster [links|chunk|rechts] + Zeitstempel-Commit über
-:class:`TimestampCommitter`. Kein direkter Typer-Zugriff - die Ausgabe
-übernimmt weiterhin der Controller über ``DeltaTyper.update()``.
+Internally: sliding windows [left|chunk|right] + timestamp-based commits via
+:class:`TimestampCommitter`. No direct typer access; the controller continues
+to handle output through ``DeltaTyper.update()``.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ SAMPLE_RATE = 16000
 
 
 def _to_float_audio(data: bytes) -> np.ndarray:
-    """s16le-Bytes robust in float32 [-1,1] wandeln (auch bei ungerader Laenge)."""
+    """Reliably convert s16le bytes to float32 [-1,1], even for odd lengths."""
     if len(data) % 2:
         data = data[:-1]
     return np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
@@ -32,15 +32,15 @@ def _to_float_audio(data: bytes) -> np.ndarray:
 
 @dataclass
 class WindowedTranscriber:
-    """Fensterbasiertes Streaming-Transkriptions-Objekt."""
+    """Window-based streaming transcription object."""
 
-    engine: object  # hat transcribe_with_timestamps + transcribe
+    engine: object  # provides transcribe_with_timestamps + transcribe
     interval_s: float = 1.0
     min_audio_s: float = 3.0
     min_final_audio_s: float = 0.5
-    #: Maximale Segmentlaenge fuer die finale Rest-Transkription (Sekunden).
-    #: Lange Reste werden geschnitten, damit Token-Budget/Encoder-Speicher
-    #: nicht zum Engpass werden.
+    #: Maximum segment length for final remainder transcription (seconds).
+    #: Long remainders are split to prevent the token budget or encoder memory
+    #: from becoming a bottleneck.
     max_final_segment_s: float = 30.0
     sample_rate: int = SAMPLE_RATE
     commit_agreements: int = 2
@@ -59,7 +59,7 @@ class WindowedTranscriber:
     _silence_misses: int = field(default=0, init=False, repr=False)
 
     # ------------------------------------------------------------------
-    # Zustand
+    # State
     # ------------------------------------------------------------------
     @property
     def audio_seconds(self) -> float:
@@ -67,7 +67,7 @@ class WindowedTranscriber:
 
     @property
     def committed_len(self) -> int:
-        """Laenge des committeten Textpraefixes (fuer DeltaTyper)."""
+        """Length of the committed text prefix (for DeltaTyper)."""
         return len(self._committed_text)
 
     @property
@@ -87,7 +87,7 @@ class WindowedTranscriber:
         )
 
     # ------------------------------------------------------------------
-    # Steuerung
+    # Control
     # ------------------------------------------------------------------
     def reset(self) -> None:
         self._buffer.clear()
@@ -101,23 +101,23 @@ class WindowedTranscriber:
             self._buffer.extend(chunk)
 
     def _flush_pending_text(self) -> None:
-        """Sichert den letzten Partial in den committeten Text.
+        """Preserves the last partial in the committed text.
 
-        Wird vor dem Ueberspringen einer Pause aufgerufen, damit der bereits
-        erkannte Text nicht beim Vorruecken von committed_s verloren geht.
+        Called before skipping a pause so that already recognized text is not
+        lost when committed_s advances.
         """
         if self._last_partial.strip():
             self._committed_text += self._last_partial.strip() + " "
             self._last_partial = ""
 
     def maybe_transcribe(self):
-        """Transkribiert das nächste Fenster, wenn eines fällig ist.
+        """Transcribes the next window when one is due.
 
         Returns:
-            Ein ``TranscriptionResult`` mit dem VOLLEN Text (committed +
-            partial) und ``committed_len``, oder None.
+            A ``TranscriptionResult`` containing the FULL text (committed +
+            partial) and ``committed_len``, or None.
         """
-        # Fix 4: interval_s durchsetzen - nicht bei jedem Tick transkribieren.
+        # Fix 4: Enforce interval_s; do not transcribe on every tick.
         if self._last_transcribed_audio_s > 0:
             if self.audio_seconds - self._last_transcribed_audio_s < self.interval_s:
                 return None
@@ -133,56 +133,56 @@ class WindowedTranscriber:
         if not slice_data:
             return None
 
-        # Fix 5: VAD nur auf das NEUE Segment (ab committed_s) pruefen,
-        # nicht auf den ganzen Slice inkl. Sprach-Links-Kontext.
+        # Fix 5: Run VAD only on the NEW segment (from committed_s), not on
+        # the entire slice including left speech context.
         if self.vad is not None:
             committed_byte = int(self._committer.committed_s * self.sample_rate * 2)
             vad_data = bytes(self._buffer[committed_byte:end_byte])
             if vad_data:
                 arr = _to_float_audio(vad_data)
                 if len(arr) and not self.vad.has_speech(arr):
-                    # Fix A (Pause-Stall): Nach 2 aufeinanderfolgenden
-                    # VAD-Misses ist das eine echte Pause -> committed_s
-                    # vorruecken, sonst bleibt der Commit-Punkt ewig stehen
-                    # und alles nach der Pause geht verloren.
+                    # Fix A (pause stall): After 2 consecutive VAD misses,
+                    # this is a real pause -> advance committed_s; otherwise,
+                    # the commit point stalls indefinitely and everything
+                    # after the pause is lost.
                     self._silence_misses += 1
                     if self._silence_misses >= 2:
-                        # Sicherung: nur ueberspringen, wenn im Fenster
-                        # wirklich KEINE Sprache ist UND der Puffer schon
-                        # weiter reicht (sonst wuerde nur "noch nicht
-                        # dran"-Sprache uebersprungen).
+                        # Safeguard: skip only when the window contains
+                        # absolutely NO speech AND the buffer already extends
+                        # farther (otherwise, speech that simply has not been
+                        # reached yet would be skipped).
                         self._flush_pending_text()
                         skip_to = min(
                             self._committer.committed_s + self.chunk_s,
                             self.audio_seconds,
                         )
-                        # Nur vorruecken, wenn der Puffer mindestens bis
-                        # Fensterende gefuellt ist (kein verfruehtes Skip).
+                        # Advance only when the buffer is filled at least
+                        # through the window end (no premature skip).
                         if self.audio_seconds >= window.end - 0.01:
                             self._committer.skip_silence(skip_to)
                             log.info(
-                                "Pause erkannt -> committed_s auf %.1fs vorgert",
+                                "Pause detected -> committed_s advanced to %.1fs",
                                 self._committer.committed_s,
                             )
                         self._silence_misses = 0
                         log.info(
-                            "Pause erkannt -> committed_s auf %.1fs vorgert",
+                            "Pause detected -> committed_s advanced to %.1fs",
                             self._committer.committed_s,
                         )
                     else:
                         log.debug(
-                            "Fenster %.1f-%.1fs: VAD still (Miss %d)",
+                            "Window %.1f-%.1fs: VAD silent (miss %d)",
                             window.start, window.end, self._silence_misses,
                         )
                     return None
-            # Sprache erkannt -> Miss-Zaehler zuruecksetzen
+            # Speech detected -> reset miss counter
             self._silence_misses = 0
 
         tr = self.engine.transcribe_with_timestamps(slice_data, window.start)
         self._last_transcribed_audio_s = self.audio_seconds
         commit_text, partial = self._committer.update(tr, window.commit_horizon)
         log.debug(
-            "Fenster %.1f-%.1fs -> commit=%r partial=%r",
+            "Window %.1f-%.1fs -> commit=%r partial=%r",
             window.start, window.end, commit_text.strip(), partial.strip(),
         )
 
@@ -192,9 +192,9 @@ class WindowedTranscriber:
 
         from .asr import TranscriptionResult
 
-        # Fix 3 (RC-3): Dem DeltaTyper den VOLLEN Text liefern (committed +
-        # partial), nicht nur das Fenster-Delta. Sonst verwirft
-        # DeltaTyper.update() ab dem 2. Commit alles (len(delta) < committed_len).
+        # Fix 3 (RC-3): Give DeltaTyper the FULL text (committed + partial),
+        # not just the window delta. Otherwise, DeltaTyper.update() discards
+        # everything from the 2nd commit onward (len(delta) < committed_len).
         committed_clean = self._committed_text.rstrip()
         full_text = (committed_clean + " " + self._last_partial).strip()
         return TranscriptionResult(
@@ -203,17 +203,17 @@ class WindowedTranscriber:
         )
 
     def finalize(self):
-        """Finaler Qualitäts-Pass: Resttranskription ab committed_s.
+        """Final quality pass: transcribe the remainder from committed_s.
 
-        Fix 1 (RC-1): Rest NUR transkribieren, wenn er lang genug ist und
-        Sprache enthaelt. Sonst wuerde Stille/Rauschen (bei committed_s==0)
-        blind transkribiert und halluziniert (GROSS, Semikolons).
+        Fix 1 (RC-1): Transcribe the remainder ONLY if it is long enough and
+        contains speech. Otherwise, silence/noise (with committed_s==0) would
+        be transcribed blindly and hallucinated (UPPERCASE, semicolons).
         """
         from .asr import TranscriptionResult
 
-        # P1-Review-Fix: Rest IMMER mit dem committeten Prefix zusammenfuehren,
-        # damit der DeltaTyper den VOLLEN Text bekommt (sonst Datenverlust).
-        # committed_len durchgehend = len(rstrip(praefix)).
+        # P1 review fix: ALWAYS combine the remainder with the committed
+        # prefix so DeltaTyper receives the FULL text (otherwise, data loss).
+        # committed_len consistently = len(rstrip(prefix)).
         def _full(text: str) -> TranscriptionResult:
             committed_clean = self._committed_text.rstrip()
             full = (committed_clean + " " + text).strip() if text else committed_clean
@@ -226,38 +226,39 @@ class WindowedTranscriber:
         if not rest:
             return _full(self._last_partial)
 
-        # 1) Laengen-Guard: zu kurzer Rest wird nicht transkribiert.
+        # 1) Length guard: do not transcribe a remainder that is too short.
         min_bytes = int(self.min_final_audio_s * self.sample_rate * 2)
         if len(rest) < min_bytes:
-            log.debug("finalize: Rest %.2fs zu kurz -> uebersprungen",
+            log.debug("finalize: remainder %.2fs too short -> skipped",
                       len(rest) / (self.sample_rate * 2))
             return _full(self._last_partial)
 
-        # 2) VAD-Guard: Nur KURZE Reste (< 2s) bei VAD-False verwerfen.
-        #    Ein langer Rest ist mit hoher Wahrscheinlichkeit echte Sprache -
-        #    Datenverlust ist schlimmer als Halluzinationsrisiko (RC-B1).
+        # 2) VAD guard: Discard only SHORT remainders (< 2s) when VAD is false.
+        #    A long remainder is very likely real speech; data loss is worse
+        #    than the risk of hallucination (RC-B1).
         if self.vad is not None and len(rest) < 2 * self.sample_rate * 2:
             arr = _to_float_audio(rest)
             if len(arr) and not self.vad.has_speech(arr):
-                log.info("finalize: kurzer Rest ist Stille -> uebersprungen")
+                log.info("finalize: short remainder is silence -> skipped")
                 return _full(self._last_partial)
         elif self.vad is not None and len(rest) >= 2 * self.sample_rate * 2:
-            # Langer Rest: bei VAD-False trotzdem transkribieren, aber warnen.
+            # Long remainder: transcribe even if VAD is false, but warn.
             arr = _to_float_audio(rest)
             if len(arr) and not self.vad.has_speech(arr):
                 log.warning(
-                    "finalize: langer Rest (%.1fs) ist laut VAD stumm, "
-                    "transkribiere trotzdem (Datenverlust vermeiden)",
+                    "finalize: long remainder (%.1fs) is silent according to VAD; "
+                    "transcribing anyway (avoid data loss)",
                     len(rest) / (self.sample_rate * 2),
                 )
 
-        log.debug("finalize: transkribiere Rest %.2fs",
+        log.debug("finalize: transcribing remainder %.2fs",
                   len(rest) / (self.sample_rate * 2))
 
-        # RC-A2-Fix: Rest mit Links-Kontext + Zeitstempeln transkribieren statt
-        # kontextlos (verhindert GROSS am Restanfang mitten im Satz).
-        # Fix B: Sehr lange Reste werden in <=30s-Segmente geschnitten, damit
-        # weder Token-Budget noch Encoder-Speicher zum Engpass werden.
+        # RC-A2 fix: Transcribe the remainder with left context and timestamps
+        # instead of without context (prevents UPPERCASE at the start of a
+        # remainder in the middle of a sentence).
+        # Fix B: Split very long remainders into <=30s segments so neither the
+        # token budget nor encoder memory becomes a bottleneck.
         ctx_byte = int(self.left_context_s * self.sample_rate * 2)
         slice_start = max(0, committed_byte - ctx_byte)
         max_seg_bytes = int(self.max_final_segment_s * self.sample_rate * 2)
@@ -278,16 +279,16 @@ class WindowedTranscriber:
                 seg_text = "".join(t.text for t in rest_tokens).strip()
                 if seg_text:
                     texts.append(seg_text)
-                # naechstes Segment ohne Links-Kontext-Overlap
+                # next segment without left-context overlap
                 seg_start = seg_end
 
             text = " ".join(texts).strip()
             if not text:
-                # Fallback auf whole-transcribe, falls keine Timestamps kamen.
+                # Fall back to whole-transcribe if no timestamps were returned.
                 result = self.engine.transcribe(rest)
                 text = getattr(result, "text", str(result)).strip()
         except Exception as exc:  # noqa: BLE001
-            log.warning("finalize: timestamp-Pfad fehlgeschlagen (%s), Fallback", exc)
+            log.warning("finalize: timestamp path failed (%s), falling back", exc)
             result = self.engine.transcribe(rest)
             text = getattr(result, "text", str(result)).strip()
 

@@ -1,42 +1,41 @@
-# AGENTS.md — Projektregeln STT-Button
+# AGENTS.md — STT-Button Project Rules
 
-Gilt nur in diesem Repo (git@github.com:tsii/Parakeet-on-copilot-key.git, Branch
-`master`). Die globale AGENTS.md gilt zusätzlich.
+Applies only to this repo (git@github.com:tsii/Parakeet-on-copilot-key.git, branch
+`master`). The global AGENTS.md applies additionally.
 
-## Lehren aus dieser Session (Kontext)
-- Subagenten-Ergebnisse IMMER abholen (`list` → `get_result`); nie den Turn mit
-  offenem benötigtem Lauf ohne `schedule`-Wakeup beenden.
-- Experten-Pläne verifizieren, nicht glauben: zwei Kimi-Analysen (CapsLock) waren
-  falsch; ein Ground-Truth-Experiment hat entschieden.
+## Lessons from This Session (Context)
+- ALWAYS collect subagent results (`list` → `get_result`); never end the turn with
+  an open, needed run without a `schedule` wakeup.
+- Verify expert plans instead of trusting them: two Kimi analyses (CapsLock) were
+  wrong; a ground-truth experiment settled the question.
 
-## Workflow / Modelle
-- Planen & Debuggen: openrouter/moonshotai/kimi-k3.1-pro
-- Implementieren: TDD-Ketten mit cortecs/glm-5.3
+## Workflow / Models
+- Planning & debugging: openrouter/moonshotai/kimi-k3.1-pro
+- Implementation: TDD chains with cortecs/glm-5.3
 - Review: cortecs/deepseek-v4-pro-0813
 
-## Regeln
+## Rules
 
-P1 Python & Layout. Wenn Code geändert wird, dann Python 3.12 im src-Layout
-   (`src/stt_button/`) und die venv `.venv/bin/python` verwenden.
+P1 Python & Layout. When changing code, use Python 3.12 with the src layout
+   (`src/stt_button/`) and the venv `.venv/bin/python`.
 
-P2 Testkommando. Wenn getestet wird, dann AUSSCHLIESSLICH
-   `.venv/bin/python -m pytest`. Nie System-Python, nie andere Runner.
+P2 Test Command. When running tests, use EXCLUSIVELY
+   `.venv/bin/python -m pytest`. Never use system Python or other runners.
 
-P3 TDD. Wenn ein Fix/eine Funktion umgesetzt wird, dann zuerst Test schreiben,
-   ROT dokumentieren (Test schlägt fehl), dann GRÜN (`.venv/bin/python -m
-   pytest`). Nie Code ohne zugehörigen Test committen.
+P3 TDD. When implementing a fix or feature, write the test first,
+   document RED (test fails), then GREEN (`.venv/bin/python -m
+   pytest`). Never commit code without a corresponding test.
 
-P4 Stil. Wenn neue Module/Funktionen/Docstrings entstehen, dann auf Deutsch.
+P4 Style. When creating new modules, functions, or docstrings, write them in English.
 
-P5 Sicherheitsgrenzen. Wenn ein Eingriff Systemrechte braucht (apt, /etc, keyd,
-   systemd, sudo), dann NICHT ohne ausdrückliche Betreiber-Freigabe ausführen.
-   Die App darf CapsLock nie ungefragt togglen (Default
-   `capslock_autocorrect=false` → nur warnen).
+P5 Security Boundaries. If an operation requires system privileges (apt, /etc, keyd,
+   systemd, sudo), do NOT execute it without explicit operator approval.
+   The app must never toggle CapsLock without asking (default
+   `capslock_autocorrect=false` → warn only).
 
-P6 Dienst. Wenn der Dienst gestartet/gestoppt/enabled wird, dann nur nach
-   ausdrücklicher Betreiber-Freigabe. Aktuell: manuell gestartet, Autostart
-   bewusst noch nicht gesetzt.
+P6 Service. Start, stop, or enable the service only with explicit operator
+   approval. Currently: started manually; autostart intentionally not configured yet.
 
-P7 Git. Wenn committet/gepusht wird, dann NUR nach
-   git@github.com:tsii/Parakeet-on-copilot-key.git (Remote `origin`, Branch
-   `master`). Nie auf andere Remotes pushen.
+P7 Git. When committing/pushing, push ONLY to
+   git@github.com:tsii/Parakeet-on-copilot-key.git (remote `origin`, branch
+   `master`). Never push to other remotes.

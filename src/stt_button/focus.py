@@ -1,13 +1,13 @@
-"""Fokus-Fenster-Abfrage ueber die GNOME-Shell-Extension (Kimi 31.10.).
+"""Focused-window query via the GNOME Shell extension (Kimi, 31.10.).
 
-Die Extension stt-button-focus@salmon.io exportiert das aktuell
-fokussierte Fenster (app-id + Titel) per DBus-Method GetFocus() auf
-dem Session-Bus. Diese Modul fragt es synchron mit engem Zeitbudget ab
-(Fertig-Ton-Pfad: der Finalizer darf nie auf Fensterfragen warten).
+The extension stt-button-focus@salmon.io exports the currently focused
+window (app-id + title) via the DBus method GetFocus() on the session
+bus. This module queries it synchronously with a tight time budget
+(done-sound path: the finalizer must never wait on window queries).
 
-Bei fehlgeschlagener/nicht installierter Extension liefert
-``terminal_focused()`` None (unentschieden) — der Caller entscheidet,
-z.B. Ton trotzdem spielen (Betreiber-Modus) oder nicht.
+If the extension is missing or not answering, ``terminal_focused()``
+returns None (undecided) -- the caller decides, e.g. play the sound
+anyway (operator mode) or not.
 """
 from __future__ import annotations
 
@@ -16,12 +16,12 @@ import subprocess
 
 log = logging.getLogger(__name__)
 
-#: DBus-Zielpunkt der GNOME-Shell-Extension (siehe extension.js).
+#: DBus endpoint of the GNOME Shell extension (see extension.js).
 DBUS_NAME = "com.salmon.sttbutton"
 OBJECT_PATH = "/com/salmon/sttbutton"
 IFACE = "com.salmon.sttbutton.Focus"
 
-#: app-id-Untermengen, die als "Terminal" gelten (Org.gnome.Terminal,
+#: App-id subsets that count as a "terminal" (org.gnome.Terminal,
 #: kitty, alacritty, foot, konsole, xterm, wezterm, terminator, ...).
 _TERMINAL_IDS = (
     "org.gnome.Terminal",
@@ -38,12 +38,12 @@ _TERMINAL_IDS = (
     "gnome-terminal",
 )
 
-#: Maximaler busctl-Budget: Fokusfrage ist Komfort, kein Muss.
+#: Maximum busctl budget: the focus query is convenience, not critical.
 _TIMEOUT_S = 1.0
 
 
 def _call_focus() -> tuple[str, str] | None:
-    """Ruft GetFocus() per busctl ab; None bei jedem Fehler."""
+    """Query GetFocus() via busctl; None on any error."""
     try:
         proc = subprocess.run(
             [
@@ -57,7 +57,7 @@ def _call_focus() -> tuple[str, str] | None:
             timeout=_TIMEOUT_S,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        log.debug("Fokus-Abfrage fehlgeschlagen (%s)", exc)
+        log.debug("focus query failed (%s)", exc)
         return None
     if proc.returncode != 0:
         return None
@@ -71,18 +71,18 @@ def _call_focus() -> tuple[str, str] | None:
         app_id, title = str(ret[0]), str(ret[1])
         return app_id, title
     except (ValueError, TypeError, IndexError) as exc:
-        log.debug("Fokus-Antwort unlesbar (%s)", exc)
+        log.debug("focus reply unreadable (%s)", exc)
         return None
 
 
 def terminal_focused() -> bool | None:
-    """Ist ein TERMINAL-FENSTER fokussiert?
+    """Is a TERMINAL window focused?
 
     Returns:
-        True  = Fokus ist ein bekanntes Terminal (app-id-Zuordnung).
-        False = Fokus ist eindeutig KEIN Terminal (anderes Fenster).
-        None  = unentschieden (Extension fehlt, Aufruf fehlgeschlagen,
-        kein Fenster fokussiert) — Caller entscheidet.
+        True  = focus is a known terminal (app-id match).
+        False = focus is definitely NOT a terminal (other window).
+        None  = undecided (extension missing, call failed, no window
+        focused) -- caller decides.
     """
     focus = _call_focus()
     if focus is None:

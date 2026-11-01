@@ -1,7 +1,7 @@
-"""Tests fuer die CLI-Subcommands (TDD-Kette 7).
+"""Tests for CLI subcommands (TDD chain 7).
 
-Getestet werden ``stt-button reset-capslock`` (Ziel aus der Config abgeleitet,
-standardmaessig invertiert: LED "an" = normale Schreibung) und
+These tests cover ``stt-button reset-capslock`` (target derived from config,
+inverted by default: LED "on" = normal typing) and
 ``stt-button caps-diagnose``.
 """
 from __future__ import annotations
@@ -24,12 +24,12 @@ def subprocess_result(stdout_text: str = "") -> object:
 
 
 class CapslockEnv:
-    """Zeichnet dotool-Payloads auf und simuliert die LED pro Device.
+    """Record dotool payloads and simulate the LED per device.
 
-    ``inverted=True``: Semantik wie auf diesem System (LED aus = CapsLock
-    aktiv), Ziel ist also "an". ``inverted=False``: konventionell, Ziel "aus".
+    ``inverted=True``: semantics as on this system (LED off = CapsLock
+    active), so the target is "on". ``inverted=False``: conventional, target "off".
 
-    ``flips=True``: der Toggle bringt die LED auf das Ziel.
+    ``flips=True``: the toggle moves the LED to the target.
     """
 
     DEVICES = ["input3::capslock"]
@@ -46,7 +46,7 @@ class CapslockEnv:
         self.payloads: list[str] = []
         self.target = "an" if inverted else "aus"
         self.other = "aus" if inverted else "an"
-        self.led = self.other  # Start: falscher Zustand (CapsLock aktiv)
+        self.led = self.other  # Start: incorrect state (CapsLock active)
         self.calls = 0
 
         monkeypatch.setattr("stt_button.typing.shutil.which", lambda b: "/usr/bin/" + b)
@@ -62,7 +62,7 @@ class CapslockEnv:
         )
 
     def _run(self, cmd, **kw):
-        # dotool-Payloads (key capslock) via stdin; sonst (z.B. xset) tolerieren.
+        # Accept dotool payloads (key capslock) via stdin; tolerate others (e.g., xset).
         if kw.get("input"):
             self.payloads.append(kw.get("input", ""))
             if "key capslock" in kw.get("input", ""):
@@ -93,12 +93,12 @@ class TestResetCapslock:
         capsys: pytest.CaptureFixture,
         tmp_path: Path,
     ) -> None:
-        """Default (invertiert): Ziel ist LED an; einmal togglen genuegt."""
+        """Default (inverted): target is LED on; one toggle is sufficient."""
         env = CapslockEnv(monkeypatch)
         assert _cmd_reset_capslock(_args(tmp_path / "config.toml")) == 0
         out = capsys.readouterr().out
         assert env.toggles == 1
-        assert "LED an = normale Schreibung" in out
+        assert "LED on = normal typing" in out
 
     def test_success_mentions_physical_key(
         self,
@@ -109,7 +109,7 @@ class TestResetCapslock:
         CapslockEnv(monkeypatch)
         _cmd_reset_capslock(_args(tmp_path / "config.toml"))
         out = capsys.readouterr().out
-        assert "physische CapsLock-Taste" in out
+        assert "physical CapsLock key" in out
 
     def test_conventional_config_targets_off(
         self,
@@ -117,14 +117,14 @@ class TestResetCapslock:
         capsys: pytest.CaptureFixture,
         tmp_path: Path,
     ) -> None:
-        """capslock_led_inverted=false: Ziel ist LED aus."""
+        """capslock_led_inverted=false: target is LED off."""
         cfg_file = tmp_path / "config.toml"
         cfg_file.write_text("capslock_led_inverted = false\n", encoding="utf-8")
         env = CapslockEnv(monkeypatch, inverted=False)
         assert _cmd_reset_capslock(_args(cfg_file)) == 0
         out = capsys.readouterr().out
         assert env.toggles == 1
-        assert "LED aus = normale Schreibung" in out
+        assert "LED off = normal typing" in out
 
     def test_prints_per_device(
         self,
@@ -148,7 +148,7 @@ class TestResetCapslock:
         out = capsys.readouterr().out
         assert env.toggles == 3
         assert "keyd" in out
-        assert "melden" in out
+        assert "log out/in" in out
 
     def test_old_config_key_is_now_valid(
         self,
@@ -156,7 +156,7 @@ class TestResetCapslock:
         capsys: pytest.CaptureFixture,
         tmp_path: Path,
     ) -> None:
-        """capslock_led_inverted ist jetzt ein gueltiger Config-Schluessel."""
+        """capslock_led_inverted is now a valid config key."""
         cfg_file = tmp_path / "config.toml"
         cfg_file.write_text("capslock_led_inverted = true\n", encoding="utf-8")
         env = CapslockEnv(monkeypatch)
@@ -171,7 +171,7 @@ class TestCapsDiagnose:
         capsys: pytest.CaptureFixture,
         tmp_path: Path,
     ) -> None:
-        """Ausgabe enthaelt beide Device-Namen und den gueltigen Zielzustand."""
+        """Output contains both device names and the valid target state."""
         monkeypatch.setattr("stt_button.typing.shutil.which", lambda b: "/usr/bin/" + b)
         monkeypatch.setattr(
             "stt_button.__main__._capslock_leds",
@@ -181,9 +181,9 @@ class TestCapsDiagnose:
             "stt_button.__main__.subprocess.run",
             lambda cmd, **kw: subprocess_result(stdout="00: Caps Lock:   off\n"),
         )
-        # Tippen des Markers darf subprocess.run (dotool) aufrufen; hier
-        # einfach tolerieren (kein stdin). type_text verwendet typing.run,
-        # nicht __main__.subprocess.run - deshalb separat mocken.
+        # Typing the marker may call subprocess.run (dotool); simply tolerate
+        # it here (no stdin). type_text uses typing.run, not
+        # __main__.subprocess.run, so mock it separately.
         monkeypatch.setattr(
             "stt_button.typing.subprocess.run",
             lambda cmd, **kw: subprocess_result(),
@@ -193,7 +193,7 @@ class TestCapsDiagnose:
         out = capsys.readouterr().out
         assert "input3::capslock" in out
         assert "input9::capslock" in out
-        assert "an" in out  # Zielzustand (Default invertiert: "an")
+        assert "an" in out  # target state (default inverted: "on")
 
     def test_caps_diagnose_tolerates_xset_failure(
         self,
@@ -201,7 +201,7 @@ class TestCapsDiagnose:
         capsys: pytest.CaptureFixture,
         tmp_path: Path,
     ) -> None:
-        """xset q darf fehlschlagen, ohne dass das Kommando scheitert."""
+        """xset q may fail without causing the command to fail."""
         monkeypatch.setattr("stt_button.typing.shutil.which", lambda b: "/usr/bin/" + b)
         monkeypatch.setattr(
             "stt_button.__main__._capslock_leds",

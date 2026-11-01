@@ -1,4 +1,4 @@
-"""Tests für den SileroVadGate (Schritt 5)."""
+"""Tests for SileroVadGate (step 5)."""
 from __future__ import annotations
 
 import numpy as np

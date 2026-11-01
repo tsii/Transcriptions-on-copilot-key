@@ -1,10 +1,9 @@
-"""Bracketed-Paste-Marker-Filter (Betreiber 31.10.):
+"""Bracketed-paste marker filter (operator, October 31):
 
-Manuelles Paste mit aktiverem Bracketed-Paste (Shell wartet nach
-vorherigem Strg+V im quoted-insert) bringt ESC[200~...ESC[201~
-in den getippten/prasentierten Text — sichtbar als '^[[200~' und
-'~' am Ende. Beide Darstellungen (roh und ^notiert) muessen aus
-jedem Text rausgefiltert werden, BEVOR die Delta-Berechnung laeuft.
+Manual paste with bracketed paste enabled (the shell waits after a previous
+Ctrl+V in quoted-insert) inserts ESC[200~...ESC[201~ into the typed/presented
+text — visible as '^[[200~' and '~' at the end. Both representations (raw and
+caret notation) must be filtered out of every text BEFORE delta calculation.
 """
 from __future__ import annotations
 

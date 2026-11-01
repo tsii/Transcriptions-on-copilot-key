@@ -1,33 +1,32 @@
-"""BufferedTranscriber: Hybrid aus Volllpuffer (Phase A) und bounded Fenstern (Phase B).
+"""BufferedTranscriber: Hybrid of a full buffer (Phase A) and bounded windows (Phase B).
 
-STUFE 3 des Latenz-/Qualitaetsplans. Erfüllt dasselbe Interface wie
+STAGE 3 of the latency/quality plan. Implements the same interface as
 ``StreamTranscriber`` / ``WindowedTranscriber`` (``feed`` /
-``maybe_transcribe`` / ``finalize`` / ``reset``), damit der Controller den
-Modus per Konfiguration tauschen kann.
+``maybe_transcribe`` / ``finalize`` / ``reset``), allowing the controller to
+switch modes through configuration.
 
-Strategie
----------
-* **Phase A** (Audio <= ``whole_buffer_until_s``, Default 8s): der ganze
-  Puffer wird transkribiert - wie beim bewaehrten ``StreamTranscriber``, aber
-  bereits MIT Zeitstempeln und einem einzigen
-  :class:`~stt_button.committer.TimestampCommitter`
-  (``require_agreement_always=True``). Ein Committer, kein zweites Seeding:
-  von Anfang an gilt "zwei Identische am selben committed_s", damit eine fruehe
-  Halluzination nie eingefroren wird.
-* **Phase B** (> ``whole_buffer_until_s``): pro Tick genau EIN fest begrenztes
-  Fenster ``[committed_s - left_context_s | chunk_s | right_context_s]`` mit
-  Commit-Horizont bei ``committed_s + chunk_s``. Zustandlos: keine
-  Decoder-/Encoder-Zustaende ueber Fenstergrenzen, jedes Fenster wird
-  unabhaengig dekodiert. Ueberlappende Tokens werden ueber ihre ABSOLUTEN
-  Zeitstempel entdoppelt (der Committer verwirft alles vor ``committed_s``).
-  Das Fenster ist hart auf ``left + chunk + right`` gedeckelt; bleibt der
-  Commit-Punkt an einer Pause stehen, sorgt ``skip_silence`` fuer Fortschritt.
-* **finalize()**: keine neuen Bytes -> ``committed + last_partial`` ohne
-  Engine-Call. Neue Bytes -> nur der uncommitted Tail plus Links-Kontext in
-  begrenzten Fenstern (``max_final_window_s``); NIEMALS der Vollpuffer.
+Strategy
+--------
+* **Phase A** (audio <= ``whole_buffer_until_s``, default 8s): transcribe the
+  entire buffer, as in the proven ``StreamTranscriber``, but WITH timestamps
+  and a single :class:`~stt_button.committer.TimestampCommitter`
+  (``require_agreement_always=True``) from the outset. One committer, no second
+  seeding: from the beginning, "two identical results at the same committed_s"
+  is required so an early hallucination is never frozen into the output.
+* **Phase B** (> ``whole_buffer_until_s``): exactly ONE strictly bounded window
+  ``[committed_s - left_context_s | chunk_s | right_context_s]`` per tick, with
+  the commit horizon at ``committed_s + chunk_s``. Stateless: no decoder or
+  encoder state crosses window boundaries; each window is decoded independently.
+  Overlapping tokens are deduplicated using their ABSOLUTE timestamps (the
+  committer discards everything before ``committed_s``). The window is hard-
+  capped at ``left + chunk + right``; if the commit point stalls at a pause,
+  ``skip_silence`` ensures progress.
+* **finalize()**: no new bytes -> ``committed + last_partial`` without an
+  engine call. New bytes -> only the uncommitted tail plus left context in
+  bounded windows (``max_final_window_s``); NEVER the full buffer.
 
-Der Controller bekommt weiter den VOLLEN Text (committed + partial) samt
-``committed_len``, genau wie beim ``WindowedTranscriber``.
+The controller continues to receive the FULL text (committed + partial) along
+with ``committed_len``, exactly as with ``WindowedTranscriber``.
 """
 from __future__ import annotations
 
@@ -43,14 +42,14 @@ SAMPLE_RATE = 16000
 
 
 def _to_float_audio(data: bytes) -> np.ndarray:
-    """s16le-Bytes robust in float32 [-1,1] wandeln (auch bei ungerader Laenge)."""
+    """Reliably convert s16le bytes to float32 [-1,1], even for odd lengths."""
     if len(data) % 2:
         data = data[:-1]
     return np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
 
 
 class BufferedTranscriber:
-    """Hybride Puffer-/Fenster-Transkription mit Zeitstempel-Commit."""
+    """Hybrid buffer/window transcription with timestamp-based commits."""
 
     def __init__(
         self,
@@ -67,43 +66,43 @@ class BufferedTranscriber:
         sample_rate: int = SAMPLE_RATE,
         vad: object | None = None,
     ) -> None:
-        #: Engine mit transcribe_with_timestamps (+ transcribe als Fallback)
+        #: Engine with transcribe_with_timestamps (+ transcribe as a fallback)
         self.engine = engine
         self.interval_s = interval_s
         self.min_audio_s = min_audio_s
-        #: Bis zu dieser Pufferlaenge wird der ganze Puffer transkribiert (Phase A).
+        #: Transcribe the entire buffer up to this buffer length (Phase A).
         self.whole_buffer_until_s = whole_buffer_until_s
-        #: Links-Kontext des Phase-B-Fensters (Qualitaetsanker vor committed_s).
+        #: Left context of the Phase B window (quality anchor before committed_s).
         self.left_context_s = left_context_s
-        #: Neues stabiles Segment pro Tick.
+        #: New stable segment per tick.
         self.chunk_s = chunk_s
-        #: Rechts-Kontext (Lookahead) nach dem Commit-Horizont.
+        #: Right context (lookahead) beyond the commit horizon.
         self.right_context_s = right_context_s
-        #: Aufeinanderfolgende Identische, bis ein Kandidat committet wird.
+        #: Consecutive identical results required before a candidate is committed.
         self.commit_agreements = commit_agreements
-        #: Hartes Budget fuer Finalize-/Catch-up-Fenster (Sekunden Audio).
+        #: Hard budget for finalize/catch-up windows (seconds of audio).
         self.max_final_window_s = max_final_window_s
         self.sample_rate = sample_rate
-        #: Optionales VAD-Gate (z.B. SileroVadGate).
+        #: Optional VAD gate (e.g., SileroVadGate).
         self.vad = vad
 
         self._buffer = bytearray()
         self._committer = self._new_committer()
         self._committed_text = ""
         self._last_partial = ""
-        #: Audio-Stand (Sekunden) des letzten Engine-Aufrufs (Intervall-Throttle).
+        #: Audio position (seconds) at the last engine call (interval throttle).
         self._last_transcribed_at = 0.0
         self._has_transcribed = False
-        #: Aufeinanderfolgende VAD-Misses im neuen Bereich (Pause-Erkennung).
+        #: Consecutive VAD misses in the new region (pause detection).
         self._silence_misses = 0
-        #: True, nachdem das Live-Gate im neuen Bereich "stumm" meldete.
+        #: True after the live gate reports "silent" in the new region.
         self._vad_live_silent = False
-        #: Puffergroesse nach dem letzten erfolgreichen Engine-Call: Nachweis
-        #: fuer "keine neuen Bytes" im Finalize-Cache.
+        #: Buffer size after the last successful engine call: evidence of
+        #: "no new bytes" for the finalize cache.
         self._completed_nbytes = -1
 
     # ------------------------------------------------------------------
-    # Zustand
+    # State
     # ------------------------------------------------------------------
     @property
     def audio_seconds(self) -> float:
@@ -111,7 +110,7 @@ class BufferedTranscriber:
 
     @property
     def committed_len(self) -> int:
-        """Laenge des committeten Textpraefixes (fuer DeltaTyper)."""
+        """Length of the committed text prefix (for DeltaTyper)."""
         return len(self._committed_text.rstrip())
 
     @property
@@ -124,7 +123,7 @@ class BufferedTranscriber:
 
     @property
     def last_text(self) -> str:
-        """Voller zuletzt bekannter Text (committed + partial)."""
+        """Full last known text (committed + partial)."""
         return (self._committed_text + self._last_partial).strip()
 
     @property
@@ -132,10 +131,10 @@ class BufferedTranscriber:
         return self._committer.committed_s
 
     # ------------------------------------------------------------------
-    # Steuerung
+    # Control
     # ------------------------------------------------------------------
     def reset(self) -> None:
-        """Vergisst Puffer, Committer und alle Zaehler (neue Aufnahme)."""
+        """Clears the buffer, committer, and all counters (new recording)."""
         self._buffer.clear()
         self._committer = self._new_committer()
         self._committed_text = ""
@@ -147,14 +146,14 @@ class BufferedTranscriber:
         self._completed_nbytes = -1
 
     def feed(self, chunk: bytes) -> None:
-        """Legt Audio in den Puffer und entwertet den Finalize-Cache."""
+        """Adds audio to the buffer and invalidates the finalize cache."""
         if chunk:
             self._buffer.extend(chunk)
             self._vad_live_silent = False
             self._silence_misses = 0
 
     def _new_committer(self) -> TimestampCommitter:
-        """Ein Committer fuer beide Phasen - Agreement-Zwang gilt immer."""
+        """One committer for both phases; agreement is always required."""
         return TimestampCommitter(
             commit_agreements=self.commit_agreements,
             require_agreement_always=True,
@@ -164,11 +163,11 @@ class BufferedTranscriber:
     # Live-Tick
     # ------------------------------------------------------------------
     def maybe_transcribe(self):
-        """Transkribiert das naechst faellige Fenster, wenn eines faellig ist.
+        """Transcribes the next due window, if any.
 
         Returns:
-            ``TranscriptionResult`` mit dem VOLLEN Text (committed + partial)
-            und ``committed_len``, oder ``None`` wenn nichts faellig war.
+            ``TranscriptionResult`` containing the FULL text (committed +
+            partial) and ``committed_len``, or ``None`` if nothing was due.
         """
         from .asr import TranscriptionResult
 
@@ -193,12 +192,11 @@ class BufferedTranscriber:
         commit_text, _ = self._committer.update(tr, window.commit_horizon)
         if commit_text.strip():
             self._committed_text += commit_text.strip() + " "
-        # Live-Partial = alles, was NACH dem Commit-Punkt bekannt ist: der
-        # noch nicht bestaetigte Kandidat UND die Tokens jenseits des
-        # Horizonts. Wuerde man nur den Committer-Partial nehmen, fehlen die
-        # zurueckgehaltenen Kandidaten-Woerter im Live-Text -> der DeltaTyper
-        # wuerde sie mit Backspaces loeschen und spaeter zuruecktippen
-        # (sichtbares Flackern, verlorene Woerter).
+        # Live partial = everything known AFTER the commit point: the candidate
+        # not yet confirmed AND the tokens beyond the horizon. Using only the
+        # committer's partial would omit the withheld candidate words from the
+        # live text -> DeltaTyper would delete them with backspaces and retype
+        # them later (visible flicker, lost words).
         if tr.tokens:
             fresh = [t for t in tr.tokens
                      if t.start >= self._committer.committed_s - 1e-3]
@@ -209,21 +207,21 @@ class BufferedTranscriber:
         committed_clean = self._committed_text.rstrip()
         full = (committed_clean + " " + self._last_partial).strip()
         log.debug(
-            "buffered Fenster %.1f-%.1fs horizon=%.1fs -> committed=%d text=%r",
+            "buffered window %.1f-%.1fs horizon=%.1fs -> committed=%d text=%r",
             window.start, window.end, window.commit_horizon,
             len(committed_clean), full[:60],
         )
         return TranscriptionResult(text=full, committed_len=len(committed_clean))
 
     # ------------------------------------------------------------------
-    # Finalisierung
+    # Finalization
     # ------------------------------------------------------------------
     def finalize(self):
-        """Finaler Pass: unveraendertes Audio aus dem Cache, sonst Tail+Kontext.
+        """Final pass: use cached audio if unchanged; otherwise, tail + context.
 
-        Der committete Praefix wird NIE neu dekodiert oder ueberschrieben;
-        ``committed_len`` bleibt die Praefixlaenge, damit der DeltaTyper den
-        committeten Teil weder anfasst noch dupliziert.
+        The committed prefix is NEVER decoded again or overwritten;
+        ``committed_len`` remains the prefix length so DeltaTyper neither
+        modifies nor duplicates the committed portion.
         """
         from .asr import TranscriptionResult
 
@@ -239,25 +237,25 @@ class BufferedTranscriber:
         if not tail:
             return _full(self._last_partial)
         if len(self._buffer) == self._completed_nbytes:
-            log.debug("buffered finalize: keine neuen Bytes -> Cache (%d Bytes)",
+            log.debug("buffered finalize: no new bytes -> cache (%d bytes)",
                       len(self._buffer))
             return _full(self._last_partial)
 
-        # VAD-Reste nicht blind verwerfen: meldete das Live-Gate im neuen
-        # Bereich zweimal "stumm", war der Tail also eine echte Pause,
-        # uebernehmen wir den letzten Partial statt Muell zu erfinden.
+        # Do not blindly discard VAD remainders: if the live gate reported
+        # "silent" twice in the new region, the tail was a real pause, so keep
+        # the last partial instead of inventing garbage.
         if self.vad is not None and self._vad_live_silent:
-            log.info("buffered finalize: Tail ist laut VAD stumm -> letzter "
-                     "Partial uebernommen (kein Vollpuffer, kein Datenverlust)")
+            log.info("buffered finalize: tail is silent according to VAD -> last "
+                     "partial retained (no full buffer, no data loss)")
             return _full(self._last_partial)
 
         tail_s = len(tail) / (self.sample_rate * 2)
-        log.debug("buffered finalize: dekodiere uncommitted Tail %.2fs ab %.1fs",
+        log.debug("buffered finalize: decoding uncommitted tail %.2fs from %.1fs",
                   tail_s, self._committer.committed_s)
 
         pieces: list[str] = []
-        # Ueberlappung wird ueber absolute Token-Zeiten entdoppelt: alles
-        # unterhalb von ``emitted_s`` wurde bereits geliefert.
+        # Deduplicate overlaps using absolute token timestamps: everything
+        # before ``emitted_s`` has already been emitted.
         emitted_s = self._committer.committed_s
         for window in self._catchup_windows(self.audio_seconds):
             tr = self._decode(window)
@@ -269,35 +267,35 @@ class BufferedTranscriber:
                 emitted_s = max(t.end for t in tr.tokens) + 1e-3
         tail_text = " ".join(pieces).strip()
         if not pieces:
-            # Fallback ohne Zeitstempel: NUR der uncommitted Tail, nie der
-            # Vollpuffer.
+            # Fallback without timestamps: ONLY the uncommitted tail, never
+            # the full buffer.
             result = self.engine.transcribe(tail)
             tail_text = getattr(result, "text", str(result)).strip()
         return _full(tail_text)
 
     # ------------------------------------------------------------------
-    # Fensterberechnung
+    # Window calculation
     # ------------------------------------------------------------------
     def _next_window(self, audio_s: float) -> StreamWindow | None:
-        """Naechstes Live-Fenster (Phase A: Volllpuffer, Phase B: bounded)."""
+        """Next live window (Phase A: full buffer, Phase B: bounded)."""
         committed_s = self._committer.committed_s
 
         if audio_s <= self.whole_buffer_until_s:
-            # Phase A: wachsender Volllpuffer von 0 bis zum Audioende. Es wird
-            # nur committet, was sicher vor dem Horizont liegt und danach noch
-            # Rechtskontext hat (RC-A3 wie in StreamWindowPolicy).
+            # Phase A: growing full buffer from 0 through the end of the audio.
+            # Commit only what lies safely before the horizon and still has
+            # right context beyond it (RC-A3, as in StreamWindowPolicy).
             horizon = min(audio_s - self.right_context_s,
                           committed_s + self.chunk_s)
             if horizon <= committed_s:
                 return None
             return StreamWindow(start=0.0, end=audio_s, commit_horizon=horizon)
 
-        # Phase B: genau EIN fest begrenztes Fenster pro Tick, hart auf
-        # left + chunk + right gedeckelt (konstante Inferenzkosten).
+        # Phase B: exactly ONE strictly bounded window per tick, hard-capped at
+        # left + chunk + right (constant inference costs).
         start = max(0.0, committed_s - self.left_context_s)
         horizon = committed_s + self.chunk_s
         if audio_s < horizon + self.right_context_s:
-            # Noch kein Rechtskontext hinter dem Horizont -> nichts committen.
+            # No right context beyond the horizon yet -> do not commit.
             return None
         end = horizon + self.right_context_s
         if end <= start:
@@ -305,7 +303,7 @@ class BufferedTranscriber:
         return StreamWindow(start=start, end=end, commit_horizon=horizon)
 
     def _catchup_windows(self, audio_s: float):
-        """Begrenzte Fenster fuer finalize: Tail + Kontext, nie Vollpuffer."""
+        """Bounded windows for finalize: tail + context, never full buffer."""
         budget = min(self.max_final_window_s,
                      self.left_context_s + self.chunk_s + self.right_context_s)
         ctx = min(self.left_context_s, self._committer.committed_s)
@@ -314,7 +312,7 @@ class BufferedTranscriber:
             start = max(0.0, pos - ctx)
             end = min(audio_s, start + budget)
             if end <= pos:
-                # Links-Kontext opfern, um Fortschritt zu garantieren.
+                # Sacrifice left context to guarantee progress.
                 end = min(audio_s, pos + max(1.0, budget - ctx))
                 if end <= pos:
                     break
@@ -322,12 +320,12 @@ class BufferedTranscriber:
             pos = end
 
     # ------------------------------------------------------------------
-    # Intern
+    # Internal
     # ------------------------------------------------------------------
     def _decode(self, window: StreamWindow):
-        # Auf Byte-Grenzen runden: Start AUF-, Ende ABruenden, damit die
-        # effektive Fensterlaenge nie ueber das Budget (left+chunk+right)
-        # wachsaedt.
+        # Round to byte boundaries: round the start UP and the end DOWN so
+        # the effective window length never exceeds the budget
+        # (left+chunk+right).
         start_byte = -(-int(window.start * self.sample_rate * 2) // 1)
         start_byte = int(window.start * self.sample_rate * 2 + 0.999999)
         end_byte = int(window.end * self.sample_rate * 2)
@@ -335,12 +333,12 @@ class BufferedTranscriber:
         return self.engine.transcribe_with_timestamps(data, window.start)
 
     def _vad_blocks(self, window: StreamWindow) -> bool:
-        """VAD-Gate auf dem NEUEN Bereich; erkennt Pausen und rueckt vor.
+        """VAD gate on the NEW region; detects pauses and advances.
 
-        Wie beim ``WindowedTranscriber`` fuehren zwei aufeinanderfolgende
-        "stumm"-Meldungen zu ``skip_silence``: ohne das bliebe der Commit-Punkt
-        an jeder Pause stehen und alles Dahinterginge fuer immer verloren.
-        Der bereits erkannte Text bleibt erhalten (committed + letzter Partial).
+        As with ``WindowedTranscriber``, two consecutive "silent" reports
+        trigger ``skip_silence``: without this, the commit point would stall
+        at every pause and everything beyond it would be lost forever.
+        Already recognized text is preserved (committed + last partial).
         """
         if self.vad is None:
             return False
@@ -351,13 +349,13 @@ class BufferedTranscriber:
             return False
         arr = _to_float_audio(data)
         if len(arr) < self.sample_rate:
-            # Unter 1s kann das Gate nichts beurteilen -> nicht blocken.
+            # Below 1s, the gate cannot make a determination -> do not block.
             self._silence_misses = 0
             return False
         try:
             speech = self.vad.has_speech(arr)
         except Exception as exc:  # noqa: BLE001 - Gate ist optional
-            log.warning("buffered: VAD-Gate fehlgeschlagen (%s) - transkribiere", exc)
+            log.warning("buffered: VAD gate failed (%s) - transcribing anyway", exc)
             return False
         if speech:
             self._silence_misses = 0
@@ -366,27 +364,26 @@ class BufferedTranscriber:
 
         self._silence_misses += 1
         self._vad_live_silent = True
-        log.debug("buffered: VAD stumm im neuen Bereich (Miss %d)",
+        log.debug("buffered: VAD silent in new region (miss %d)",
                   self._silence_misses)
         if self._silence_misses >= 2:
-            # Echte Pause: Commit-Punkt vorruecken, aber nur bis zum
-            # Fensterende und nur wenn das Fenster bis dahin gefuellt war.
-            # Der letzte Partial bleibt als Text erhalten (last_text).
+            # Real pause: advance the commit point, but only through the
+            # window end and only if the window was filled through that point.
+            # The last partial is preserved as text (last_text).
             if self.audio_seconds >= window.end - 0.01:
                 self._flush_pending_text()
                 self._committer.skip_silence(window.end)
                 self._silence_misses = 0
-                log.info("buffered: Pause erkannt -> committed_s auf %.1fs",
+                log.info("buffered: pause detected -> committed_s advanced to %.1fs",
                          self._committer.committed_s)
         return True
 
     def _flush_pending_text(self) -> None:
-        """Sichert den letzten Partial in den committeten Text (Pause-Schutz).
+        """Preserves the last partial in the committed text (pause protection).
 
-        ``skip_silence`` loescht den Partial des Committers; der bereits
-        erkannte Text wuerde sonst beim Vorruecken des Commit-Punkts verloren
-        gehen. Getrennt durch Leerzeichen, exakt wie bei einem regulaeren
-        Commit.
+        ``skip_silence`` clears the committer's partial; otherwise, already
+        recognized text would be lost when the commit point advances.
+        Separate it with a space, exactly as in a regular commit.
         """
         if self._last_partial.strip():
             self._committed_text += self._last_partial.strip() + " "

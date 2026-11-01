@@ -1,11 +1,11 @@
-"""Audio-Aufnahme ueber PipeWire.
+"""Audio capture via PipeWire.
 
-``pw-record`` schreibt rohe PCM-Daten (s16le, mono, 16 kHz) nach stdout; der
-``PwRecordSource`` kapselt den Subprozess und liefert Chunks an die
-Anwendung. Damit das Ende sauber aufgenommen wird, wird beim Stoppen der
-Prozess beendet und die Restdaten aus stdout gelesen.
+``pw-record`` writes raw PCM data (s16le, mono, 16 kHz) to stdout;
+``PwRecordSource`` wraps the subprocess and delivers chunks to the
+application. To capture the ending cleanly, stopping terminates the
+process and reads the remaining data from stdout.
 
-Fuer Tests gibt es ``FileAudioSource``, das eine WAV-Datei abspielt.
+``FileAudioSource`` plays a WAV file for tests.
 """
 from __future__ import annotations
 
@@ -26,25 +26,25 @@ BYTES_PER_SAMPLE = 2
 
 
 class AudioSourceError(RuntimeError):
-    """Die Audioquelle konnte nicht geoeffnet werden."""
+    """The audio source could not be opened."""
 
 
 @runtime_checkable
 class AudioSource(Protocol):
-    """Schnittstelle einer Audioquelle."""
+    """Interface for an audio source."""
 
     def start(self) -> None:
-        """Startet die Aufnahme."""
+        """Start recording."""
 
     def stop(self) -> bytes:
-        """Stoppt die Aufnahme und liefert verbliebene Daten."""
+        """Stop recording and return remaining data."""
 
     def read(self, block: bool = True) -> bytes:
-        """Liest einen Chunk roher PCM-Daten (kann ``b""`` liefern)."""
+        """Read a chunk of raw PCM data (may return ``b""``)."""
 
 
 def _resolve_source(source: str) -> str:
-    """Loest ``auto`` in den Standardquellennamen auf."""
+    """Resolve ``auto`` to the default source name."""
     if source != "auto":
         return source
     try:
@@ -56,13 +56,13 @@ def _resolve_source(source: str) -> str:
             return name
     except (OSError, subprocess.SubprocessError):
         pass
-    raise AudioSourceError("Konnte die Standard-Audioquelle nicht ermitteln")
+    raise AudioSourceError("Could not determine the default audio source")
 
 
 class PwRecordSource:
-    """Nimmt Audio ueber ``pw-record`` auf.
+    """Capture audio via ``pw-record``.
 
-    Der Prozess schreibt PCM-Daten (s16le, mono, 16 kHz) nach stdout.
+    The process writes PCM data (s16le, mono, 16 kHz) to stdout.
     """
 
     def __init__(
@@ -82,7 +82,7 @@ class PwRecordSource:
         self._proc = None
 
     def start(self) -> None:
-        """Startet den ``pw-record``-Prozess."""
+        """Start the ``pw-record`` process."""
         name = _resolve_source(self.source)
         cmd = [
             "pw-record",
@@ -92,7 +92,7 @@ class PwRecordSource:
             "--target", name,
             "-",
         ]
-        log.debug("Starte: %s", " ".join(cmd))
+        log.debug("Starting: %s", " ".join(cmd))
         try:
             self._proc = self._popen_factory(
                 cmd,
@@ -101,9 +101,9 @@ class PwRecordSource:
                 bufsize=0,
             )
         except OSError as exc:
-            raise AudioSourceError(f"pw-record nicht startbar: {exc}") from exc
+            raise AudioSourceError(f"Could not start pw-record: {exc}") from exc
 
-        # Den stdout-Pipe auf non-blocking schalten, damit read() nie haengt.
+        # Set the stdout pipe to non-blocking so read() never hangs.
         try:
             if self._proc.stdout is not None:
                 os.set_blocking(self._proc.stdout.fileno(), False)
@@ -111,7 +111,7 @@ class PwRecordSource:
             pass
 
     def read(self, block: bool = True) -> bytes:
-        """Liest einen Chunk roher PCM-Daten (non-blocking)."""
+        """Read a chunk of raw PCM data (non-blocking)."""
         if self._proc is None or self._proc.stdout is None:
             return b""
         try:
@@ -122,18 +122,18 @@ class PwRecordSource:
             return b""
 
     def stop(self) -> bytes:
-        """Beendet die Aufnahme und liefert die verbliebenen Daten.
+        """Stop recording and return the remaining data.
 
-        Liest zunaechst alle bereits gepufferten Daten (Drain), beendet dann
-        den Prozess und liest den Rest mit einem Timeout, damit kein
-        Aufruf unbegrenzt haengen bleibt.
+        First read all already buffered data (drain), then terminate the
+        process and read the remainder with a timeout so that no call can
+        hang indefinitely.
         """
         if self._proc is None:
             return b""
         proc = self._proc
         self._proc = None
 
-        # 1) Drain der bereits anliegenden Daten (ohne auf EOF zu warten).
+        # 1) Drain data that is already available (without waiting for EOF).
         rest = b""
         if proc.stdout is not None:
             try:
@@ -147,7 +147,7 @@ class PwRecordSource:
             except OSError:
                 pass
 
-        # 2) Prozess beenden und den Rest mit Timeout sammeln.
+        # 2) Terminate the process and collect the remainder with a timeout.
         try:
             proc.terminate()
         except OSError:
@@ -160,7 +160,7 @@ class PwRecordSource:
                     try:
                         chunk = os.read(proc.stdout.fileno(), 4096)
                     except BlockingIOError:
-                        # Keine Daten mehr - kurz warten und erneut prüfen.
+                        # No more data - wait briefly and check again.
                         if proc.poll() is not None:
                             break
                         time.sleep(0.02)
@@ -185,7 +185,7 @@ class PwRecordSource:
 
 
 class FileAudioSource:
-    """Liest Audio aus einer WAV-Datei (fuer Tests und Diagnose)."""
+    """Read audio from a WAV file (for tests and diagnostics)."""
 
     def __init__(self, path: str | Path, *, chunk_s: float = 0.5) -> None:
         self.path = Path(path)
@@ -197,9 +197,9 @@ class FileAudioSource:
         try:
             self._wf = wave.open(str(self.path), "rb")
         except (OSError, wave.Error) as exc:
-            raise AudioSourceError(f"{self.path}: nicht lesbar ({exc})") from exc
+            raise AudioSourceError(f"{self.path}: unreadable ({exc})") from exc
         if self._wf.getsampwidth() != 2 or self._wf.getnchannels() != 1:
-            # Fuer Tests reicht Mono/s16; sterero wird unten nicht gemischt.
+            # Mono/s16 is sufficient for tests; stereo is not mixed below.
             pass
         self._chunk_bytes = int(
             self._wf.getframerate() * self.chunk_s * self._wf.getsampwidth()

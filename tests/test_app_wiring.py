@@ -1,8 +1,8 @@
-"""Tests fuer die Verdrahtung in app.py.
+"""Tests for wiring in app.py.
 
-Geprueft wird die Komposition (nicht die Logik): bekommt der Transcriber im
-Default-Modus ``whole_buffer`` ein VAD-Gate, und wird die CapsLock-Einstellung
-korrekt an den Typer durchgereicht?
+These tests verify composition (not logic): does the transcriber receive a
+VAD gate in default ``whole_buffer`` mode, and is the CapsLock setting passed
+correctly to the typer?
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ class TyperStub:
 
 
 class VadStub:
-    """Sentinel fuer das VAD-Gate."""
+    """Sentinel for the VAD gate."""
 
 
 class ControllerStub:
@@ -26,7 +26,7 @@ class ControllerStub:
 
 
 class DeltaStub:
-    """DeltaTyper-Stub: zeichnet alle Konstruktor-Argumente auf."""
+    """DeltaTyper stub: records all constructor arguments."""
 
     created: list["DeltaStub"] = []
 
@@ -60,7 +60,7 @@ def _application(monkeypatch, **config_kwargs) -> tuple[Application, ControllerS
 
 class TestTranscriberWiring:
     def test_whole_buffer_gets_vad_gate(self, monkeypatch) -> None:
-        """Im Default-Modus muss das VAD-Gate verdrahtet sein."""
+        """The VAD gate must be wired in default mode."""
         _app, controller = _application(monkeypatch, streaming_mode="whole_buffer")
         factory = controller.kwargs["transcriber_factory"]
         transcriber = factory(engine=object(), interval_s=1.0, min_audio_s=0.8)
@@ -69,10 +69,10 @@ class TestTranscriberWiring:
 
 
 class TestFinalPasteWiring:
-    """Der Paster wird nur bei final_paste=True erzeugt und verdrahtet."""
+    """The paster is created and wired only when final_paste=True."""
 
     def test_final_paste_wiring_respects_flag_and_config(self, monkeypatch) -> None:
-        """Ohne Flag: kein Paster. Mit Flag: ClipboardPaster mit paste_key/paste_binary."""
+        """Without flag: no paster. With flag: ClipboardPaster with paste_key/paste_binary."""
         from stt_button.typing import ClipboardPaster, DeltaTyper
 
         captured: dict[str, object] = {}
@@ -92,12 +92,12 @@ class TestFinalPasteWiring:
         monkeypatch.setattr("stt_button.app.SileroVadGate", VadStub)
         monkeypatch.setattr("stt_button.app.PushToTalkController", ControllerStub)
 
-        # Ohne Flag: final_paster=None (bisheriges Verhalten)
+        # Without flag: final_paster=None (previous behavior)
         app = Application(Config())
         app._build_controller()
         assert captured.get("final_paster", "fehlend") is None
 
-        # Mit Flag: Paster erzeugt, mit paste_key/paste_binary konfiguriert
+        # With flag: paster created and configured with paste_key/paste_binary
         monkeypatch.setattr("stt_button.app.ClipboardPaster", PasterStub)
         app2 = Application(Config(final_paste=True, paste_key="ctrl+shift+v"))
         app2._build_controller()
@@ -124,7 +124,7 @@ class TestTyperWiring:
 
 
 class TestFinalizeModeWiring:
-    """STUFE 1: Application reicht finalize_mode an den StreamTranscriber weiter."""
+    """STAGE 1: Application passes finalize_mode to StreamTranscriber."""
 
     def test_finalize_mode_passed_to_transcriber(self, monkeypatch) -> None:
         _app, controller = _application(
@@ -143,7 +143,7 @@ class TestFinalizeModeWiring:
 
 
 class TestLiveModeWiring:
-    """STUFE 2: Application reicht live_typing_mode an den DeltaTyper weiter."""
+    """STAGE 2: Application passes live_typing_mode to DeltaTyper."""
 
     def test_live_typing_mode_passed_to_delta_typer(self, monkeypatch) -> None:
         monkeypatch.setattr("stt_button.app.DeltaTyper", DeltaStub)
@@ -160,7 +160,7 @@ class TestLiveModeWiring:
     def test_live_typing_mode_explicit_full_passed_to_delta_typer(
         self, monkeypatch
     ) -> None:
-        """Opt-in-Schutz: explizit 'full' muss den Durchgriff erreichen."""
+        """Opt-in guard: explicitly setting 'full' must reach DeltaTyper."""
         monkeypatch.setattr("stt_button.app.DeltaTyper", DeltaStub)
         app = Application(Config(live_typing_mode="full"))
         app._build_controller()
@@ -168,7 +168,7 @@ class TestLiveModeWiring:
 
 
 class TestBufferedWiring:
-    """STUFE 3: Application waehlt BufferedTranscriber NUR bei streaming_mode."""
+    """STAGE 3: Application selects BufferedTranscriber ONLY for streaming_mode."""
 
     def test_buffered_mode_selects_buffered_transcriber(self, monkeypatch) -> None:
         from stt_button.buffered import BufferedTranscriber
@@ -179,7 +179,7 @@ class TestBufferedWiring:
         assert isinstance(transcriber, BufferedTranscriber)
         assert transcriber.interval_s == 1.0
         assert transcriber.min_audio_s == 3.0
-        assert transcriber.vad is not None  # SileroVadGate wie in den anderen Modi
+        assert transcriber.vad is not None  # SileroVadGate as in the other modes
 
     def test_buffered_config_values_reach_transcriber(self, monkeypatch) -> None:
         from stt_button.buffered import BufferedTranscriber
@@ -201,7 +201,7 @@ class TestBufferedWiring:
         assert t.commit_agreements == 3
 
     def test_default_mode_still_stream_transcriber(self, monkeypatch) -> None:
-        """Default (whole_buffer) liefert unveraendert den StreamTranscriber."""
+        """Default (whole_buffer) still returns StreamTranscriber."""
         from stt_button.asr import StreamTranscriber
         from stt_button.buffered import BufferedTranscriber
 
@@ -221,8 +221,8 @@ class TestBufferedWiring:
 
 
 class TestCachedMidTailWiring:
-    """PHASE 2: Application reicht finalize_mode='cached_mid_tail' durch
-    (existierender generischer finalize_mode-Durchgriff)."""
+    """PHASE 2: Application passes finalize_mode='cached_mid_tail' through
+    (existing generic finalize_mode pass-through)."""
 
     def test_cached_mid_tail_passed_to_transcriber(self, monkeypatch) -> None:
         _app, controller = _application(

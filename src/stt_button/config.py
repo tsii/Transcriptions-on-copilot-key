@@ -1,8 +1,8 @@
-"""Konfiguration fuer STT-Button.
+"""Configuration for STT-Button.
 
-Die Konfiguration liegt standardmaessig in ``~/.config/stt-button/config.toml``
-und wird ueber :func:`load_config` geladen. Fehlende Werte fallen auf Defaults
-zurueck; ungueltige Werte werden mit einer klaren Meldung abgelehnt.
+The configuration lives at ``~/.config/stt-button/config.toml`` by
+default and is loaded via :func:`load_config`. Missing values fall back
+to defaults; invalid values are rejected with a clear message.
 """
 from __future__ import annotations
 
@@ -22,245 +22,245 @@ VALID_TYPERS = ("wtype", "clipboard", "dotool")
 VALID_BACKENDS = ("whisper", "parakeet", "qwen")
 VALID_STREAMING_MODES = ("windowed", "whole_buffer", "buffered")
 VALID_PASTE_KEYS = ("ctrl+v", "ctrl+shift+v")
-#: Finalisierungs-Modus: "full" = Puffer neu transkribieren (bewährt),
-#: "cached" = unveraenderten Puffer aus dem letzten erfolgreichen Tick
-#: uebernehmen (spart einen kompletten Engine-Durchlauf),
-#: "cached_mid_tail" = OPT-IN: nach dem Live-Limit (live_asr_until_s)
-#: alle mid_tail_step_s Sekunden ein Hintergrund-Engine-Call auf
-#: [Checkpoint-Ende - Kontext | Pufferende], gestitcht an die
-#: Arbeitshypothese; finalize() liefert bei gueltiger Kette nur noch den
-#: kleinen letzten Tail statt des Vollpuffers.
+#: Finalization mode: "full" = re-transcribe the buffer (proven),
+#: "cached" = carry over the unchanged buffer from the last successful
+#: tick (saves a complete engine pass),
+#: "cached_mid_tail" = OPT-IN: after the live limit (live_asr_until_s),
+#: every mid_tail_step_s seconds a background engine call on
+#: [checkpoint end - context | buffer end], stitched onto the working
+#: hypothesis; finalize() then returns only the small final tail
+#: instead of the whole buffer when the chain is valid.
 VALID_FINALIZE_MODES = ("full", "cached", "cached_mid_tail")
-#: WAV-Dump der letzten Aufnahme: "sync" = im Finalizer-Thread (bewährt),
-#: "async" = eigener Thread mit Bytes-Snapshot, "off" = kein Dump.
+#: WAV dump of the last recording: "sync" = in the finalizer thread
+#: (proven), "async" = own thread with a byte snapshot, "off" = no dump.
 VALID_AUDIO_DUMP_MODES = ("sync", "async", "off")
-#: Live-Vorschau-Modus: "full" (Default) tippt unstabile Partials live
-#: (mit Backspace-Korrekturen); "committed" tippt nur den gesicherten
-#: Zuwachs (STUFE 2, Latenz-Optimierung ohne Qualitaetsaenderung).
+#: Live preview mode: "full" (default) types unstable partials live
+#: (with backspace corrections); "committed" types only the secured
+#: increment (STAGE 2, latency optimization without quality change).
 VALID_LIVE_TYPING_MODES = ("full", "committed")
 
 
 class ConfigError(ValueError):
-    """Fehlerhafte oder unbrauchbare Konfiguration."""
+    """Invalid or unusable configuration."""
 
 
 @dataclass(frozen=True)
 class Config:
-    """Alle Einstellungen der Anwendung."""
+    """All application settings."""
 
-    # --- Ausloeser -------------------------------------------------------
-    #: Name des input-Devices, auf dem die Trigger-Taste erscheint.
-    #: "keyd virtual keyboard" ist der Default fuer ThinkPads, auf denen der
-    #: Copilot-Key per keyd auf F24 gemappt wird.
+    # --- Trigger ---------------------------------------------------------
+    #: Name of the input device the trigger key appears on.
+    #: "keyd virtual keyboard" is the default for ThinkPads where the
+    #: Copilot key is mapped to F24 via keyd.
     input_device_name: str = "keyd virtual keyboard"
-    #: Linux-Keycodes, die den Push-to-Talk ausloesen (alle muessen gedrueckt sein).
+    #: Linux key codes that trigger push-to-talk (all must be pressed).
     key_codes: list[str] = field(default_factory=lambda: ["KEY_F24"])
 
     # --- Audio -----------------------------------------------------------
-    #: PipeWire-Quellenname. "auto" waehlt die erste sinnvolle Quelle.
+    #: PipeWire source name. "auto" picks the first sensible source.
     audio_source: str = "auto"
     sample_rate: int = 16000
 
     # --- ASR -------------------------------------------------------------
-    #: Engine-Backend: "whisper" (faster-whisper) oder "parakeet" (NVIDIA TDT).
+    #: Engine backend: "whisper" (faster-whisper) or "parakeet" (NVIDIA TDT).
     backend: str = "parakeet"
     model: str = "nvidia/parakeet-tdt-0.6b-v3"
     language: str = "auto"
     compute_type: str = "int8"
     cpu_threads: int = field(default_factory=lambda: os.cpu_count() or 4)
     # --- Streaming ---------------------------------------------------------
-    #: Streaming-Modus: "windowed" (Fenster + Zeitstempel-Commit),
-    #: "whole_buffer" (alter Ansatz, ganzer Puffer re-transkribiert) oder
-    #: "buffered" (STUFE 3: Hybrid Volllpuffer -> bounded Fenster).
-    #: Default bleibt "whole_buffer" - der neue Modus ist ein Feature-Flag.
+    #: Streaming mode: "windowed" (windows + timestamp commit),
+    #: "whole_buffer" (old approach, whole buffer re-transcribed) or
+    #: "buffered" (STAGE 3: hybrid whole-buffer -> bounded window).
+    #: Default stays "whole_buffer" - the new mode is a feature flag.
     streaming_mode: str = "whole_buffer"
-    #: Mindest-Audiolaenge (Sekunden), bevor ueberhaupt transkribiert wird.
-    #: Zu kurze Chunks lassen den Transducer Satzanfaenge falsch gross
-    #: schreiben und Woerter verschlucken (Halluzination aus isolierten
-    #: 1s-Fetzen). 3s gibt dem Modell genug Kontext fuer den ersten Lauf.
+    #: Minimum audio length (seconds) before anything is transcribed.
+    #: Very short chunks make the transducer capitalize sentence starts
+    #: wrongly and swallow words (hallucination from isolated 1s
+    #: fragments). 3s gives the model enough context for the first pass.
     min_audio_s: float = 3.0
-    #: Intervall (Sekunden Audio), in dem neu transkribiert wird.
+    #: Interval (seconds of audio) at which re-transcription happens.
     asr_interval_s: float = 1.0
-    #: Maximale Aufnahmedauer (Sekunden) -> automatische Finalisierung.
+    #: Maximum recording duration (seconds) -> automatic finalization.
     max_record_s: float = 300.0
-    #: Anzahl aufeinanderfolgender identischer Praefixe, bis ein Praefix
-    #: als "committed" gilt und nie mehr zurueckgenommen wird.
+    #: Number of consecutive identical prefixes until a prefix is
+    #: considered "committed" and never rolled back again.
     commit_agreements: int = 2
 
-    # --- Buffered-Modus (STUFE 3, nur bei streaming_mode="buffered") ----
-    #: Bis zu dieser Pufferlaenge wird der ganze Puffer transkribiert.
+    # --- Buffered mode (STAGE 3, only with streaming_mode="buffered") ----
+    #: Until this buffer length the whole buffer is transcribed.
     buffered_whole_buffer_until_s: float = 8.0
-    #: Links-Kontext des Fensters in Sekunden (Qualitaetsanker).
+    #: Left context of the window in seconds (quality anchor).
     buffered_left_context_s: float = 8.0
-    #: Neues stabiles Segment pro Tick in Sekunden.
+    #: New stable segment per tick in seconds.
     buffered_chunk_s: float = 2.0
-    #: Rechts-Kontext (Lookahead) nach dem Commit-Horizont in Sekunden.
+    #: Right context (lookahead) after the commit horizon in seconds.
     buffered_right_context_s: float = 2.0
-    #: Hartes Budget fuer Finalisierungs-/Catch-up-Fenster in Sekunden.
+    #: Hard budget for finalization/catch-up windows in seconds.
     buffered_max_final_window_s: float = 18.0
 
-    # --- Ausgabe ---------------------------------------------------------
-    #: Typ-Ausgabe-Adapter: "dotool" (Default, funktioniert unter GNOME/Wayland),
-    #: "wtype" oder "clipboard" (Fallback via Zwischenablage).
+    # --- Output ----------------------------------------------------------
+    #: Typing adapter: "dotool" (default, works under GNOME/Wayland),
+    #: "wtype" or "clipboard" (fallback via the clipboard).
     typer: str = "dotool"
-    #: XKB-Tastaturlayout fuer dotool (de fuer deutsche Tastatur).
+    #: XKB keyboard layout for dotool ("de" for a German keyboard).
     xkb_layout: str = "de"
     xkb_variant: str = "nodeadkeys"
-    #: Dotool-Tipptiming. Zu klein -> unter CPU-Last koennen Key-Events
-    #: verloren gehen und Modifier (Shift/CapsLock) "haengen" -> der Text
-    #: erscheint dann invertiert/gross. Bei Problemen erhoehen (z.B. 30/25).
+    #: Dotool typing timing. Too small -> under CPU load key events can
+    #: be lost and modifiers (Shift/CapsLock) can "stick" -> the text
+    #: then appears inverted/capitalized. Raise on problems (e.g. 30/25).
     typedelay_ms: int = 20
     typehold_ms: int = 15
-    #: Soll die App CapsLock vor dem Tippen zwangsweise einschalten/ausschalten?
-    #: Standard ist **False**: der Lock-State ist nicht zuverlaessig lesbar
-    #: (LED != State, xset != State), deshalb wird nur gewarnt. Wer den
-    #: Eingriff trotzdem will, setzt den Wert explizit auf True.
+    #: Should the app force CapsLock on/off before typing?
+    #: Default is **False**: the lock state is not reliably readable
+    #: (LED != state, xset != state), so only a warning is emitted.
+    #: Whoever wants the intervention sets the value explicitly to True.
     capslock_autocorrect: bool = False
-    #: Semantik der CapsLock-LED dieses Systems. Ground Truth (empirisch
-    #: belegt, ThinkPad + keyd + GNOME/Wayland): LED **aus** = CapsLock
-    #: aktiv = invertierter Text; LED **an** = normale Schreibung. Das ist
-    #: INVERTIERT zur ueblichen Konvention, daher True als Default. Bei
-    #: capslock_autocorrect=True ist das Ziel der LED-Zustand "an" (normal).
+    #: Semantics of this system's CapsLock LED. Ground truth (empirically
+    #: established, ThinkPad + keyd + GNOME/Wayland): LED **off** =
+    #: CapsLock active = inverted text; LED **on** = normal typing. This
+    #: is INVERTED from the usual convention, hence True as default. With
+    #: capslock_autocorrect=True the LED target state is "on" (normal).
     capslock_led_inverted: bool = True
     append_space: bool = True
-    #: Soll das finale Delta beim Abschluss (finalize) per Zwischenablage
-    #: eingefuegt werden statt zeichenweise getippt? Das beschleunigt lange
-    #: Diktate massiv (300 Zeichen * ~35 ms Tippzeit entfallen). Default
-    #: False = bisheriges Verhalten (alles per dotool tippen).
+    #: Should the final delta at finalization be pasted via the clipboard
+    #: instead of typed character by character? This speeds up long
+    #: dictations massively (300 chars * ~35 ms typing time go away).
+    #: Default False = previous behavior (type everything via dotool).
     final_paste: bool = False
-    #: Einfuege-Chord fuer final_paste. "ctrl+shift+v" fuer Terminals, in
-    #: denen ctrl+v ein anderes Signal ausloest.
+    #: Insert chord for final_paste. "ctrl+shift+v" for terminals where
+    #: ctrl+v triggers a different signal.
     paste_key: str = "ctrl+v"
-    #: Binary, die das Delta in die Zwischenablage legt (wl-clipboard).
+    #: Binary that puts the delta into the clipboard (wl-clipboard).
     paste_binary: str = "wl-copy"
-    #: Maximale Laenge (Zeichen) einer Ruecknahme. Laengere Korrekturen
-    #: werden vermieden, um Nutzertext nicht zu zerstoeren.
+    #: Maximum length (chars) of a revision. Longer corrections are
+    #: avoided to not destroy user text.
     max_revision_chars: int = 60
 
-    # --- Latenz (STUFE 1) --------------------------------------------------
-    #: "full" (Default): Finalize transkribiert den ganzen Puffer neu.
-    #: "cached": unveraendertes Audio seit dem letzten erfolgreichen Tick
-    #: wird ohne Engine-Call aus dem Cache uebernommen (nur bei
-    #: deterministischen Engines wie Parakeet sinnvoll).
+    # --- Latency (STAGE 1) ------------------------------------------------
+    #: "full" (default): finalize re-transcribes the whole buffer.
+    #: "cached": audio unchanged since the last successful tick is taken
+    #: from the cache without an engine call (only makes sense with
+    #: deterministic engines like Parakeet).
     finalize_mode: str = "full"
-    #: WAV-Dump der Aufnahme nach /tmp/stt_last.wav: "sync" (Default,
-    #: bisheriges Verhalten), "async" (eigener Thread, kein Blockieren des
-    #: Finalizers) oder "off".
+    #: WAV dump of the recording to /tmp/stt_last.wav: "sync" (default,
+    #: previous behavior), "async" (own thread, no finalizer blocking)
+    #: or "off".
     audio_dump_mode: str = "sync"
-    #: Loggt Debug-Zeiten an den Latenz-Messpunkten (Release -> Ausgabe).
+    #: Log debug timings at the latency measurement points (release -> output).
     latency_trace: bool = False
-    #: Live-Vorschau-Modus (STUFE 2): "full" (Default) = bisheriges
-    #: Verhalten - unstabile Partials werden live getippt und per Backspace
-    #: korrigiert; "committed" = nur der gesicherte Praefix-Zuwachs wird
-    #: live getippt, das finale Suffix kommt beim Loslassen in einem Paste.
+    #: Live preview mode (STAGE 2): "full" (default) = previous behavior -
+    #: unstable partials are typed live and corrected via backspace;
+    #: "committed" = only the secured prefix increment is typed live, the
+    #: final suffix comes as one paste on release.
     live_typing_mode: str = "committed"
-    #: Live-ASR nach dieser Pufferlaenge (Sekunden) einstellen (STUFE 3):
-    #: der Whole-Buffer-Ansatz wird pro Tick teurer; ab hier liefert nur
-    #: noch finalize() den Text. Default 15.0 (OPT 29.10.): mit der
-    #: int8-Engine (RTF ~0,05) kostet ein 15-s-Vollpuffer-Tick ~0,75s und
-    #: bleibt damit unter asr_interval_s (1,0s) — Live-Vorschau bis 15s is
-    #: tragfaehig, laengere Diktate pausieren mit Indikator. 0.0 ist der
-    #: ausdrueckliche Opt-in 'Live-Ticks immer aktiv' (bisheriges Verhalten).
+    #: Stop live ASR after this buffer length (seconds) (STAGE 3):
+    #: the whole-buffer approach gets more expensive per tick; beyond
+    #: this only finalize() produces text. Default 15.0 (OPT 29.10.):
+    #: with the int8 engine (RTF ~0.05) a 15s whole-buffer tick costs
+    #: ~0.75s and stays under asr_interval_s (1.0s) - live preview up to
+    #: 15s is viable, longer dictations pause with an indicator. 0.0 is
+    #: the explicit opt-in "live ticks always active" (previous behavior).
     live_asr_until_s: float = 15.0
-    #: Fertig-Signal (Betreiber 31.10.): freedesktop-Soundname (z.B.
-    #: "complete" oder "bell"), der nach ERFOLGREICHER Finalisierung
-    #: einmal leise ueber paplay gespielt wird — hoeren statt raten, wann
-    #: der Text in der Zwischenablage liegt. '' = aus.
+    #: Done signal (operator, 31.10.): freedesktop sound name (e.g.
+    #: "complete" or "bell") that plays quietly once via paplay after a
+    #: SUCCESSFUL finalization - hearing instead of guessing when the
+    #: text is in the clipboard. '' = off.
     done_sound: str = ""
-    #: Lautstaerke des Fertig-Signals als paplay-Promille (0..65536);
-    #: 65536 = 'so wie die Desktop-Lautstaerke es vorgibt' (Default).
-    #: Hinweis Ground-Truth 31.10.: paplay --volume skaliert die
-    #: SINK-Lautstaerke — bei 24 % Sink war 35000 praktisch unhörbar.
-    #: Leiser wuenschen: ueber die Desktop-Lautstaerke steuern oder
-    #: hier z. B. 32768 (~50 % des Sink-Pegels) setzen.
+    #: Volume of the done signal as paplay permille (0..65536);
+    #: 65536 = 'as the desktop volume dictates' (default).
+    #: Note, ground truth 31.10.: paplay --volume scales the SINK volume
+    #: - at 24% sink, 35000 was practically inaudible. Want it quieter:
+    #: control it via the desktop volume or set e.g. 32768 here
+    #: (~50% of the sink level).
     done_sound_volume: int = 65536
-    #: Wann das Fertig-Signal erklingt: 'terminal' (Default) = nur bei
-    #Terminal-Fokus laut (GNOME-Shell-Extension GetFocus; None/Unbekannt
-    # -> spielt trotzdem, Feedback vor Stille); 'always' = immer.
+    #: When the done signal sounds: 'terminal' (default) = only when a
+    #: terminal is focused (GNOME Shell extension GetFocus; None/unknown
+    #: -> it still plays, feedback over silence); 'always' = always.
     done_sound_mode: str = "terminal"
 
     def validate(self) -> None:
         if self.done_sound_mode not in ("terminal", "always"):
             raise ConfigError(
-                "done_sound_mode muss 'terminal' oder 'always' sein, "
-                f"ist {self.done_sound_mode!r}"
+                "done_sound_mode must be 'terminal' or 'always', "
+                f"is {self.done_sound_mode!r}"
             )
 
-        """Wirft :class:`ConfigError` bei unbrauchbaren Werten."""
+        """Raises :class:`ConfigError` on invalid values."""
         if self.language not in VALID_LANGUAGES:
             raise ConfigError(
-                f"language muss eines von {VALID_LANGUAGES} sein, "
-                f"nicht {self.language!r}"
+                f"language must be one of {VALID_LANGUAGES}, "
+                f"is {self.language!r}"
             )
         if self.typer not in VALID_TYPERS:
             raise ConfigError(
-                f"typer muss eines von {VALID_TYPERS} sein, nicht {self.typer!r}"
+                f"typer must be one of {VALID_TYPERS}, is {self.typer!r}"
             )
         if self.backend not in VALID_BACKENDS:
             raise ConfigError(
-                f"backend muss eines von {VALID_BACKENDS} sein, nicht {self.backend!r}"
+                f"backend must be one of {VALID_BACKENDS}, is {self.backend!r}"
             )
         if self.streaming_mode not in VALID_STREAMING_MODES:
             raise ConfigError(
-                f"streaming_mode muss eines von {VALID_STREAMING_MODES} sein, "
-                f"nicht {self.streaming_mode!r}"
+                f"streaming_mode must be one of {VALID_STREAMING_MODES}, "
+                f"is {self.streaming_mode!r}"
             )
         if self.finalize_mode not in VALID_FINALIZE_MODES:
             raise ConfigError(
-                f"finalize_mode muss eines von {VALID_FINALIZE_MODES} sein, "
-                f"nicht {self.finalize_mode!r}"
+                f"finalize_mode must be one of {VALID_FINALIZE_MODES}, "
+                f"is {self.finalize_mode!r}"
             )
         if self.audio_dump_mode not in VALID_AUDIO_DUMP_MODES:
             raise ConfigError(
-                f"audio_dump_mode muss eines von {VALID_AUDIO_DUMP_MODES} sein, "
-                f"nicht {self.audio_dump_mode!r}"
+                f"audio_dump_mode must be one of {VALID_AUDIO_DUMP_MODES}, "
+                f"is {self.audio_dump_mode!r}"
             )
         if self.live_typing_mode not in VALID_LIVE_TYPING_MODES:
             raise ConfigError(
-                f"live_typing_mode muss eines von "
-                f"{VALID_LIVE_TYPING_MODES} sein, "
-                f"nicht {self.live_typing_mode!r}"
+                f"live_typing_mode must be one of "
+                f"{VALID_LIVE_TYPING_MODES}, "
+                f"is {self.live_typing_mode!r}"
             )
         if self.live_asr_until_s < 0:
-            raise ConfigError("live_asr_until_s darf nicht negativ sein")
+            raise ConfigError("live_asr_until_s must not be negative")
         if self.asr_interval_s <= 0:
-            raise ConfigError("asr_interval_s muss groesser als 0 sein")
+            raise ConfigError("asr_interval_s must be greater than 0")
         if self.min_audio_s <= 0:
-            raise ConfigError("min_audio_s muss groesser als 0 sein")
+            raise ConfigError("min_audio_s must be greater than 0")
         if self.max_record_s <= 0:
-            raise ConfigError("max_record_s muss groesser als 0 sein")
+            raise ConfigError("max_record_s must be greater than 0")
         if self.cpu_threads < 1:
-            raise ConfigError("cpu_threads muss mindestens 1 sein")
+            raise ConfigError("cpu_threads must be at least 1")
         if self.max_revision_chars < 0:
-            raise ConfigError("max_revision_chars darf nicht negativ sein")
+            raise ConfigError("max_revision_chars must not be negative")
         if self.typedelay_ms < 0:
-            raise ConfigError("typedelay_ms darf nicht negativ sein")
+            raise ConfigError("typedelay_ms must not be negative")
         if self.typehold_ms < 0:
-            raise ConfigError("typehold_ms darf nicht negativ sein")
+            raise ConfigError("typehold_ms must not be negative")
         if self.commit_agreements < 1:
-            raise ConfigError("commit_agreements muss mindestens 1 sein")
+            raise ConfigError("commit_agreements must be at least 1")
         for name in ("buffered_whole_buffer_until_s", "buffered_left_context_s",
                      "buffered_chunk_s", "buffered_right_context_s",
                      "buffered_max_final_window_s"):
             if getattr(self, name) <= 0:
-                raise ConfigError(f"{name} muss groesser als 0 sein")
+                raise ConfigError(f"{name} must be greater than 0")
         if self.sample_rate < 8000:
-            raise ConfigError("sample_rate muss mindestens 8000 sein")
+            raise ConfigError("sample_rate must be at least 8000")
         if not self.key_codes:
-            raise ConfigError("key_codes darf nicht leer sein")
+            raise ConfigError("key_codes must not be empty")
         if not self.input_device_name.strip():
-            raise ConfigError("input_device_name darf nicht leer sein")
+            raise ConfigError("input_device_name must not be empty")
         if self.paste_key not in VALID_PASTE_KEYS:
             raise ConfigError(
-                f"paste_key muss eines von {VALID_PASTE_KEYS} sein, "
-                f"nicht {self.paste_key!r}"
+                f"paste_key must be one of {VALID_PASTE_KEYS}, "
+                f"is {self.paste_key!r}"
             )
         if not self.paste_binary.strip():
-            raise ConfigError("paste_binary darf nicht leer sein")
+            raise ConfigError("paste_binary must not be empty")
 
 
 def _coerce(name: str, value: Any, target_type: Any) -> Any:
-    """Wandelt einen TOML-Wert in den erwarteten Typ um."""
+    """Converts a TOML value to the expected type."""
     try:
         if target_type is bool:
             if not isinstance(value, bool):
@@ -284,18 +284,18 @@ def _coerce(name: str, value: Any, target_type: Any) -> Any:
             return list(value)
     except TypeError as exc:
         raise ConfigError(
-            f"{name}: falscher Typ, erwartet {getattr(target_type, '__name__', target_type)}"
+            f"{name}: wrong type, expected {getattr(target_type, '__name__', target_type)}"
         ) from exc
     return value
 
 
 def config_from_mapping(data: dict[str, Any]) -> Config:
-    """Baut eine :class:`Config` aus einem Mapping und validiert sie."""
+    """Builds a :class:`Config` from a mapping and validates it."""
     known = {f.name: f for f in fields(Config)}
     unknown = set(data) - set(known)
     if unknown:
         raise ConfigError(
-            "unbekannte Konfigurationsschluessel: " + ", ".join(sorted(unknown))
+            "unknown configuration keys: " + ", ".join(sorted(unknown))
         )
 
     kwargs: dict[str, Any] = {}
@@ -316,12 +316,12 @@ def load_config(
     *,
     override: dict[str, Any] | None = None,
 ) -> Config:
-    """Laedt die Konfiguration.
+    """Loads the configuration.
 
     Args:
-        path: Pfad zur TOML-Datei. Fehlt er, wird ``DEFAULT_CONFIG_PATH``
-            verwendet; existiert auch der nicht, gelten die Defaults.
-        override: Werte, die die Datei ueberschreiben (z.B. CLI-Argumente).
+        path: Path to the TOML file. If absent, ``DEFAULT_CONFIG_PATH``
+            is used; if that is also absent, the defaults apply.
+        override: Values that override the file (e.g. CLI arguments).
     """
     target = Path(path) if path is not None else DEFAULT_CONFIG_PATH
 
@@ -331,9 +331,9 @@ def load_config(
             with target.open("rb") as fh:
                 data = tomllib.load(fh)
         except tomllib.TOMLDecodeError as exc:
-            raise ConfigError(f"{target}: ungueltige TOML-Datei ({exc})") from exc
+            raise ConfigError(f"{target}: invalid TOML file ({exc})") from exc
         except OSError as exc:
-            raise ConfigError(f"{target}: nicht lesbar ({exc})") from exc
+            raise ConfigError(f"{target}: not readable ({exc})") from exc
 
     if override:
         data = {**data, **override}
