@@ -86,7 +86,7 @@ class PushToTalkController:
         # (extension missing/not responding) -> play sound anyway, feedback
         # instead of silence.
         self._done_sound_mode = str(
-            getattr(config, "done_sound_mode", "terminal") or "terminal"
+            getattr(config, "done_sound_mode", "always") or "always"
         )
 
         self.state = ControllerState.IDLE

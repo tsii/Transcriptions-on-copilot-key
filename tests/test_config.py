@@ -37,6 +37,9 @@ class TestDefaults:
     def test_cpu_threads_positive(self) -> None:
         assert Config().cpu_threads >= 1
 
+    def test_done_sound_mode_default_is_always(self) -> None:
+        assert Config().done_sound_mode == "always"
+
 
 class TestParsing:
     def test_reads_all_known_keys(self, tmp_path: Path) -> None:

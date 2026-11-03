@@ -176,8 +176,9 @@ class Config:
     done_sound_volume: int = 65536
     #: When the done signal sounds: 'terminal' (default) = only when a
     #: terminal is focused (GNOME Shell extension GetFocus; None/unknown
-    #: -> it still plays, feedback over silence); 'always' = always.
-    done_sound_mode: str = "terminal"
+    #: -> it still plays, feedback over silence); 'always' (default) =
+    #: always.
+    done_sound_mode: str = "always"
 
     def validate(self) -> None:
         if self.done_sound_mode not in ("terminal", "always"):

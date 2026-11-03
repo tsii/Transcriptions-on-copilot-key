@@ -84,5 +84,5 @@ done_sound_volume = 65536        # paplay permille (0..65536); 65536 = desktop l
 # When the done signal sounds: "terminal" = only when a terminal is
 # focused (requires the GNOME Shell extension stt-button-focus; without
 # the extension the tone still plays - feedback over silence),
-# "always" = on every dictation.
-done_sound_mode = "terminal"
+# "always" (default) = on every dictation.
+done_sound_mode = "always"
