@@ -14,6 +14,21 @@ locally (NVIDIA Parakeet TDT 0.6B, CPU-only, automatic DE+EN).
 ## [Unreleased]
 
 ### Added
+- **Switchable ASR backends (04.11., opt-in; default stays
+  `backend="parakeet"` FP32):** `backend = "qwen"` selects
+  `Qwen/Qwen3-ASR-1.7B-hf` (BF16 default, revision-pinned, apache-2.0,
+  same `transformers` already installed). Qwen has no token alignments,
+  so it runs **final-only**: no live text while speaking, one
+  transcription at key release (~0.5–0.9× the recording length; measured
+  RTF 0.39–0.52, peak RSS ≈ 5 GB on CPU). Config validation rejects
+  int8/windowed/buffered/cached/segmenting combinations for qwen.
+  Engines advertise `supports_live`/`supports_timestamps`; the streamer
+  gained a `live_enabled` flag. Tools: `tools/model_switch_check.py`
+  (real-model smoke) and `tools/pairwise_wer.py` (comparative gate).
+  Gate verdict on 40 corpus clips vs Parakeet FP32: mean diff 13.1 % /
+  12.7 %, median 0.08 — but tail 0.95 → labelled **experimental**,
+  never default. Report: `docs/reports/qwen_pairwise_wer_20261104.md`;
+  README section "Modelle umschalten".
 - **Dictation queue** — press during finalization starts the next recording
   immediately; jobs finalize FIFO (`max_queue_depth`, default `4`). Implemented
   as a `FinalizeJob` queue + background dispatcher in the controller. A job whose

@@ -1,0 +1,40 @@
+Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights: 100%|██████████| 723/723 [00:00<00:00, 17451.93it/s]
+Loading weights:   0%|          | 0/707 [00:00<?, ?it/s]Loading weights: 100%|██████████| 707/707 [00:00<00:00, 48122.77it/s]
+# Pairwise WER: Qwen3-ASR 1.7B (BF16) vs Parakeet FP32 (reference)
+
+Clips: 40 — verdict: **experimental** (default unchanged)
+
+| Direction | mean | median | max |
+|---|---|---|---|
+| WER(qwen \| ref=parakeet) | 0.131 | 0.083 | 0.947 |
+| WER(parakeet \| ref=qwen) | 0.127 | 0.085 | 0.727 |
+
+Median RTF: parakeet 0.07, qwen 0.55
+
+## Manual inspection (top-5 WER)
+
+### 20261028-214029_1030130.wav (WER 0.947)
+
+- parakeet: Das war die complete Kette that we heute gebaut haben. Von Deep Seeks Paketjagd über Kemis Kernel Diagnose bis zum sauberen Dienst Restart. Kein Reboot has overlapped, die du nicht bewusst frei gegeben hättest. The next shot leads by dirty. Drück die Copilot-Taste and legal. And yeah, the Reboot amendment means let's script Blocks war in verse im Text. The sudo Reboot-Zeile were as optional markiert. Next one schreibe solcher Hinweise deutlicher. Sorry for the schreck.
+- qwen: Das war die komplette Kette, die wir heute gebaut haben. Von Deepseeks Paketjagd über Kimis Kerneldiagnose bis zum sauberen Dienstrestart. Keine Reboot hat überlebt, den du nicht bewusst freigegeben hättest. Der nächste Schritt liegt bei dir. Drück die Copilot-Taste und lege los. Das Diktat läuft jetzt komplett auf der MPU. Ich schaue parallel auf die Latenzzahlen im Journal und melde mich, wenn erste finale Zeiten reinkommen. Und ja, der Reboot am Ende meines letzten Scriptblocks war ein versehentlichem Text. Die sudo reboot Zeile war als optional markiert. Nächstes Mal schreibe ich solche Hinweise deutlicher dazu. Sorry für den Schreck.
+
+### 20261028-224624_345416.wav (WER 0.286)
+
+- parakeet: Wenn der Eigenbauanfang scheitert, dann eskaliere das doch bitte mal an diesen Gpt Six.
+- qwen: Wenn der Eigenbau Anfang scheitert, dann eskaliere das doch bitte mal an diesen GPT6.
+
+### 20261028-220328_342686.wav (WER 0.250)
+
+- parakeet: Die Karten sollten ja in den Slot 3 und 6 nach dieser Zählweise, also nach Beschriftung PCI 1 und 2.
+- qwen: Die Karten sollten ja in den Slot drei und sechs nach dieser Zählweise, also nach Beschriftung PCIe eins und zwei.
+
+### 20261028-214106_637596.wav (WER 0.234)
+
+- parakeet: Den Text in den Quotes habe ich gerade diktiert. Schau mal, was du da findest, und gibt es dann einem Chimika 31 Pro Experten. Er soll nochmal gucken, welche verbleibenden Speedup Möglichkeiten wir haben. Er soll mir einen Plan machen und sagen, welche Entwicklungsrisiken welchem Speedup gegenüberstehen.
+- qwen: Den Text und den Quotes habe ich gerade diktiert. Schau mal, was du da findest und gib das dann einem Kimi K drei eins Pro Experten. Er soll noch mal gucken, welche verbleibenden Speedup-Möglichkeiten wir haben. Er soll mir einen Plan machen und sagen, welche Entwicklungsrisiken welchem Speedup gegenüberstehen.
+
+### 20261028-213423_397980.wav (WER 0.211)
+
+- parakeet: Noch ein Hinweis Die Astra Experten von OpenAI nutzen nicht über Cortex, sondern ausschließlich über den OpenAI Codex Zugang.
+- qwen: Noch ein Hinweis: Die Astra-Experten von OpenAI nutzen nicht über Cortex, sondern ausschließlich über den OpenAI Codex-Zugang.
+

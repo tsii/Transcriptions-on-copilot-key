@@ -1,0 +1,303 @@
+{
+  "summary": {
+    "n": 40,
+    "mean_wer_cand_vs_ref": 0.1305138435238381,
+    "median_wer_cand_vs_ref": 0.08347826086956522,
+    "max_wer_cand_vs_ref": 0.9473684210526315,
+    "mean_wer_ref_vs_cand": 0.12719259032374147,
+    "median_wer_ref_vs_cand": 0.08514492753623187,
+    "max_wer_ref_vs_cand": 0.7272727272727273,
+    "median_rtf_ref": 0.07057336805851842,
+    "median_rtf_cand": 0.5533507168964238
+  },
+  "verdict": "experimental",
+  "clips": [
+    {
+      "clip": "20261028-165550_600050.wav",
+      "ref": "Was du beim Testen siehst: Indicator beim Loslassen deutlich kürzere Wartezeit. Hintergrundcheckpoints haben den Test schon weitgehend. Worauf ich achte, was du gemessen sagst. Finalize and Dauer im Trace-Frawl-Fälle und ob der Text keine Doppelwörterfragmente an den Checkpoint-Grenzen hat.",
+      "cand": "Was du beim Testen siehst: Indicator beim Loslassen deutlich kürzere Wartezeit. Hintergrund Checkpoints haben den Test schon weitgehend. Worauf ich achte, was du gemessen sagst: Finalize End Dauer im Trace Vorabfälle und ob der Text keine Doppelwörterfragmente an den Checkpointgrenzen hat.",
+      "wer_cand_vs_ref": 0.15384615384615385,
+      "wer_ref_vs_cand": 0.14634146341463414
+    },
+    {
+      "clip": "20261028-211532_580252.wav",
+      "ref": "Ah, jetzt verstehe ich, was du meinst. Danke für die Klarstellung. Kannst du denn die verschiedenen Code, JSON und Prosa-Benchmarks auch mit unterschiedlichem Prefill laufen lassen? Hast du da einen Weg, mit dem du das organisieren kannst? Das würde mich sehr interessieren.",
+      "cand": "Ah, jetzt verstehe ich, was du meinst. Danke für die Klarstellung. Kannst du denn die verschiedenen Code, JSON und Prosa Benchmarks auch mit unterschiedlichen Profiles laufen lassen? Hast du da einen Weg, mit dem du das organisieren kannst? Das würde mich sehr interessieren.",
+      "wer_cand_vs_ref": 0.09523809523809523,
+      "wer_ref_vs_cand": 0.09302325581395349
+    },
+    {
+      "clip": "20261028-211837_488092.wav",
+      "ref": "Sag mir doch mal, was deiner Meinung nach gerade den Durchsatz limitiert Ist es die Busgeschwindigkeit, ist es die GPU Geschwindigkeit, ist es der Speicher? Was ist der limitierende Faktor?",
+      "cand": "Sag mir doch mal, was deiner Meinung nach gerade den Durchsatz limitiert. Ist es die Busgeschwindigkeit? Ist es die GPU-Geschwindigkeit? Ist es der Speicher? Was ist der limitierende Faktor?",
+      "wer_cand_vs_ref": 0.06666666666666667,
+      "wer_ref_vs_cand": 0.06896551724137931
+    },
+    {
+      "clip": "20261028-212158_463516.wav",
+      "ref": "Wie war das noch? Gab es bereits Leute, die auf zwei fünfhundertzwölf Gigabyte Mac Studios ein Deep Seek V vier Pro 0813 gelaufen haben? Wie war da die Performance? Was ist aus dem aktuellen M fünf Ultra zu erwarten?",
+      "cand": "Wie war das noch? Gab es bereits Leute, die auf zwei 512 Gigabyte Mac Studios ein DeepSeek V4 Pro 0813 laufen haben? Wie war da die Performance? Was ist aus dem aktuellen M5 Ultra zu erwarten?",
+      "wer_cand_vs_ref": 0.20512820512820512,
+      "wer_ref_vs_cand": 0.2222222222222222
+    },
+    {
+      "clip": "20261028-212457_788466.wav",
+      "ref": "Frag doch bitte mal den Chimi Experten, wie er diesen speziellen Fall abfangen würde, ohne großartige Änderungen zu unternehmen. Also der kleinste mögliche Eingriff, den man sich vorstellen kann, dass genau das nicht nochmal passiert, aber dass trotzdem keine große Änderung am Gesamtsystem stattfindet.",
+      "cand": "Frag doch bitte mal den Chemieexperten, wie er diesen speziellen Fall abfangen würde, ohne großartige Änderung zu unternehmen. Also der kleinste mögliche Eingriff, den man sich vorstellen kann, dass genau das nicht nochmal passiert, aber dass trotzdem keine große Änderung am Gesamtsystem stattfindet.",
+      "wer_cand_vs_ref": 0.06818181818181818,
+      "wer_ref_vs_cand": 0.06976744186046512
+    },
+    {
+      "clip": "20261028-213423_397980.wav",
+      "ref": "Noch ein Hinweis Die Astra Experten von OpenAI nutzen nicht über Cortex, sondern ausschließlich über den OpenAI Codex Zugang.",
+      "cand": "Noch ein Hinweis: Die Astra-Experten von OpenAI nutzen nicht über Cortex, sondern ausschließlich über den OpenAI Codex-Zugang.",
+      "wer_cand_vs_ref": 0.21052631578947367,
+      "wer_ref_vs_cand": 0.23529411764705882
+    },
+    {
+      "clip": "20261028-214029_1030130.wav",
+      "ref": "Das war die complete Kette that we heute gebaut haben. Von Deep Seeks Paketjagd über Kemis Kernel Diagnose bis zum sauberen Dienst Restart. Kein Reboot has overlapped, die du nicht bewusst frei gegeben hättest. The next shot leads by dirty. Drück die Copilot-Taste and legal. And yeah, the Reboot amendment means let's script Blocks war in verse im Text. The sudo Reboot-Zeile were as optional markiert. Next one schreibe solcher Hinweise deutlicher. Sorry for the schreck.",
+      "cand": "Das war die komplette Kette, die wir heute gebaut haben. Von Deepseeks Paketjagd über Kimis Kerneldiagnose bis zum sauberen Dienstrestart. Keine Reboot hat überlebt, den du nicht bewusst freigegeben hättest. Der nächste Schritt liegt bei dir. Drück die Copilot-Taste und lege los. Das Diktat läuft jetzt komplett auf der MPU. Ich schaue parallel auf die Latenzzahlen im Journal und melde mich, wenn erste finale Zeiten reinkommen. Und ja, der Reboot am Ende meines letzten Scriptblocks war ein versehentlichem Text. Die sudo reboot Zeile war als optional markiert. Nächstes Mal schreibe ich solche Hinweise deutlicher dazu. Sorry für den Schreck.",
+      "wer_cand_vs_ref": 0.9473684210526315,
+      "wer_ref_vs_cand": 0.7272727272727273
+    },
+    {
+      "clip": "20261028-214106_637596.wav",
+      "ref": "Den Text in den Quotes habe ich gerade diktiert. Schau mal, was du da findest, und gibt es dann einem Chimika 31 Pro Experten. Er soll nochmal gucken, welche verbleibenden Speedup Möglichkeiten wir haben. Er soll mir einen Plan machen und sagen, welche Entwicklungsrisiken welchem Speedup gegenüberstehen.",
+      "cand": "Den Text und den Quotes habe ich gerade diktiert. Schau mal, was du da findest und gib das dann einem Kimi K drei eins Pro Experten. Er soll noch mal gucken, welche verbleibenden Speedup-Möglichkeiten wir haben. Er soll mir einen Plan machen und sagen, welche Entwicklungsrisiken welchem Speedup gegenüberstehen.",
+      "wer_cand_vs_ref": 0.23404255319148937,
+      "wer_ref_vs_cand": 0.22448979591836735
+    },
+    {
+      "clip": "20261028-214129_479218.wav",
+      "ref": "Oder Moment, vergiss das mal. Frage lieber einen OpenAI Codex GPT 6 Astra Experten nach seiner Meinung und lass dir von ihm das Gleiche geben.",
+      "cand": "Oder Moment, vergiss das mal. Frage lieber einen OpenAI Codex, GPT-6, Astra-Experten nach seiner Meinung und lass dir von ihm das Gleiche geben.",
+      "wer_cand_vs_ref": 0.16,
+      "wer_ref_vs_cand": 0.17391304347826086
+    },
+    {
+      "clip": "20261028-215433_593906.wav",
+      "ref": "Dann lass bitte mal einen DPT Six Astra Experten, den du über OpenAI Codex erreichst, einen Plan machen, wie man die GWEN Optimierung umsetzen kann. Fasse ihn mir dann zusammen und stelle bitte Risiken und Aufwand ebenfalls dar.",
+      "cand": "Dann lass bitte mal einen DPT6 Astra Experten, den du über OMEI Codex erreichst, einen Plan machen, wie man die Gwen-Optimierung umsetzen kann. Fasse ihn mir dann zusammen und stelle bitte Risiken und Aufwand ebenfalls da.",
+      "wer_cand_vs_ref": 0.15789473684210525,
+      "wer_ref_vs_cand": 0.16666666666666666
+    },
+    {
+      "clip": "20261028-215747_326984.wav",
+      "ref": "Ein Hinweis: Du sollst nicht das Binary nehmen, um da reinzukommen, sondern du sollst ganz normal das Modell versuchen, über OpenAI Codecs zu erreichen. Probier das bitte mal.",
+      "cand": "Ein Hinweis: Du sollst nicht das Binary nehmen, um da reinzukommen, sondern du sollst ganz normal das Modell versuchen, über OpenAI Codex zu erreichen. Probiere das bitte mal.",
+      "wer_cand_vs_ref": 0.07142857142857142,
+      "wer_ref_vs_cand": 0.07142857142857142
+    },
+    {
+      "clip": "20261028-220328_342686.wav",
+      "ref": "Die Karten sollten ja in den Slot 3 und 6 nach dieser Zählweise, also nach Beschriftung PCI 1 und 2.",
+      "cand": "Die Karten sollten ja in den Slot drei und sechs nach dieser Zählweise, also nach Beschriftung PCIe eins und zwei.",
+      "wer_cand_vs_ref": 0.25,
+      "wer_ref_vs_cand": 0.25
+    },
+    {
+      "clip": "20261028-220418_346778.wav",
+      "ref": "Okay, dann generiere mir doch bitte die stl Files in dem gleichen Format wie sonst auch und gib mir nur den Trichter, der jetzt noch fehlt.",
+      "cand": "Okay, dann generiere mir doch bitte die STL-Files in dem gleichen Format wie sonst auch und gib mir nur den Trichter, der jetzt noch fehlt.",
+      "wer_cand_vs_ref": 0.07692307692307693,
+      "wer_ref_vs_cand": 0.08
+    },
+    {
+      "clip": "20261028-220623_468296.wav",
+      "ref": "Dann sag mir mal, wie das Unterprojekt mit dem Kudergrafen läuft. Gibt es da schon einen Plan? Hast du schon etwas zurückbekommen von Astra? Läuft das Projekt schon in irgendeiner Form? Ich sehe da Aktivität, aber es gibt da noch keinen Plan.",
+      "cand": "Dann sag mir mal, wie das Unterprojekt mit dem Kudergraphen läuft. Gibt es da schon einen Plan? Hast du schon etwas zurückbekommen von Astra? Läuft das Projekt schon in irgendeiner Form? Ich sehe da Aktivität, aber es gibt da noch keinen Plan.",
+      "wer_cand_vs_ref": 0.023809523809523808,
+      "wer_ref_vs_cand": 0.023809523809523808
+    },
+    {
+      "clip": "20261028-220923_365212.wav",
+      "ref": "Gib jetzt die GPUs bitte wieder frei, und nutze sie nicht, bis ich sie ausdrücklich zurückgebe. Lasse aber alles erst einmal fertigentwickeln, soweit möglich das müsste.",
+      "cand": "Gib jetzt die GPUs bitte wieder frei und nutze sie nicht, bis ich sie ausdrücklich zurückgebe. Lass aber alles erst einmal fertig entwickeln, soweit möglich, das müsst.",
+      "wer_cand_vs_ref": 0.15384615384615385,
+      "wer_ref_vs_cand": 0.14814814814814814
+    },
+    {
+      "clip": "20261028-220944_538610.wav",
+      "ref": "Schicke alles durch die TDD-Ketten wie gewohnt und eskaliere zu Kimi Car 31 Pro, wie du das auch kennst, und führe das Projekt selbstständig fertig. Stell dir einen Wecker, der alle fünf Minuten nach dem Rechten sieht und das Projekt ebenfalls wieder anschiebt, falls es eingeschlafen ist.",
+      "cand": "Schicke alles durch die TDD-Ketten wie gewohnt und eskaliere zu Kimi K31 Pro, wie du das auch kennst, und führe das Projekt selbstständig fertig. Stell dir einen Wecker, der alle fünf Minuten nach dem Rechten sieht und das Projekt gegebenenfalls wieder anschiebt, falls es eingeschlafen ist.",
+      "wer_cand_vs_ref": 0.06382978723404255,
+      "wer_ref_vs_cand": 0.06521739130434782
+    },
+    {
+      "clip": "20261028-221037_1186460.wav",
+      "ref": "Du kannst jetzt die GPUs wieder nutzen. Koordiniere dich bitte mit dem Unterorchestrator, falls ihr sie braucht, aber das kannst du ja intern mit ihm regeln. Dann bringe das Projekt selbstständig zu Ende, indem du alles durch die TDD-Ketten treibst, wie du das bisher auch gemacht hast. Eskaliere zu Chimica 3.1 Pro, wenn mehrfach Dinge scheitern und stelle dir einen Wecker, der alle fünf Minuten nach dem Rechten sieht und Prozesse, die hängen geblieben sind, wieder anschiebt. Sollte das passieren. Mach immer alles im Hintergrund, damit du auch weiter schalten kannst.",
+      "cand": "Du kannst jetzt die GPUs wieder nutzen. Koordiniere dich bitte mit dem Unterorchestrator, falls er sie braucht, aber das kannst du ja intern mit ihm regeln. Dann bringe das Projekt selbstständig zu Ende, indem du alles durch die TDD-Ketten treibst, wie du das bisher auch gemacht hast. Eskaliere zu Chemika 3.1 Pro, wenn mehrfach Dinge scheitern und stelle dir einen Wecker, der alle fünf Minuten nach dem Rechten sieht und Prozesse, die hängengeblieben sind, wieder anschiebt, sollte das passieren. Mach immer alles im Hintergrund, damit du auch weiter schalten kannst.",
+      "wer_cand_vs_ref": 0.043478260869565216,
+      "wer_ref_vs_cand": 0.04395604395604396
+    },
+    {
+      "clip": "20261028-221750_424604.wav",
+      "ref": "Okay, kannst du denn um die beiden Pläne implementieren lassen in und zwar parallel in getrennten Work Directories? Ist das möglich? Antworte mir bitte nur diese Frage, fang aber noch nicht an zu implementieren.",
+      "cand": "Okay, kannst du denn die beiden Pläne implementieren lassen in und zwar parallel in getrennten Work Directories? Ist das möglich? Antworte mir bitte nur diese Frage. Fange aber noch nicht an zu implementieren.",
+      "wer_cand_vs_ref": 0.058823529411764705,
+      "wer_ref_vs_cand": 0.06060606060606061
+    },
+    {
+      "clip": "20261028-222138_451228.wav",
+      "ref": "Ja, alles klar. Dann machen wir das alles seriell und zwar bring bitte zuerst mal den aktuellen Codelauf zu Ende, dann machst du das Decode auf NPU und erst dann das Int-Aid.",
+      "cand": "Ja, alles klar. Dann machen wir das alles seriell. Und zwar bring bitte zuerst mal den aktuellen Codelauf zu Ende. Dann machst du das Decode of NPU und erst dann das Int8.",
+      "wer_cand_vs_ref": 0.0625,
+      "wer_ref_vs_cand": 0.0625
+    },
+    {
+      "clip": "20261028-222209_619848.wav",
+      "ref": "Treib bitte alles selbstständig voran in T DD Ketten, eskaliere gegebenenfalls an den Chimica 3.1 Pro Experten und führe das Projekt selbstständig zu Ende mit allen Korpusmessungen, die du brauchst. Schreib mir dann einen Bericht darüber, was du gemacht hast.",
+      "cand": "Treibe bitte alles selbstständig voran in TDD-Ketten. Eskaliere gegebenenfalls an den Kymikar 3.1 Pro-Experten und führe das Projekt selbstständig zu Ende mit allen Korpusmessungen, die du brauchst. Schreibe mir dann einen Bericht darüber, was du gemacht hast.",
+      "wer_cand_vs_ref": 0.1951219512195122,
+      "wer_ref_vs_cand": 0.21052631578947367
+    },
+    {
+      "clip": "20261028-222240_454642.wav",
+      "ref": "Stell dir auch einen Wecker, der dich alle fünf Minuten weckt, sodass du nach dem Rechten sehen kannst und schauen kannst, ob irgendwas hängt. Achte darauf, dass du alles immer in den Hintergrund schickst, damit du auch den Wecker wirklich nutzen kannst und mit mir sprechen.",
+      "cand": "Stell dir auch einen Wecker, der dich alle fünf Minuten weckt, so dass du nach dem Rechten sehen kannst und schauen kannst, ob irgendwas hängt. Achte darauf, dass du alles immer in den Hintergrund schickst, damit du auch den Wecker wirklich nutzen kannst und mit mir sprechen.",
+      "wer_cand_vs_ref": 0.043478260869565216,
+      "wer_ref_vs_cand": 0.0425531914893617
+    },
+    {
+      "clip": "20261028-222325_406856.wav",
+      "ref": "Wenn der Watchdog alle fünf Minuten kommt, dann schauen natürlich auch, was das Unteradministratorchestratorprojekt macht und wie es dem Kudergrafen geht. Logisch, oder?",
+      "cand": "Wenn der Watchdog alle fünf Minuten kommt, dann schauen natürlich auch, was das Unteradministratorprojekt macht und wie es dem Prüdargrafen geht. Logisch, oder?",
+      "wer_cand_vs_ref": 0.08695652173913043,
+      "wer_ref_vs_cand": 0.08695652173913043
+    },
+    {
+      "clip": "20261028-222359_540658.wav",
+      "ref": "In dem Bericht möchte ich auch alle Performance-Werte sehen, insbesondere welche Werte sich verbessert haben. Und zwar für alle Code-Pakete, die du jetzt schreibst oder schreiben lässt, getrennt. Ich möchte verstehen, welche Änderung was gebracht hat.",
+      "cand": "In dem Bericht möchte ich auch alle Performance-Werte sehen, insbesondere welche Werte sich verbessert haben. Und zwar für alle Codepakete, die du jetzt schreibst oder schreiben lässt, getrennt. Ich möchte verstehen, welche Änderung was gebracht hat.",
+      "wer_cand_vs_ref": 0.027777777777777776,
+      "wer_ref_vs_cand": 0.027777777777777776
+    },
+    {
+      "clip": "20261028-222442_330396.wav",
+      "ref": "Sag mir auch, welche Optimierungen noch implementiert werden können, nachdem dieses Projekt abgeschlossen ist. Gibt es noch etwas?",
+      "cand": "Sag mir auch, welche Optimierungen noch implementiert werden können, nachdem dieses Projekt abgeschlossen ist. Gibt es noch etwas?",
+      "wer_cand_vs_ref": 0.0,
+      "wer_ref_vs_cand": 0.0
+    },
+    {
+      "clip": "20261028-222648_742044.wav",
+      "ref": "Lass einen DeepSeek V4 Pro 0813 Experten einmal recherchieren, welche Optionen außer VLLM sich noch anbieten und ob wir möglicherweise das Modeltool wechseln könnten. Er soll herausbekommen, welchen Speedup dadurch erzielbar wäre.",
+      "cand": "Lass einen Deepseek V4 Pro 0813-Experten einmal recherchieren, welche Optionen außer VLLM sich noch anbieten und ob wir möglicherweise das Model-Tool wechseln könnten. Er soll herausbekommen, welchen Speedup dadurch erzielbar wäre.",
+      "wer_cand_vs_ref": 0.09375,
+      "wer_ref_vs_cand": 0.0967741935483871
+    },
+    {
+      "clip": "20261028-222727_448498.wav",
+      "ref": "Dann setze in Tdd Ketten alle Agenten daran, den Plan wie von den Experten vorgeschlagen für Gwen umzusetzen. Ich möchte, dass alle Eventualitäten durchprobiert werden.",
+      "cand": "Dann setze in TDD-Ketten alle Agenten daran, den Plan, wie von den Experten vorgeschlagen, für Gwen umzusetzen. Ich möchte, dass alle Eventualitäten durchprobiert werden.",
+      "wer_cand_vs_ref": 0.08,
+      "wer_ref_vs_cand": 0.08333333333333333
+    },
+    {
+      "clip": "20261028-223440_476488.wav",
+      "ref": "Ich musste dich leider unterbrechen, weil du dich mit dem Stil an den Subagenten aufgehangen hattest. Aber guck doch mal, wie der Stand ist mit dem Subagenten, erläutere mir, wie die Situation ist, aber mach alles in meinem Hintergrund, dass wir weitersprechen können, okay?",
+      "cand": "Ich musste dich leider unterbrechen, weil du dich mit dem Stier an den Sup-Agenten aufgegangen hattest. Aber guck doch mal, wie der Stand ist mit dem Sup-Agenten. Erläutere mir, wie die Situation ist. Aber mach alles immer im Hintergrund, dass wir weiter sprechen können. Okay?",
+      "wer_cand_vs_ref": 0.18181818181818182,
+      "wer_ref_vs_cand": 0.17777777777777778
+    },
+    {
+      "clip": "20261028-224235_829426.wav",
+      "ref": "Ich möchte gerne die GPU-Nutzung zwischen dir und einem anderen Projekt koordinieren. Mach doch bitte einen Vorschlag, wie das funktionieren kann. Gib mir am besten ein Markdown, das ich dem anderen Agenten geben kann, wo drin steht, wie das funktionieren kann. Schreib das nicht selbst, sondern lass einen DeepSeek V4 Pro 0813 Planer das für dich planen.",
+      "cand": "Ich möchte gerne die GPU-Nutzung zwischen dir und einem anderen Projekt koordinieren. Mach doch bitte einen Vorschlag, wie das funktionieren kann. Gib mir am besten einen Markdown, dass ich dem anderen Agenten geben kann, wo drin steht, wie das funktionieren kann. Schreibt das nicht selbst, sondern lass einen DeepSeek V4 Pro 0813 Planer das für dich planen.",
+      "wer_cand_vs_ref": 0.05263157894736842,
+      "wer_ref_vs_cand": 0.05263157894736842
+    },
+    {
+      "clip": "20261028-224624_345416.wav",
+      "ref": "Wenn der Eigenbauanfang scheitert, dann eskaliere das doch bitte mal an diesen Gpt Six.",
+      "cand": "Wenn der Eigenbau Anfang scheitert, dann eskaliere das doch bitte mal an diesen GPT6.",
+      "wer_cand_vs_ref": 0.2857142857142857,
+      "wer_ref_vs_cand": 0.2857142857142857
+    },
+    {
+      "clip": "20261028-224653_400712.wav",
+      "ref": "Wenn der Eigenbauanfang scheitert, dann eskaliere des Projekt des Suborchestrators bitte an den GPT Six Astra-Experten und lass dich beraten, mach, was er sagt.",
+      "cand": "Wenn der Eigenbauanfang scheitert, dann eskaliere das Projekt des Suborchesterators bitte an den GPT-6-Astro-Experten und lass dich beraten. Mach, was er sagt.",
+      "wer_cand_vs_ref": 0.20833333333333334,
+      "wer_ref_vs_cand": 0.22727272727272727
+    },
+    {
+      "clip": "20261028-225337_877212.wav",
+      "ref": "Work CV Condition statt 20 ms Polling Lost. Wake up Guard for Wait, Deadline Timeout Exact aus Max Record S, No Audio Timeout S, Monotonic, Notify an 5 Übergängen, Capture Put als Notify, keine ASR im Capture Thread, Keith bleibt auf execlock frei, test 8 Stop unter 0,5 Sekunden bei blockierender Inferenz.",
+      "cand": "Work CV condition statt 20 Millisekunden Polling, Lost, Wake Up Guard for Wait, Deadline Timeout, Exact aus Max Record s, No Audio Timeout s, Monotonic, Notify an fünf Übergängen, Capture put als Notify, keine ASR im Capture Thread, Key Thread bleibt auf Exact Lock frei, Test 8, Stop unter 0,5 Sekunden bei Blockierender Inferenz.",
+      "wer_cand_vs_ref": 0.11320754716981132,
+      "wer_ref_vs_cand": 0.10909090909090909
+    },
+    {
+      "clip": "20261028-225427_518130.wav",
+      "ref": "Okay, woran arbeitest du jetzt als nächstes und was kommt danach? Und noch ein Hinweis, bitte aktualisiere regelmäßig auch den Watchdock, damit der dann die relevanten Aufgaben erledigt, die zu dem Zeitpunkt, wo er aufgerufen wird, fertig sind.",
+      "cand": "Okay, woran arbeitest du jetzt als nächstes und was kommt danach? Und noch ein Hinweis: Bitte aktualisiere regelmäßig auch den Watchdog, damit der dann die relevanten Aufgaben erledigt, die zu dem Zeitpunkt, wo er aufgerufen wird, fällig sind.",
+      "wer_cand_vs_ref": 0.05263157894736842,
+      "wer_ref_vs_cand": 0.05263157894736842
+    },
+    {
+      "clip": "20261028-225608_694940.wav",
+      "ref": "Ich habe gerade die App installiert und sehe ein Problem. Wenn ich auf Modell herunterladen klicke, dann bekomme ich nach einer Weile, und zwar bei Datei 2 von vier, die Meldung Netzwerkfehler. Prüfen Sie die Verbindung und versuchen Sie es erneut. Ich habe es dann zweimal probiert, aber es funktioniert nicht.",
+      "cand": "Ich habe gerade die App installiert und sehe ein Problem. Wenn ich auf Modell herunterladen klicke, dann bekomme ich nach einer Weile – und zwar bei Datei 2 von 4 – die Meldung Netzwerkfehler. Prüfen Sie die Verbindung und versuchen Sie es erneut. Ich habe es dann zweimal probiert, aber es funktioniert nicht.",
+      "wer_cand_vs_ref": 0.0196078431372549,
+      "wer_ref_vs_cand": 0.0196078431372549
+    },
+    {
+      "clip": "20261028-225629_503794.wav",
+      "ref": "Mein Grafino S-Telefon verfügt über eine Default-Route, die über ein WireGuppn läuft. Allerdings ist die erste Datei ja korrekt runtergeladen worden, ich glaube also, das Problem ist ein anderes.",
+      "cand": "Mein Grapheno S Telefon verfügt über einen Default-Route, die über ein WireGuard VPN läuft. Allerdings ist die erste Datei ja korrekt runtergeladen worden. Ich glaube also, das Problem ist ein anderes.",
+      "wer_cand_vs_ref": 0.20689655172413793,
+      "wer_ref_vs_cand": 0.1935483870967742
+    },
+    {
+      "clip": "20261028-225706_641010.wav",
+      "ref": "Ich hatte jetzt gerade das Problem, dass ich länger diktiert habe und als ich dann nach, ich schätze mal, zwanzig, vielleicht auch dreißig Sekunden die Taste losgelassen habe, habe ich gesehen, wie Zeichen für Zeichen der Text eingeführt wurde, anstatt auf einmal als ganzer Block. Hast du da irgendwas verändert?",
+      "cand": "Ich hatte jetzt gerade das Problem, dass ich länger diktiert habe und als ich dann nach, ich schätze mal 20, vielleicht auch 30 Sekunden die Taste losgelassen habe, habe ich gesehen, wie Zeichen für Zeichen der Text eingeführt wurde, als anstatt auf einmal als ganzer Block. Hast du da irgendwas verändert?",
+      "wer_cand_vs_ref": 0.06,
+      "wer_ref_vs_cand": 0.058823529411764705
+    },
+    {
+      "clip": "20261028-225723_378184.wav",
+      "ref": "Das ist aber nicht immer der Fall. Also zum Beispiel bei diesem Diktatblock ist das jetzt nicht der Fall. Als ich diesen letzten Text geschrieben habe, hat es einfach klack gemacht und es stand alles da. Wie kann das sein?",
+      "cand": "Das ist aber nicht immer der Fall. Also zum Beispiel über diesen Diktatblock ist das jetzt nicht der Fall. Als ich diesen letzten Text geschrieben habe, hat es einfach klack gemacht und es stand alles da. Wie kann das sein?",
+      "wer_cand_vs_ref": 0.05,
+      "wer_ref_vs_cand": 0.05
+    },
+    {
+      "clip": "20261028-230131_331080.wav",
+      "ref": "Nein, nein, lass den Bäcker schon da, aber aktualisiere, was er tun soll. Er soll immer dafür sorgen, dass alle relevanten Jobs durchgeguckt werden. Und wenn irgendwas nicht läuft, dann soll man es wieder anschieben.",
+      "cand": "Nein, lass den Wecker schon da, aber aktualisiere, was er tun soll. Er soll immer dafür sorgen, dass alle relevanten Jobs durchgeguckt werden und wenn irgendwas nicht läuft, dann sowas wieder anschieben.",
+      "wer_cand_vs_ref": 0.14285714285714285,
+      "wer_ref_vs_cand": 0.15625
+    },
+    {
+      "clip": "20261028-230234_339954.wav",
+      "ref": "Frag doch mal den Chinie-Experten, wie man das Unterprojekt in irgendeiner Form beschleunigen kann. Also kann man irgendwas parallelisieren, kann man irgendwas abspecken? Frag ihn mal.",
+      "cand": "Frag doch mal den Chemieexperten, wie man das Unterprojekt in irgendeiner Form beschleunigen kann. Also kann man irgendwas parallelisieren, kann man irgendwas abspecken? Frag ihn mal.",
+      "wer_cand_vs_ref": 0.038461538461538464,
+      "wer_ref_vs_cand": 0.038461538461538464
+    },
+    {
+      "clip": "20261028-230533_421874.wav",
+      "ref": "Ich stoß doch bitte nochmal die Analyse an, was mit meinem Pixel 10 Pro XL ist. Ich möchte wissen, ob das Modell auf der GPU läuft oder auf der CPU.",
+      "cand": "Stoß doch bitte nochmal die Analyse an, was mit meinem Pixel Zeh Pro XL ist. Ich möchte wissen, ob das Modell auf der GPU läuft oder auf der CPU.",
+      "wer_cand_vs_ref": 0.06666666666666667,
+      "wer_ref_vs_cand": 0.06896551724137931
+    },
+    {
+      "clip": "20261028-231703_476488.wav",
+      "ref": "Wie unterscheiden sich aktuelle CPUs von AMD von denen, die vor zehn Jahren gebaut wurden? Also beispielsweise, wie unterscheidet sich eine aktuelle Server CPU von einem Threadwrapper?",
+      "cand": "Wie unterscheiden sich aktuelle CPUs von AMD von denen, die vor zehn Jahren gebaut wurden? Also beispielsweise, wie unterscheidet sich eine aktuelle Server-CPU von einem Threadripper?",
+      "wer_cand_vs_ref": 0.1111111111111111,
+      "wer_ref_vs_cand": 0.11538461538461539
+    }
+  ],
+  "manual_inspection": [
+    "20261028-214029_1030130.wav",
+    "20261028-224624_345416.wav",
+    "20261028-220328_342686.wav",
+    "20261028-214106_637596.wav",
+    "20261028-213423_397980.wav"
+  ]
+}
