@@ -1651,3 +1651,49 @@ class TestFocusUnknownFallback:
     def test_invalid_fallback_rejected(self, monkeypatch) -> None:
         with pytest.raises(ValueError):
             self._typer(monkeypatch, lambda: None, focus_unknown_fallback="paste")
+
+
+class TestFocusStateProbe:
+    """F2b: probe may return focus_state() strings; only 'unreachable' warns."""
+
+    @staticmethod
+    def _typer(monkeypatch, probe, **kw):
+        monkeypatch.setattr("stt_button.typing.shutil.which", lambda b: "/usr/bin/" + b)
+        t = FakeTyper()
+        p = ClipboardPaster(t, copy_binary="wl-copy", paste_key="ctrl+v")
+        return DeltaTyper(t, final_paster=p, focus_probe=probe, **kw)
+
+    @pytest.mark.parametrize("state,mode", [
+        ("terminal", "copy"), ("other", "type"),
+        ("no_window", "copy"), ("unreachable", "copy"),
+    ])
+    def test_state_modes(self, monkeypatch, state, mode) -> None:
+        assert self._typer(monkeypatch, lambda: state)._final_mode() == mode
+
+    def test_type_fallback_applies_to_both_unknowns(self, monkeypatch) -> None:
+        for s in ("no_window", "unreachable"):
+            d = self._typer(monkeypatch, lambda: s, focus_unknown_fallback="type")
+            assert d._final_mode() == "type"
+
+    def test_no_window_does_not_warn(self, monkeypatch, caplog) -> None:
+        hits = []
+        d = self._typer(monkeypatch, lambda: "no_window",
+                        on_focus_unknown=lambda: hits.append(1))
+        with caplog.at_level("WARNING", logger="stt_button.typing"):
+            d._final_mode()
+        assert not any("unreachable" in r.message for r in caplog.records)
+        assert hits == []
+
+    def test_unreachable_warns(self, monkeypatch, caplog) -> None:
+        d = self._typer(monkeypatch, lambda: "unreachable")
+        with caplog.at_level("WARNING", logger="stt_button.typing"):
+            d._final_mode()
+        assert any("focus extension unreachable" in r.message
+                   for r in caplog.records)
+
+    def test_trace_names_reason(self, monkeypatch, caplog) -> None:
+        d = self._typer(monkeypatch, lambda: "unreachable", latency_trace=True)
+        with caplog.at_level("DEBUG", logger="stt_button.typing"):
+            d._final_mode()
+        assert any("focus unreachable -> copy" in r.getMessage()
+                   for r in caplog.records)

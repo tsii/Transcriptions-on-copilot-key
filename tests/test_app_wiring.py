@@ -143,7 +143,7 @@ class TestFinalPasteWiring:
         monkeypatch.setattr("stt_button.app.PushToTalkController", ControllerStub)
 
         Application(Config(final_paste=True))._build_controller()
-        assert captured["focus_probe"] is focus.terminal_focused
+        assert captured["focus_probe"] is focus.focus_state
 
         captured.clear()
         Application(Config())._build_controller()

@@ -126,7 +126,7 @@ class Application:
             )
             # Focus gating (default of the paster path, no config option):
             # terminal/unknown -> clipboard only; browser -> typed.
-            focus_probe = focus.terminal_focused
+            focus_probe = focus.focus_state
 
         delta = DeltaTyper(
             typer,

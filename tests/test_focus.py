@@ -165,3 +165,49 @@ from tests.test_controller import (  # noqa: E402
     RestAudioSource,
     _wait_state,
 )
+
+
+class TestFocusState:
+    """F2b: distinguish dead extension ('unreachable') from 'no_window'."""
+
+    class _Proc:
+        def __init__(self, stdout: str = "", returncode: int = 0) -> None:
+            self.stdout = stdout
+            self.returncode = returncode
+
+    def _run(self, monkeypatch, proc=None, exc=None):
+        def fake(*a, **kw):
+            if exc is not None:
+                raise exc
+            return proc
+        monkeypatch.setattr(focus.subprocess, "run", fake)
+
+    def test_rc_nonzero_unreachable(self, monkeypatch) -> None:
+        self._run(monkeypatch, self._Proc("", 1))
+        assert focus.focus_state() == "unreachable"
+
+    def test_timeout_unreachable(self, monkeypatch) -> None:
+        import subprocess
+        self._run(monkeypatch, exc=subprocess.TimeoutExpired("busctl", 1))
+        assert focus.focus_state() == "unreachable"
+
+    def test_none_app_no_window(self, monkeypatch) -> None:
+        self._run(monkeypatch, self._Proc('{"type":"ss","data":["none",""]}'))
+        assert focus.focus_state() == "no_window"
+
+    def test_terminal(self, monkeypatch) -> None:
+        self._run(monkeypatch, self._Proc(
+            '{"type":"ss","data":["org.gnome.Terminal",""]}'))
+        assert focus.focus_state() == "terminal"
+
+    def test_other(self, monkeypatch) -> None:
+        self._run(monkeypatch, self._Proc('{"type":"ss","data":["firefox","x"]}'))
+        assert focus.focus_state() == "other"
+
+    @pytest.mark.parametrize("state,expected", [
+        ("terminal", True), ("other", False),
+        ("no_window", None), ("unreachable", None),
+    ])
+    def test_terminal_focused_mapping(self, monkeypatch, state, expected) -> None:
+        monkeypatch.setattr(focus, "focus_state", lambda: state)
+        assert focus.terminal_focused() is expected

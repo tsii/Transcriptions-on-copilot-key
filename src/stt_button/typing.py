@@ -611,7 +611,7 @@ class DeltaTyper:
         final_paster: FinalPaster | None = None,
         latency_trace: bool = False,
         live_typing_mode: str = "full",
-        focus_probe: Callable[[], bool | None] | None = None,
+        focus_probe: Callable[[], bool | str | None] | None = None,
         focus_unknown_fallback: str = "copy",
         on_focus_unknown: Callable[[], None] | None = None,
     ) -> None:
@@ -668,8 +668,19 @@ class DeltaTyper:
         except Exception as exc:  # noqa: BLE001 - finalize must never crash
             log.debug("focus probe failed (%s) - treating as terminal", exc)
             state = None
-        if state is None:
+        # F2b: the probe may return focus.focus_state() strings. Only a
+        # dead extension ("unreachable", or a legacy bool-probe None)
+        # warns; "no_window" is a normal transient state (debug only).
+        label = state if isinstance(state, str) else repr(state)
+        if isinstance(state, str):
+            reason = state
+            state = {"terminal": True, "other": False}.get(state)
+        else:
+            reason = "unreachable" if state is None else "known"
+        if reason == "unreachable":
             self._warn_focus_unknown()
+        elif reason == "no_window":
+            log.debug("focus: no window focused")
         else:
             self._focus_unknown_warned = False
         if state is False or (
@@ -680,7 +691,7 @@ class DeltaTyper:
             mode = "copy"
         else:
             mode = "legacy"
-        self._trace(f"focus {state!r} -> {mode}")
+        self._trace(f"focus {label} -> {mode}")
         return mode
 
     def _warn_focus_unknown(self) -> None:

@@ -11,8 +11,10 @@ anyway (operator mode) or not.
 """
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
+from typing import Literal
 
 log = logging.getLogger(__name__)
 
@@ -62,8 +64,6 @@ def _call_focus() -> tuple[str, str] | None:
     if proc.returncode != 0:
         return None
     try:
-        import json
-
         doc = json.loads(proc.stdout or "{}")
         # Real busctl call output: {"type":"ss","data":[app_id,title]}.
         data = doc.get("data")
@@ -76,8 +76,31 @@ def _call_focus() -> tuple[str, str] | None:
         return None
 
 
+FocusState = Literal["terminal", "other", "no_window", "unreachable"]
+
+
+def focus_state() -> FocusState:
+    """Classify the current focus.
+
+    Returns:
+        "terminal"    = a known terminal is focused.
+        "other"       = some other window is focused.
+        "no_window"   = extension answered, but no window is focused.
+        "unreachable" = extension dead/missing, call failed or timed out.
+    """
+    focus = _call_focus()
+    if focus is None:
+        return "unreachable"
+    app_id, _title = focus
+    if app_id in _TERMINAL_IDS:
+        return "terminal"
+    if app_id == "none":
+        return "no_window"
+    return "other"
+
+
 def terminal_focused() -> bool | None:
-    """Is a TERMINAL window focused?
+    """Is a TERMINAL window focused? (stable wrapper over focus_state())
 
     Returns:
         True  = focus is a known terminal (app-id match).
@@ -85,12 +108,4 @@ def terminal_focused() -> bool | None:
         None  = undecided (extension missing, call failed, no window
         focused) -- caller decides.
     """
-    focus = _call_focus()
-    if focus is None:
-        return None
-    app_id, _title = focus
-    if app_id in _TERMINAL_IDS:
-        return True
-    if app_id == "none":
-        return None
-    return False
+    return {"terminal": True, "other": False}.get(focus_state())
