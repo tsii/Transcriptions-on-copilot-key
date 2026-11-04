@@ -19,6 +19,30 @@ locally (NVIDIA Parakeet TDT 0.6B, CPU-only, automatic DE+EN).
   as a `FinalizeJob` queue + background dispatcher in the controller. A job whose
   final transcription fails is dropped (logged, no done-sound) and never blocks
   the next job.
+- **Latency Phase 2 (04.11., risky parts opt-in, defaults keep today's
+  behaviour):**
+  - **A — live-tick cancel (always on):** releasing the key now aborts a
+    running live transcription cooperatively (pre-hooks on the 24 encoder
+    layers); real-model measurement: the cancel lands in **6.7 ms** (limit
+    300 ms) and the final transcript is character-identical afterwards.
+    Removes the p50 0.27 s / p90 1.6 s / max 7.4 s "wait for the discarded
+    live tick" component.
+  - **B — adaptive tick interval (`asr_interval_adaptive_k`, default 0 =
+    off):** the next live tick fires `k ×` the last tick duration, clamped
+    to `[asr_interval_s, asr_interval_max_s]`; no more back-to-back ticks
+    at long buffers. `asr_interval_max_s` validation applies only when
+    adaptive mode is on.
+  - **C — sentence-pause segmentation (`segment_pause_s`/`segment_min_s`/
+    `segment_max_s`, defaults 0/3.0/0 = off):** mini-final at a pause ≥
+    threshold when the text ends on `.?!`, plus a hard cap cut at the
+    quietest 100 ms frame. **Gate verdict: FAIL** on the 396-clip corpus —
+    13 lost and 33 doubled words at seams (hard criteria G1/G2), WER mean
+    0.139 on segmented clips vs 0.0 unsegmented, catastrophic tail up to
+    1.79 from segment-level hallucination; only the speed gate (G5) passed.
+    The code stays in the tree, defaults off, documented like OPT2.
+    Report: `.pi/reports/gate_segment.json`.
+  - `tools/focus_check.py` — one-shot focus-chain diagnostic (exit codes
+    0/1/2, detects zombie registrations).
 
 ### Changed
 - **Focus-gated final output** — the final dictation delta no longer always
@@ -35,6 +59,18 @@ locally (NVIDIA Parakeet TDT 0.6B, CPU-only, automatic DE+EN).
   are unaffected.
 
 ### Fixed
+- **Focus extension froze on every screen lock/unlock:** GNOME re-enables
+  extensions on unlock, and `disable()` passed the object path instead of
+  the registration ID to `unregister_object()` while an empty `catch`
+  swallowed the failure — the next `enable()` hit "already exported" and
+  GNOME froze the extension in ERROR, silently degrading every dictation
+  to clipboard-only. Fixed with instance-scoped state, idempotent enable,
+  never-throwing disable, full handler error isolation and a 5 s
+  last-known-focus cache (gjs-simulated lock/unlock cycles as regression
+  test). New `focus_unknown_fallback` config (`copy` default, unchanged
+  behaviour) plus a once-per-outage warning in the journal and via
+  notify-send when the extension is unreachable; `focus_state()` now
+  distinguishes "unreachable" from "no window focused".
 - **Focus chain now actually works** (live-verified 04.11.): the GNOME Shell
   extension was silently broken twice — (a) it used the legacy extension
   format and per-field `DBusMethodInfo` construction, both removed in

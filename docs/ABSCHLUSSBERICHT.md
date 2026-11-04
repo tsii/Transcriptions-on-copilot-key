@@ -84,3 +84,28 @@ automatically — only at the operator's explicit request.
   thanks to int8. Possible refinement only if there is measurable benefit.
 - Backspace cost (0.73 s for 3 characters): `max_revision_chars`/committed
   cadence are the adjustment knobs if it becomes subjectively disruptive.
+
+## Addendum — Latency Phase 2 (2026-11-04)
+
+Latency report basis: 1683 real dictations from the service journal
+(`.pi/reports/rtf-latency-analysis.md`). Three accepted ideas (A+B+C)
+were implemented as TDD blocks with per-block commits and reviews
+(A: PASS, B: PASS, C code: PASS-with-nits).
+
+| Idea | Verdict | Evidence |
+|---|---|---|
+| **A** live-tick cooperative cancel (always on) | **accepted** | real-model test: cancel 6.7 ms, character-identical re-transcription; removes the discarded-tick wait (p50 0.27 s / p90 1.58 s / max 7.4 s) |
+| **B** adaptive tick interval (opt-in, k default 0) | **accepted** | clamp(k·last_tick, interval, max); byte-identical behaviour at k=0 (tests) |
+| **C** sentence-pause segmentation (opt-in, defaults off) | **gate FAIL → stays off** | 396 clips ≥ 10 s, `--mode segment`: G1 lost=13 ✗, G2 doubled=33 ✗ (hard), changed=96, WER mean 0.0756 overall; segmented clips WER mean 0.139 / median 0.083 vs 0.0 for unsegmented; tail WER 1.79 (segment-level hallucination, language switch). G5 speed ✓ (e.g. 2.65 s → 0.76 s final), G6 seams ✓. Report `.pi/reports/gate_segment.json` |
+
+Interpretation (same pattern as OPT2/BufferedTranscriber): on this
+operator's corpus the whole-buffer reference is the quality ceiling;
+segment boundaries introduce lost/doubled words and hallucination tails.
+The C code is merged but default-off (`segment_pause_s=0`); re-evaluation
+only with a different segmentation design (e.g. cache-aware streaming
+encoder, which was classified as a large rewrite).
+
+Also this session: focus-chain fixes (ESM extension, real busctl JSON,
+lock/unlock ERROR-freeze fix with idempotent enable + focus cache,
+`focus_unknown_fallback` + loud once-per-outage warning,
+`tools/focus_check.py`). Full suite after Phase 2 + focus: **594 passed**.
