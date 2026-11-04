@@ -311,6 +311,17 @@ class TestBackendWiring:
         assert engine.model == "Qwen/Qwen3-ASR-1.7B-hf"
         assert engine.loaded is False  # lazy: no model load at build time
 
+    def test_whisper_backend_builds_whisper_engine(self) -> None:
+        """P3-2 (review): the whisper branch of build_engine was uncovered."""
+        from stt_button.app import build_engine
+        from stt_button.asr import WhisperEngine
+        from stt_button.config import config_from_mapping
+        cfg = config_from_mapping({"backend": "whisper", "model": "tiny"})
+        engine = build_engine(cfg)
+        assert isinstance(engine, WhisperEngine)
+        assert engine.model == "tiny"
+        assert engine.loaded is False  # lazy: no model load at build time
+
     def test_parakeet_default_wiring_unchanged(self) -> None:
         from stt_button.app import build_engine
         from stt_button.asr import ParakeetEngine

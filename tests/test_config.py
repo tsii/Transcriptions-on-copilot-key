@@ -548,3 +548,25 @@ class TestQwenBackendConfig:
     def test_unknown_backend_raises_config_error(self) -> None:
         with pytest.raises(ConfigError, match="backend"):
             self._cfg(backend="parakeet_onnx")
+
+
+class TestQwenDirectConstruction:
+    """P3-1 (review): auto-switch must be single-sourced in validate(),
+    so directly constructed Config objects behave like loaded ones."""
+
+    def test_direct_config_does_NOT_switch(self) -> None:
+        """Contract (review P3-1): Config is frozen; the auto-switch is a
+        construction-time behavior of config_from_mapping. Direct builds
+        keep the raw model string -- validate() must not mutate."""
+        from stt_button.config import (
+            Config, ConfigError, QWEN_DEFAULT_MODEL, PARAKEET_DEFAULT_MODEL,
+        )
+        cfg = Config(backend="qwen")  # default compute_type is int8 -> invalid for qwen
+        assert cfg.model == PARAKEET_DEFAULT_MODEL
+        with pytest.raises(ConfigError, match="compute_type"):
+            cfg.validate()
+        assert cfg.model == PARAKEET_DEFAULT_MODEL  # validate never mutates
+        cfg2 = Config(backend="qwen", compute_type="bfloat16")
+        cfg2.validate()  # valid; still no model mutation (mapping does the switch)
+        assert cfg2.model == PARAKEET_DEFAULT_MODEL
+        assert cfg2.model != QWEN_DEFAULT_MODEL

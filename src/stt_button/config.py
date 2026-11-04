@@ -346,6 +346,12 @@ def _coerce(name: str, value: Any, target_type: Any) -> Any:
 
 def _validate_qwen(cfg: "Config") -> None:
     """Qwen3-ASR is final-only (no timestamps, no live ticks)."""
+    # NOTE: the qwen model auto-switch lives in config_from_mapping
+    # (construction time), NOT here: Config is a frozen dataclass and
+    # validate() must never mutate. A directly constructed Config(backend=
+    # "qwen") therefore keeps the Parakeet model string until validate
+    # checks it -- documented contract, pinned by
+    # TestQwenDirectConstruction::test_direct_config_does_NOT_switch.
     if cfg.compute_type not in QWEN_COMPUTE_TYPES:
         raise ConfigError(
             f"compute_type for backend 'qwen' must be one of "
@@ -381,6 +387,9 @@ def config_from_mapping(data: dict[str, Any]) -> Config:
                       "list[str]": list}[target]
         kwargs[name] = _coerce(name, value, target)
 
+    # Auto-switch at construction (frozen Config: do it before the freeze
+    # semantics matter, see NOTE in _validate_qwen): Parakeet default or
+    # empty model under backend 'qwen' selects the Qwen repo.
     if kwargs.get("backend") == "qwen" and kwargs.get("model", PARAKEET_DEFAULT_MODEL) in (
         PARAKEET_DEFAULT_MODEL, ""
     ):
