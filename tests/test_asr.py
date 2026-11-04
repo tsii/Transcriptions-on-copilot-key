@@ -1492,3 +1492,38 @@ class TestAdaptiveInterval:
         with pytest.raises(RuntimeError):
             t.maybe_transcribe()
         assert t.effective_interval_s == pytest.approx(4.0)
+
+
+class TestLiveDisabled:
+    """B3: live_enabled=False for final-only engines (Qwen)."""
+
+    def test_live_disabled_maybe_transcribe_never_calls_engine(self) -> None:
+        engine = FakeEngine(["Hallo"])
+        t = StreamTranscriber(engine, interval_s=0.1, min_audio_s=0.1, live_enabled=False)
+        for _ in range(5):
+            t.feed(audio(1.0))
+            assert t.maybe_transcribe() is None
+        assert engine.calls == []
+
+    def test_live_disabled_finalize_transcribes_full_buffer(self) -> None:
+        engine = FakeEngine(["Hallo Welt."])
+        t = StreamTranscriber(engine, interval_s=0.1, min_audio_s=0.1, live_enabled=False)
+        t.feed(audio(3.0))
+        t.maybe_transcribe()
+        assert t.finalize().text == "Hallo Welt."
+        assert engine.calls == [(len(audio(3.0)), "")]
+
+    def test_live_disabled_no_pause_indicator(self) -> None:
+        engine = FakeEngine(["x"])
+        t = StreamTranscriber(engine, interval_s=0.1, min_audio_s=0.1,
+                              live_asr_until_s=1.0, live_enabled=False)
+        t.feed(audio(5.0))
+        assert t.maybe_transcribe() is None
+        assert t.take_live_paused() is False
+
+    def test_live_enabled_default_true_behavior_unchanged(self) -> None:
+        engine = FakeEngine(["Hallo"])
+        t = StreamTranscriber(engine, interval_s=0.1, min_audio_s=0.1)
+        assert t.live_enabled is True
+        t.feed(audio(0.5))
+        assert t.maybe_transcribe().text == "Hallo"

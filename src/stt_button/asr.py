@@ -570,6 +570,10 @@ class StreamTranscriber:
     #: If it reports no speech in the NEW audio region, transcription is skipped
     #: (prevents hallucinations on silence -> phantom backspaces).
     vad: object | None = None
+    #: B3: False for final-only engines (``engine.supports_live`` is False,
+    #: e.g. Qwen3-ASR): maybe_transcribe() never calls the engine, no pause
+    #: indicator; finalize() transcribes the complete buffer as usual.
+    live_enabled: bool = True
     #: STAGE 3: Stop live ticks after this buffer duration (seconds).
     #: The whole-buffer approach becomes more expensive per tick (RTF grows
     #: with the buffer); beyond this point, only finalize() produces text.
@@ -739,7 +743,8 @@ class StreamTranscriber:
             ``True`` iff the limit notification had not yet been retrieved.
         """
         if (
-            self.live_asr_until_s > 0.0
+            self.live_enabled
+            and self.live_asr_until_s > 0.0
             and self.audio_seconds >= self.live_asr_until_s
             and not self._live_paused_seen
         ):
@@ -768,6 +773,8 @@ class StreamTranscriber:
         Returns:
             The result, or ``None`` if no transcription has occurred yet.
         """
+        if not self.live_enabled:
+            return None
         if self.audio_seconds < self.min_audio_s:
             return None
         # PHASE 2 (C): hard cap per segment; precedes the live limit so a
