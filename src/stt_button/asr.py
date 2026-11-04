@@ -561,6 +561,14 @@ class StreamTranscriber:
     #: duration, interval_s, asr_interval_max_s) - like TalkType DecodePace.
     asr_interval_adaptive_k: float = 0.0
     asr_interval_max_s: float = 6.0
+    #: PHASE 2 (C): hard-cut segmentation. >0: a VAD pause of at least this
+    #: many seconds after a hypothesis ending in .?! closes the segment
+    #: (mini-final, permanent commit, buffer reset). 0.0 (default) = off.
+    segment_pause_s: float = 0.0
+    #: PHASE 2 (C): minimum segment length (seconds) before a pause cut.
+    segment_min_s: float = 3.0
+    #: PHASE 2 (C): hard cap per segment (seconds, block 6); 0 = no cap.
+    segment_max_s: float = 0.0
 
     _buffer: bytearray = field(default_factory=bytearray, init=False, repr=False)
     _last_transcribed_at: float = field(default=0.0, init=False, repr=False)
@@ -602,6 +610,10 @@ class StreamTranscriber:
     _mid_tail_failed: bool = field(default=False, init=False, repr=False)
     #: Phase 2 (B): duration of the last successful live engine call.
     _last_tick_s: float = field(default=0.0, init=False, repr=False)
+    #: PHASE 2 (C): text of closed segments, always ends with one space.
+    _closed_text: str = field(default="", init=False, repr=False)
+    #: PHASE 2 (C): audio of closed segments (for the debug dump).
+    _closed_audio: bytearray = field(default_factory=bytearray, init=False, repr=False)
     #: Injectable clock (tests).
     _clock: object = field(default=None, init=False, repr=False)
 
@@ -629,6 +641,15 @@ class StreamTranscriber:
         return self._last_text
 
     @property
+    def closed_text(self) -> str:
+        """Text of permanently closed segments (Phase 2, C)."""
+        return self._closed_text
+
+    def full_audio(self) -> bytes:
+        """Whole recording: closed segments followed by the current buffer."""
+        return bytes(self._closed_audio) + bytes(self._buffer)
+
+    @property
     def effective_interval_s(self) -> float:
         """Live interval honoring the adaptive pace (Phase 2, B)."""
         if self.asr_interval_adaptive_k <= 0.0 or self._last_tick_s <= 0.0:
@@ -645,6 +666,14 @@ class StreamTranscriber:
         Also resets the live-limit notification (pause indicator): the next
         recording can reach the limit again and report it exactly once.
         """
+        self._reset_segment()
+        self._closed_text = ""
+        self._closed_audio.clear()
+        self._live_paused_seen = False
+        self._live_paused_pending = False
+
+    def _reset_segment(self) -> None:
+        """Clear the CURRENT segment only (buffer, commit, history, cache)."""
         self._buffer.clear()
         self._last_transcribed_at = 0.0
         self._has_transcribed = False
@@ -653,8 +682,6 @@ class StreamTranscriber:
         self._history = []
         self._last_text = ""
         self._vad_checked_at = 0.0
-        self._live_paused_seen = False
-        self._live_paused_pending = False
         self._mid_tail_checkpoint = None
         self._mid_tail_failed = False
         self._last_tick_s = 0.0
@@ -735,6 +762,11 @@ class StreamTranscriber:
             if self.audio_seconds - self._last_transcribed_at < self.effective_interval_s:
                 return None
 
+        # PHASE 2 (C): sentence-pause cut takes precedence over the VAD skip
+        # (the pause IS silence; the normal gate would return None here).
+        if self.segment_pause_s > 0.0 and self._pause_cut_due():
+            return self._cut_segment(len(self._buffer))
+
         # VAD gate: Silence/noise must never reach ASR. Only new audio (since
         # the last transcription) is checked, saving computation time and
         # preventing phantom text and backspace retractions.
@@ -763,7 +795,7 @@ class StreamTranscriber:
                         )
                         return None
 
-        return self._transcribe()
+        return self._compose(self._transcribe())
 
     def finalize(self) -> TranscriptionResult:
         """Transcribes the entire buffer as the final result.
@@ -787,9 +819,7 @@ class StreamTranscriber:
                 "Finalize result taken from cache (%d bytes, no engine call)",
                 len(self._buffer),
             )
-            return TranscriptionResult(
-                text=self._last_completed_text, committed_len=0
-            )
+            return self._finalize_compose(self._last_completed_text)
         # PHASE 2: Small tail instead of full buffer if the mid-tail chain is
         # valid; otherwise, preserve current behavior (full-buffer fallback).
         if self.finalize_mode == "cached_mid_tail":
@@ -802,7 +832,7 @@ class StreamTranscriber:
                 )
                 return mid_tail
         result = self._transcribe()
-        return TranscriptionResult(text=result.text, committed_len=0)
+        return self._finalize_compose(result.text)
 
     # ------------------------------------------------------------------
     # Internal
@@ -939,6 +969,82 @@ class StreamTranscriber:
         return TranscriptionResult(
             text=stitched, committed_len=len(self._committed_text)
         )
+
+    _SENTENCE_END = (".", "?", "!")
+
+    def _compose(self, result: TranscriptionResult) -> TranscriptionResult:
+        """Prefix closed segments to a live result (Phase 2, C)."""
+        if not self._closed_text:
+            return result
+        return TranscriptionResult(
+            text=self._closed_text + result.text,
+            committed_len=len(self._closed_text) + result.committed_len,
+        )
+
+    def _finalize_compose(self, text: str) -> TranscriptionResult:
+        """Final result: closed prefix is committed, the segment is open."""
+        if not self._closed_text:
+            return TranscriptionResult(text=text, committed_len=0)
+        if not text:
+            return TranscriptionResult(text=self._closed_text.rstrip(),
+                                       committed_len=0)
+        return TranscriptionResult(text=self._closed_text + text,
+                                   committed_len=len(self._closed_text))
+
+    def _pause_cut_due(self) -> bool:
+        """Sentence pause: punctuation at the hypothesis end + silent tail."""
+        if self.vad is None or not self._last_text.endswith(self._SENTENCE_END):
+            return False
+        if self.audio_seconds < self.segment_min_s:
+            return False
+        tail_s = max(1.0, self.segment_pause_s)
+        n = int(tail_s * self.sample_rate) * BYTES_PER_SAMPLE
+        if len(self._buffer) < n:
+            return False
+        try:
+            return not self.vad.has_speech(_pcm_to_float(bytes(self._buffer[-n:])))
+        except Exception as exc:  # noqa: BLE001 - gate is optional
+            log.warning("VAD pause check failed (%s) - no segment cut", exc)
+            return False
+
+    def _cut_segment(self, cut_nbytes: int, *, force: bool = False) -> TranscriptionResult:
+        """Mini-final on buffer[:cut_nbytes]; close it if it ends a sentence.
+
+        State is changed ONLY after the engine call succeeded (an
+        InferenceCancelled or engine error leaves everything untouched).
+        ``force=True`` (hard cap, block 6) closes the segment regardless of
+        punctuation.
+        """
+        seg = bytes(self._buffer[:cut_nbytes])
+        clock = self._clock or time.monotonic
+        t0 = clock()
+        result = self.engine.transcribe(seg, initial_prompt=self._committed_text)
+        self._last_tick_s = clock() - t0
+        text = result.text.strip()
+        if not force and cut_nbytes == len(self._buffer) and not text.endswith(self._SENTENCE_END):
+            # Not a sentence end after all: behave like a normal tick and keep
+            # the finalize cache consistent (same proof as _transcribe).
+            self._last_transcribed_at = self.audio_seconds
+            self._has_transcribed = True
+            self._last_text = text
+            self._update_commit(text)
+            self._last_completed_nbytes = len(seg)
+            self._last_completed_text = text
+            self._last_completed_ok = True
+            self._completed_feed_epoch = self._feed_epoch
+            return self._compose(
+                TranscriptionResult(text=text, committed_len=self._committed_len)
+            )
+        rest = bytes(self._buffer[cut_nbytes:])
+        if text:
+            self._closed_text += text + " "
+        self._closed_audio.extend(seg)
+        self._reset_segment()
+        self._buffer.extend(rest)
+        self._feed_epoch += 1
+        log.debug("Segment closed (%d bytes) -> %r", len(seg), text)
+        return TranscriptionResult(text=self._closed_text,
+                                   committed_len=len(self._closed_text))
 
     def _new_audio(self) -> bytes:
         """Audio since the last transcription (otherwise, the entire buffer)."""
