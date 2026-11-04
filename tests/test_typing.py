@@ -1697,3 +1697,76 @@ class TestFocusStateProbe:
             d._final_mode()
         assert any("focus unreachable -> copy" in r.getMessage()
                    for r in caplog.records)
+
+
+class MergingFakeTyper(FakeTyper):
+    """FakeTyper that also offers the merged dotool path (M2a/M2b)."""
+
+    def backspace_and_type(self, n: int, text: str, trailing_key: str | None = None) -> None:
+        self.calls.append(("bs_type", str(n), text, str(trailing_key)))
+
+
+_PRE = "typedelay 20\ntypehold 15\n"
+
+
+class TestM2aSingleDotoolPayload:
+    def test_dotool_backspace_and_type_single_payload(self, monkeypatch) -> None:
+        stdin = _capture_stdin(monkeypatch)
+        DotoolTyper().backspace_and_type(2, "Welt", trailing_key="space")
+        assert stdin == [
+            "key backspace\nkey backspace\n" + _PRE + "type Welt\nkey space\n"
+        ]
+
+    def test_dotool_backspace_and_type_without_backspace_or_key(self, monkeypatch) -> None:
+        stdin = _capture_stdin(monkeypatch)
+        DotoolTyper().backspace_and_type(0, "a\nb")
+        assert stdin == [_PRE + "type a\nkey enter\ntype b\n"]
+
+    def test_finalize_merges_backspace_text_and_space(self) -> None:
+        t = MergingFakeTyper()
+        d = DeltaTyper(t)
+        d.update("abcd")
+        t.calls.clear()
+        d.finalize("abXY")
+        assert t.calls == [("bs_type", "2", "XY", "space")]
+
+    def test_finalize_merges_without_backspace(self) -> None:
+        t = MergingFakeTyper()
+        d = DeltaTyper(t)
+        d.finalize("Hallo")
+        assert t.calls == [("bs_type", "0", "Hallo", "space")]
+
+    def test_finalize_no_append_space_no_trailing_key(self) -> None:
+        t = MergingFakeTyper()
+        d = DeltaTyper(t, append_space=False)
+        d.finalize("Hallo")
+        assert t.calls == [("bs_type", "0", "Hallo", "None")]
+
+    def test_finalize_empty_to_add_keeps_separate_space(self) -> None:
+        t = MergingFakeTyper()
+        d = DeltaTyper(t)
+        d.update("Hallo")
+        t.calls.clear()
+        d.finalize("Hallo")
+        assert t.calls == [("key", "space")]
+
+    def test_finalize_typer_without_method_falls_back(self) -> None:
+        t = FakeTyper()
+        d = DeltaTyper(t)
+        d.update("abcd")
+        t.calls.clear()
+        d.finalize("abXY")
+        assert t.calls == [("backspace", "2"), ("type", "XY"), ("key", "space")]
+
+    def test_finalize_dotool_end_to_end_one_process(self, monkeypatch) -> None:
+        stdin = _capture_stdin(monkeypatch)
+        d = DeltaTyper(DotoolTyper())
+        d.finalize("Hallo")
+        assert stdin == [_PRE + "type Hallo\nkey space\n"]
+
+    def test_space_trace_only_when_separate_process(self, caplog) -> None:
+        d = DeltaTyper(MergingFakeTyper(), latency_trace=True)
+        with caplog.at_level("DEBUG", logger="stt_button.typing"):
+            d.finalize("Hallo")
+        msgs = [r.getMessage() for r in caplog.records]
+        assert not any(m.startswith("latency[space ") and "in type" not in m for m in msgs)

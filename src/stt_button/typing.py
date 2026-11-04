@@ -297,6 +297,33 @@ class DotoolTyper:
         )
         self._send(payload)
 
+    def backspace_and_type(
+        self, n: int, text: str, trailing_key: str | None = None
+    ) -> None:
+        """Backspaces, text and an optional trailing key in ONE dotool process (M2a).
+
+        Each dotool process costs ~0.7 s startup, so the final output (and
+        live corrections) send everything in a single stdin payload. The
+        trailing key (e.g. 'space') is a separate ``key`` line because dotool
+        drops trailing spaces inside a ``type`` line. The timeout budget of
+        :meth:`_send_raw` counts only ``type`` lines, as before.
+        """
+        parts = ["key backspace\n" for _ in range(max(0, n))]
+        if text:
+            self._ensure_capslock_normal()
+            parts.append(
+                f"typedelay {self._typedelay_ms}\ntypehold {self._typehold_ms}\n"
+            )
+            for i, line in enumerate(text.split("\n")):
+                if i:
+                    parts.append("key enter\n")
+                if line:
+                    parts.append(f"type {line}\n")
+        if trailing_key:
+            parts.append(f"key {trailing_key}\n")
+        if parts:
+            self._send("".join(parts))
+
     def key(self, name: str) -> None:
         if not name:
             return
@@ -912,6 +939,23 @@ class DeltaTyper:
                             f"combined backspace+paste "
                             f"{time.monotonic() - t0:.3f}s"
                         )
+            # M2a: typer path -> backspaces, delta and trailing space in ONE
+            # dotool process (saves ~0.7 s per avoided process start).
+            merged = getattr(self._typer, "backspace_and_type", None)
+            if to_add and mode == "type" and merged is not None:
+                t0 = time.monotonic()
+                merged(
+                    to_remove,
+                    to_add,
+                    trailing_key="space" if self._append_space else None,
+                )
+                space_in_paste = self._append_space
+                self._trace("type")
+                self._trace(f"output {time.monotonic() - t0:.3f}s")
+                if space_in_paste:
+                    self._trace("space 0.000s (in type)")
+                to_remove = 0
+                to_add = ""
             if to_remove:
                 t0 = time.monotonic()
                 self._typer.backspace(to_remove)
