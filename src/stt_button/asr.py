@@ -101,6 +101,9 @@ class WhisperEngine:
     HuggingFace cache.
     """
 
+    #: Capability flags (B2): live ticks are affordable on CPU.
+    supports_live = True
+
     def __init__(
         self,
         model: str = "large-v3-turbo",
@@ -178,6 +181,10 @@ class ParakeetEngine:
     parameter is silently ignored. This is not critical for streaming deltas
     because transcription processes the entire buffer anyway.
     """
+
+    #: Capability flags (B2): live ticks + TDT token timestamps.
+    supports_live = True
+    supports_timestamps = True
 
     def __init__(
         self,
@@ -418,6 +425,11 @@ class ParakeetEngine:
         return Transcription(tokens=tokens)
 
 
+#: Pinned snapshot of the default Qwen model (spike 2026-11-04).
+QWEN_DEFAULT_MODEL = "Qwen/Qwen3-ASR-1.7B-hf"
+QWEN_DEFAULT_REVISION = "bcd2b5b7f32b480ab5790554cfa8347f246a14f3"
+
+
 class QwenEngine:
     """Transcribes with Qwen3-ASR (transformers, CPU-only).
 
@@ -428,17 +440,31 @@ class QwenEngine:
 
     This model also does not support ``initial_prompt``; the parameter is
     ignored.
+
+    Final-only engine: whole-buffer re-transcription per live tick is far
+    too slow (spike 2026-11-04: RTF ~0.77 at 20 s, BF16), so
+    ``supports_live`` is False and the app disables live ticks. BF16 is
+    the default (4.7-5.0 GB RSS); float32 upcasts to ~11.7 GB.
     """
+
+    supports_live = False
+    supports_timestamps = False
+    _DTYPES = ("bfloat16", "float32")
 
     def __init__(
         self,
-        model: str = "Qwen/Qwen3-ASR-1.7B-hf",
+        model: str = QWEN_DEFAULT_MODEL,
         *,
         language: str = "auto",
-        compute_type: str = "float32",
+        compute_type: str = "bfloat16",
         cpu_threads: int | None = None,
         device: str = "cpu",
     ) -> None:
+        if compute_type not in self._DTYPES:
+            raise ValueError(
+                f"QwenEngine compute_type must be one of {self._DTYPES}, "
+                f"is {compute_type!r}"
+            )
         self.model = model
         self.language = language
         self.compute_type = compute_type
@@ -458,10 +484,12 @@ class QwenEngine:
         import torch
         from transformers import AutoModelForMultimodalLM, AutoProcessor
 
-        log.info("Loading Qwen3-ASR model %s ...", self.model)
-        self._processor = AutoProcessor.from_pretrained(self.model)
+        log.info("Loading Qwen3-ASR model %s (%s) ...", self.model, self.compute_type)
+        pin = {"revision": QWEN_DEFAULT_REVISION} if self.model == QWEN_DEFAULT_MODEL else {}
+        dtype = torch.bfloat16 if self.compute_type == "bfloat16" else torch.float32
+        self._processor = AutoProcessor.from_pretrained(self.model, **pin)
         self._model = AutoModelForMultimodalLM.from_pretrained(
-            self.model, dtype=torch.float32
+            self.model, dtype=dtype, **pin
         ).to(self.device).eval()
         if self.device == "cpu":
             torch.set_num_threads(self.cpu_threads)
