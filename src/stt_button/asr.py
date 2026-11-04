@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -61,6 +62,16 @@ def _token_budget(audio_seconds: float) -> int:
     """
     budget = int(audio_seconds * 12) + 64
     return max(256, min(budget, 4096))
+
+
+class InferenceCancelled(Exception):
+    """Raised inside engine inference when a cooperative cancel was requested.
+
+    Only live ticks are ever cancelled (Phase 2, idea A): on release the
+    controller cancels a live tick whose result would be discarded anyway,
+    so the finalizer does not queue behind it on _exec_lock.
+    Only the HF/FP32 path is cancellable; an ONNX/ORT run is atomic.
+    """
 
 
 @dataclass(frozen=True)
@@ -184,6 +195,9 @@ class ParakeetEngine:
         self._model = None
         self._processor = None
         self._onnx_model = None
+        #: Phase 2 (A): cooperative cancel, checked before every encoder layer.
+        self._cancel_event = threading.Event()
+        self._cancel_hook_handles: list = []
 
     @property
     def loaded(self) -> bool:
@@ -214,7 +228,41 @@ class ParakeetEngine:
         ).to(self.device).eval()
         if self.device == "cpu":
             torch.set_num_threads(self.cpu_threads)
+        self._install_cancel_hooks()
         log.info("Parakeet model loaded.")
+
+    def _install_cancel_hooks(self) -> None:
+        """Register one forward pre-hook per encoder layer (idempotent).
+
+        The hook raises InferenceCancelled while the cancel event is set;
+        generate() unwinds like on any exception (each call builds its own
+        tensors, so no shared state is left half-updated).
+        """
+        if self._cancel_hook_handles or self._model is None:
+            return
+        layers = getattr(getattr(self._model, "encoder", None), "layers", None)
+        if layers is None:
+            log.debug("cancel hooks: no encoder.layers - inference not cancellable")
+            return
+
+        def _check(_module, _args):
+            if self._cancel_event.is_set():
+                raise InferenceCancelled("live inference cancelled")
+
+        self._cancel_hook_handles = [
+            layer.register_forward_pre_hook(_check) for layer in layers
+        ]
+
+    def request_cancel(self) -> None:
+        """Ask a running HF inference to stop at the next encoder layer.
+
+        No-op for the ONNX/int8 path (an ORT run is atomic).
+        """
+        self._cancel_event.set()
+
+    def clear_cancel(self) -> None:
+        """Re-enable inference after a cancel."""
+        self._cancel_event.clear()
 
     def _int8_dir(self):
         """Directory containing the int8 ONNX files (tests may redirect it)."""
@@ -276,6 +324,7 @@ class ParakeetEngine:
         # 'No available devices'; static bucket incompatible; zero RTF gain).
         # initial_prompt is omitted because the full buffer is transcribed
         # anyway; FP32 HF remains the fallback (never crashes).
+        # Not cancellable (Phase 2 A): an ORT run is atomic.
         onnx_model = getattr(self, "_onnx_model", None)
         if onnx_model is not None:
             import numpy as np
@@ -325,6 +374,7 @@ class ParakeetEngine:
         # timestamps -> one text token spanning the entire window length
         # (integer-correct; windowed streaming is intentionally disabled
         # with int8).
+        # Not cancellable (Phase 2 A): an ORT run is atomic.
         onnx_model = getattr(self, "_onnx_model", None)
         if onnx_model is not None:
             import numpy as np
