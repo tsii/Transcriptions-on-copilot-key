@@ -2139,3 +2139,126 @@ class TestQueuedRecordingTimeouts:
         _wait_finalizer_idle(ctrl)
         _wait_state(ctrl, ControllerState.IDLE)
         assert ctx["finalized"] == ["first"]
+
+
+class CancellableEngine:
+    """Engine whose FIRST transcribe() blocks until cancel (or 2s timeout).
+
+    Mimics ParakeetEngine's cooperative cancel API (Phase 2, A).
+    """
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self._cancel = threading.Event()
+        self.cancel_requests = 0
+        self.calls = 0
+
+    def request_cancel(self) -> None:
+        self.cancel_requests += 1
+        self._cancel.set()
+
+    def clear_cancel(self) -> None:
+        self._cancel.clear()
+
+    def transcribe(self, data: bytes, initial_prompt: str = "") -> TranscriptionResult:
+        from stt_button.asr import InferenceCancelled
+
+        self.calls += 1
+        if self.calls == 1:
+            self.entered.set()
+            if self._cancel.wait(timeout=2.0):
+                raise InferenceCancelled("cancelled")
+        if self._cancel.is_set():
+            raise InferenceCancelled("cancelled (stray)")
+        return TranscriptionResult(text="final text")
+
+
+class TestReleaseCancelsLiveTick:
+    """Phase 2 (A): release must not queue the finalizer behind a live tick."""
+
+    @staticmethod
+    def _start_ticker(ctrl, engine) -> threading.Thread:
+        """Tick until the engine is entered (capture may lag the first tick)."""
+        def loop() -> None:
+            deadline = time.monotonic() + 5.0
+            while not engine.entered.is_set() and time.monotonic() < deadline:
+                ctrl.run_once()
+                time.sleep(0.01)
+        t = threading.Thread(target=loop, daemon=True)
+        t.start()
+        return t
+
+    def _ctrl(self, engine, typer):
+        return PushToTalkController(
+            config=None,
+            source_factory=lambda: FakeAudioSource([b"\x00" * 16000] * 8),
+            engine=engine,
+            delta_typer=DeltaTyper(typer, append_space=True),
+            min_audio_s=0.1,
+            asr_interval_s=0.1,
+        )
+
+    def test_release_cancels_running_live_tick_and_final_is_fast(self) -> None:
+        engine = CancellableEngine()
+        typer = FakeTyper()
+        ctrl = self._ctrl(engine, typer)
+        ctrl.start_recording()
+        ticker = self._start_ticker(ctrl, engine)
+        assert engine.entered.wait(timeout=5.0)
+
+        t0 = time.monotonic()
+        ctrl.stop_recording()
+        _wait_state(ctrl, ControllerState.IDLE, timeout=5.0)
+        elapsed = time.monotonic() - t0
+        ticker.join(timeout=5.0)
+
+        assert engine.cancel_requests == 1
+        # Without cancel the finalizer waits for the 2s live timeout.
+        assert elapsed < 1.0, f"finalizer queued behind live tick ({elapsed:.2f}s)"
+        assert "final text" in typer.typed_text_final
+
+    def test_cancelled_live_tick_does_not_abort(self, caplog) -> None:
+        engine = CancellableEngine()
+        typer = FakeTyper()
+        ctrl = self._ctrl(engine, typer)
+        ctrl.start_recording()
+        ticker = self._start_ticker(ctrl, engine)
+        assert engine.entered.wait(timeout=5.0)
+        with caplog.at_level("INFO", logger="stt_button.controller"):
+            ctrl.stop_recording()
+            _wait_state(ctrl, ControllerState.IDLE, timeout=5.0)
+            ticker.join(timeout=5.0)
+        assert "Transcription failed" not in caplog.text
+        assert "Live tick cancelled" in caplog.text
+
+    def test_no_cancel_without_running_live_tick(self) -> None:
+        engine = CancellableEngine()
+        engine.calls = 1  # never block: no live tick in flight
+        typer = FakeTyper()
+        ctrl = self._ctrl(engine, typer)
+        ctrl.start_recording()
+        time.sleep(0.1)
+        ctrl.stop_recording()
+        _wait_state(ctrl, ControllerState.IDLE, timeout=5.0)
+        assert engine.cancel_requests == 0
+
+    def test_stray_cancel_is_cleared_before_finalize(self) -> None:
+        engine = CancellableEngine()
+        engine.calls = 1
+        engine.request_cancel()  # stray flag left over (tick ended just before)
+        typer = FakeTyper()
+        ctrl = self._ctrl(engine, typer)
+        ctrl.start_recording()
+        time.sleep(0.1)
+        ctrl.stop_recording()
+        _wait_state(ctrl, ControllerState.IDLE, timeout=5.0)
+        assert "final text" in typer.typed_text_final
+
+    def test_engine_without_cancel_api_still_works(self) -> None:
+        typer = FakeTyper()
+        ctrl = self._ctrl(FakeEngine(), typer)
+        ctrl.start_recording()
+        ctrl.run_once()
+        ctrl.stop_recording()
+        _wait_state(ctrl, ControllerState.IDLE, timeout=5.0)
+        assert ctrl.state == ControllerState.IDLE

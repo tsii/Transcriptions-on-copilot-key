@@ -26,7 +26,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Callable
 
-from .asr import StreamTranscriber, TranscriptionResult
+from .asr import InferenceCancelled, StreamTranscriber, TranscriptionResult
 from .audio import AudioSource, AudioSourceError
 from . import focus
 from .typing import DeltaTyper
@@ -140,6 +140,8 @@ class PushToTalkController:
         self._capture_stop = threading.Event()
         self._typing_epoch = 0  # under _lock
         self._typed_epoch = 0  # under _exec_lock (read/written only in _run_once_exec and _run_finalize_job)
+        # Phase 2 (A): True while a live tick is inside the engine; under _lock.
+        self._live_tick_active = False
 
     # ------------------------------------------------------------------
     # Trigger
@@ -353,15 +355,31 @@ class PushToTalkController:
         with self._lock:
             if self.state != ControllerState.RECORDING:
                 return
+            # Phase 2 (A): mark the tick as cancellable atomically with the
+            # state check; drop a stray cancel left without a finalizer job
+            # (_finish with transcriber None). _finish only cancels while this
+            # flag is True, so a clear here can never swallow a real cancel.
+            self._live_tick_active = True
+            clear_cancel = getattr(self._engine, "clear_cancel", None)
+            if clear_cancel is not None:
+                clear_cancel()
 
         try:
             self._trace("live asr start")
             result = transcriber.maybe_transcribe()
             self._trace("live asr end")
+        except InferenceCancelled:
+            # Phase 2 (A): release cancelled this tick on purpose; the
+            # finalizer owns the recording now. Not an error, no abort.
+            log.info("Live tick cancelled by release")
+            return
         except Exception as exc:  # noqa: BLE001 - ASR error -> clean abort
             log.error("Transcription failed: %s", exc)
             self.abort()
             return
+        finally:
+            with self._lock:
+                self._live_tick_active = False
 
         # STAGE 2: post-release discard. The live tick may have been blocked
         # in the engine for seconds; a release during that time has already
@@ -462,6 +480,13 @@ class PushToTalkController:
             audio_queue = self._audio_queue
             capture_thread = self._capture_thread
             self._capture_stop.set()
+            # Phase 2 (A): a live tick still inside the engine would only be
+            # discarded (post-release discard); stop it so the finalizer can
+            # take _exec_lock at once. Event.set() only - no lock taken.
+            if self._live_tick_active:
+                cancel = getattr(self._engine, "request_cancel", None)
+                if cancel is not None:
+                    cancel()
             self._capture_thread = None
             self._transcriber = None
             job = FinalizeJob(transcriber=transcriber, audio_queue=audio_queue,
@@ -579,6 +604,11 @@ class PushToTalkController:
         try:
             with self._exec_lock:
                 self._trace("finalizer exec acquired")
+                # Phase 2 (A): no live tick can run while we hold _exec_lock;
+                # drop any cancel request aimed at a (finished) live tick.
+                clear_cancel = getattr(self._engine, "clear_cancel", None)
+                if clear_cancel is not None:
+                    clear_cancel()
                 if self._typed_epoch != job.epoch:
                     self._delta_typer.reset()
                     self._typed_epoch = job.epoch
