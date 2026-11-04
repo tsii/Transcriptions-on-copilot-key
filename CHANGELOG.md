@@ -57,6 +57,20 @@ locally (NVIDIA Parakeet TDT 0.6B, CPU-only, automatic DE+EN).
   only when a terminal is focused. `"terminal"` remains a valid option. This
   changes only the default: existing configs with an explicit `done_sound_mode`
   are unaffected.
+- **Output path overhaul (04.11., from the verified slowdown analysis)**:
+  - One dotool process per output step: the final delta now merges
+    pending backspaces, the text and the trailing space into a single
+    stdin payload (previously up to three processes at ~0.7 s fixed cost
+    each; live correction ticks likewise went from two to one). Trailing
+    space rides as its own `key space` line — dotool silently drops a
+    space at the end of a `type` line.
+  - New `final_paste_min_chars` (default `0` = off): when a final delta
+    reaches the threshold and the focus is *confirmed* non-terminal, it
+    is pasted once via the existing clipboard path instead of typed at
+    35 ms/character. Terminal, unknown and no-window focus never paste —
+    never a paste chord even with `focus_unknown_fallback="type"`.
+    Analysis and numbers: `.pi/reports/slowdown_kimi.md`,
+    `.pi/reports/slowdown_opus.md`.
 
 ### Fixed
 - **Focus extension froze on every screen lock/unlock:** GNOME re-enables
