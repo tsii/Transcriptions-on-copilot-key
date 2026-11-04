@@ -476,3 +476,19 @@ class TestFocusUnknownFallbackKey:
         p = write_config(tmp_path, 'focus_unknown_fallback = "paste"\n')
         with pytest.raises(ConfigError, match="focus_unknown_fallback"):
             load_config(p)
+
+
+class TestFinalPasteMinChars:
+    def test_default_disabled(self, tmp_path: Path) -> None:
+        assert load_config(tmp_path / "nope.toml").final_paste_min_chars == 0
+
+    def test_parsed(self, tmp_path: Path) -> None:
+        p = tmp_path / "c.toml"
+        p.write_text("final_paste_min_chars = 40\n")
+        assert load_config(p).final_paste_min_chars == 40
+
+    def test_negative_rejected(self, tmp_path: Path) -> None:
+        p = tmp_path / "c.toml"
+        p.write_text("final_paste_min_chars = -1\n")
+        with pytest.raises(ConfigError):
+            load_config(p)

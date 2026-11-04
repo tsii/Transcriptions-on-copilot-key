@@ -641,8 +641,15 @@ class DeltaTyper:
         focus_probe: Callable[[], bool | str | None] | None = None,
         focus_unknown_fallback: str = "copy",
         on_focus_unknown: Callable[[], None] | None = None,
+        final_paste_min_chars: int = 0,
     ) -> None:
         self._typer = typer
+        # M1: paste final deltas of at least this many characters when the
+        # focus is CONFIRMED non-terminal (0 = disabled, always type).
+        self._final_paste_min_chars = max(0, int(final_paste_min_chars))
+        # Set by _final_mode(): True only for a confirmed non-terminal focus
+        # (never for unknown/no_window, even with fallback 'type').
+        self._focus_confirmed_other = False
         if focus_unknown_fallback not in ("copy", "type"):
             raise ValueError(
                 "focus_unknown_fallback must be 'copy' or 'type', "
@@ -685,7 +692,12 @@ class DeltaTyper:
         log.debug("latency[%s]", point)
 
     def _final_mode(self) -> str:
-        """Decide the final output path: 'legacy' | 'copy' | 'type'."""
+        """Decide the final output path: 'legacy' | 'copy' | 'type'.
+
+        Side effect: ``_focus_confirmed_other`` is True only when the probe
+        positively reported a non-terminal focus (M1 paste eligibility).
+        """
+        self._focus_confirmed_other = False
         if self._final_paster is None:
             return "type"
         if self._focus_probe is None:
@@ -710,6 +722,7 @@ class DeltaTyper:
             log.debug("focus: no window focused")
         else:
             self._focus_unknown_warned = False
+        self._focus_confirmed_other = state is False
         if state is False or (
             state is None and self._focus_unknown_fallback == "type"
         ):
@@ -865,7 +878,12 @@ class DeltaTyper:
         existing path applies: backspace and delta via the normal typer.
         With a ``focus_probe``, the paster path is focus-gated: terminal or
         unknown focus copies to the clipboard without a chord; other focus
-        types the delta via the typer and leaves the clipboard untouched.
+        types the delta via the typer and leaves the clipboard untouched,
+        EXCEPT (M1) when ``final_paste_min_chars`` > 0, the focus is
+        CONFIRMED non-terminal and the delta has at least that many
+        characters: then the delta (plus trailing space) is pasted once via
+        ``final_paster.paste()`` (clipboard overwritten, no retry). Terminal
+        and unknown focus never paste.
 
         Empty final output must not delete text already typed (e.g., if the
         model failed during the final transcription).
@@ -944,6 +962,28 @@ class DeltaTyper:
                             f"combined backspace+paste "
                             f"{time.monotonic() - t0:.3f}s"
                         )
+            # M1: long delta on confirmed non-terminal focus -> paste once.
+            if (
+                to_add
+                and mode == "type"
+                and self._focus_confirmed_other
+                and self._final_paste_min_chars > 0
+                and len(to_add) >= self._final_paste_min_chars
+                and self._final_paster is not None
+            ):
+                if to_remove:
+                    t0 = time.monotonic()
+                    self._typer.backspace(to_remove)
+                    self._trace(f"backspace {time.monotonic() - t0:.3f}s")
+                    to_remove = 0
+                t0 = time.monotonic()
+                space_in_paste = self._append_space
+                self._final_paster.paste(
+                    to_add + " " if space_in_paste else to_add
+                )
+                self._trace("paste (min_chars)")
+                self._trace(f"output {time.monotonic() - t0:.3f}s")
+                to_add = ""
             # M2a: typer path -> backspaces, delta and trailing space in ONE
             # dotool process (saves ~0.7 s per avoided process start).
             merged = getattr(self._typer, "backspace_and_type", None)

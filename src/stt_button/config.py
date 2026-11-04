@@ -198,6 +198,9 @@ class Config:
     #: Final output when the focus is unknown (extension unreachable or no
     #: window): "copy" (default, terminal-safe) or "type".
     focus_unknown_fallback: str = "copy"
+    #: M1: paste final deltas with at least this many characters when the
+    #: focus is confirmed non-terminal (0 = disabled, always type).
+    final_paste_min_chars: int = 0
 
     def validate(self) -> None:
         if self.focus_unknown_fallback not in ("copy", "type"):
@@ -205,6 +208,8 @@ class Config:
                 "focus_unknown_fallback must be 'copy' or 'type', "
                 f"is {self.focus_unknown_fallback!r}"
             )
+        if self.final_paste_min_chars < 0:
+            raise ConfigError("final_paste_min_chars must be >= 0")
         if self.max_queue_depth < 1:
             raise ConfigError("max_queue_depth must be >= 1")
         if self.done_sound_mode not in ("terminal", "always"):

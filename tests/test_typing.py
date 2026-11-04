@@ -1811,3 +1811,79 @@ class TestM2bLiveCorrectionSinglePayload:
         d = DeltaTyper(t, live_typing_mode="committed")
         d.update("Hallo Welt", committed_len=6)
         assert t.calls == [("type", "Hallo ")]
+
+
+class FakePaster:
+    def __init__(self) -> None:
+        self.pasted: list[str] = []
+        self.copied: list[str] = []
+
+    def paste(self, text: str) -> None:
+        self.pasted.append(text)
+
+    def copy(self, text: str) -> bool:
+        self.copied.append(text)
+        return True
+
+
+class TestM1FinalPasteMinChars:
+    @staticmethod
+    def _d(probe, threshold, **kw):
+        t = MergingFakeTyper()
+        p = FakePaster()
+        d = DeltaTyper(t, final_paster=p, focus_probe=probe,
+                       final_paste_min_chars=threshold, **kw)
+        return d, t, p
+
+    def test_default_zero_types_as_before(self) -> None:
+        t = MergingFakeTyper()
+        p = FakePaster()
+        d = DeltaTyper(t, final_paster=p, focus_probe=lambda: "other")
+        d.finalize("x" * 100)
+        assert p.pasted == [] and p.copied == []
+        assert t.calls == [("bs_type", "0", "x" * 100, "space")]
+
+    def test_threshold_hit_pastes_once_with_space(self) -> None:
+        d, t, p = self._d(lambda: "other", 10)
+        d.finalize("Hallo schöne Welt")
+        assert p.pasted == ["Hallo schöne Welt "]
+        assert t.calls == []
+
+    def test_threshold_no_append_space(self) -> None:
+        d, t, p = self._d(lambda: "other", 3, append_space=False)
+        d.finalize("Hallo")
+        assert p.pasted == ["Hallo"]
+        assert t.calls == []
+
+    def test_below_threshold_types(self) -> None:
+        d, t, p = self._d(lambda: "other", 10)
+        d.finalize("Hallo")
+        assert p.pasted == []
+        assert t.calls == [("bs_type", "0", "Hallo", "space")]
+
+    def test_backspace_before_paste_kept(self) -> None:
+        d, t, p = self._d(lambda: False, 3)
+        d.update("abcd")
+        t.calls.clear()
+        d.finalize("abWXYZ")
+        assert t.calls == [("backspace", "2")]
+        assert p.pasted == ["WXYZ "]
+
+    def test_terminal_never_pastes(self) -> None:
+        d, t, p = self._d(lambda: "terminal", 1)
+        d.finalize("Hallo Welt")
+        assert p.pasted == []
+        assert p.copied == ["Hallo Welt "]
+
+    @pytest.mark.parametrize("state", [None, "unreachable", "no_window"])
+    def test_unknown_never_pastes_even_with_type_fallback(self, state) -> None:
+        d, t, p = self._d(lambda: state, 1, focus_unknown_fallback="type")
+        d.finalize("Hallo Welt")
+        assert p.pasted == []
+        assert t.calls == [("bs_type", "0", "Hallo Welt", "space")]
+
+    def test_markers_stripped_before_threshold(self) -> None:
+        d, t, p = self._d(lambda: "other", 6)
+        d.finalize("^[[200~Hallo~")
+        assert p.pasted == []
+        assert t.calls == [("bs_type", "0", "Hallo", "space")]

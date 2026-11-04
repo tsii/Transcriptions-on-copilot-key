@@ -138,6 +138,7 @@ class Application:
             live_typing_mode=cfg.live_typing_mode,
             focus_unknown_fallback=cfg.focus_unknown_fallback,
             on_focus_unknown=_notify_focus_unknown,
+            final_paste_min_chars=cfg.final_paste_min_chars,
         )
 
         def make_source() -> PwRecordSource:

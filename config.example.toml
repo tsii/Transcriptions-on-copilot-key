@@ -102,3 +102,8 @@ max_queue_depth = 4              # max recordings waiting for finalization
 # clipboard only, paste yourself) or "type" (typed like a browser).
 # The first unknown focus of an outage logs a WARNING + notify-send.
 focus_unknown_fallback = "copy"
+# final_paste_min_chars: paste (clipboard + chord) final deltas with at least
+# this many characters when the focus is CONFIRMED non-terminal, instead of
+# typing them (~35 ms/char via dotool). Overwrites the clipboard. Terminal
+# and unknown focus never paste. 0 (default) = disabled, always type.
+final_paste_min_chars = 0
