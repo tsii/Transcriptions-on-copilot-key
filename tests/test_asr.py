@@ -1420,3 +1420,75 @@ class TestOpt2SnapshotPunctuationDrift:
         snap2 = self._snapshot(t, "ja, ja ja, ja mehr", "ja, ja ", 80000)
         assert snap2 is not None
         assert snap2.text == "ja, ja ja, ja mehr"
+
+
+class TestAdaptiveInterval:
+    """Phase 2 (B): interval = clamp(k * last tick, interval_s, interval_max_s)."""
+
+    def _t(self, durations, **kw):
+        engine = FakeEngine(["a b c"])
+        t = StreamTranscriber(engine, interval_s=1.0, min_audio_s=0.5, **kw)
+        dur = iter(durations)
+        state = {"now": 0.0}
+
+        def fake_monotonic():
+            return state["now"]
+
+        orig = engine.transcribe
+
+        def timed(data, initial_prompt=""):
+            state["now"] += next(dur)
+            return orig(data, initial_prompt)
+
+        engine.transcribe = timed
+        t._clock = fake_monotonic
+        return t, engine
+
+    def test_default_k_zero_keeps_fixed_interval(self) -> None:
+        t, engine = self._t([5.0] * 10)
+        assert t.asr_interval_adaptive_k == 0.0
+        t.feed(audio(1.0)); t.maybe_transcribe()
+        assert t.effective_interval_s == t.interval_s
+        t.feed(audio(1.0)); t.maybe_transcribe()
+        assert t.effective_interval_s == t.interval_s
+        assert len(engine.calls) == 2  # 1s interval despite a 5s tick
+
+    def test_slow_tick_stretches_interval(self) -> None:
+        t, engine = self._t([2.0] * 10, asr_interval_adaptive_k=2.0,
+                            asr_interval_max_s=6.0)
+        t.feed(audio(1.0)); t.maybe_transcribe()          # tick 1: 2s -> 4s
+        assert t.effective_interval_s == pytest.approx(4.0)
+        t.feed(audio(3.0)); assert t.maybe_transcribe() is None
+        t.feed(audio(1.0)); assert t.maybe_transcribe() is not None
+        assert len(engine.calls) == 2
+
+    def test_clamped_to_max(self) -> None:
+        t, _ = self._t([10.0], asr_interval_adaptive_k=2.0, asr_interval_max_s=6.0)
+        t.feed(audio(1.0)); t.maybe_transcribe()
+        assert t.effective_interval_s == pytest.approx(6.0)
+
+    def test_clamped_to_min(self) -> None:
+        t, _ = self._t([0.1], asr_interval_adaptive_k=2.0, asr_interval_max_s=6.0)
+        t.feed(audio(1.0)); t.maybe_transcribe()
+        assert t.effective_interval_s == pytest.approx(1.0)
+
+    def test_reset_restores_base_interval(self) -> None:
+        t, _ = self._t([3.0], asr_interval_adaptive_k=2.0)
+        t.feed(audio(1.0)); t.maybe_transcribe()
+        t.reset()
+        assert t.effective_interval_s == pytest.approx(1.0)
+
+    def test_failed_engine_call_keeps_last_tick(self) -> None:
+        t, engine = self._t([2.0, 9.0], asr_interval_adaptive_k=2.0,
+                            asr_interval_max_s=6.0)
+        t.feed(audio(1.0)); t.maybe_transcribe()
+        assert t.effective_interval_s == pytest.approx(4.0)
+
+        def boom(data, initial_prompt=""):
+            raise RuntimeError("engine down")
+
+        engine.transcribe = boom
+        t.feed(audio(4.0))
+        with pytest.raises(RuntimeError):
+            t.maybe_transcribe()
+        assert t.effective_interval_s == pytest.approx(4.0)

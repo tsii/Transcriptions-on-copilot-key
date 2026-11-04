@@ -67,6 +67,14 @@ class TestTranscriberWiring:
         assert isinstance(transcriber, StreamTranscriber)
         assert isinstance(transcriber.vad, VadStub)
 
+    def test_adaptive_interval_wired(self, monkeypatch) -> None:
+        _app, controller = _application(monkeypatch, asr_interval_adaptive_k=2.0,
+                                        asr_interval_max_s=5.0)
+        t = controller.kwargs["transcriber_factory"](
+            engine=object(), interval_s=1.0, min_audio_s=0.8)
+        assert t.asr_interval_adaptive_k == 2.0
+        assert t.asr_interval_max_s == 5.0
+
 
 class TestFinalPasteWiring:
     """The paster is created and wired only when final_paste=True."""

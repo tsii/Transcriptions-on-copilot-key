@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -555,6 +556,11 @@ class StreamTranscriber:
     mid_tail_step_s: float = 4.0
     #: PHASE 2: Minimum number of word anchors for stitch_word_overlap.
     mid_tail_anchor_words: int = 2
+    #: PHASE 2 (B): adaptive live interval. 0.0 (default) = fixed interval_s
+    #: (previous behavior). >0: next interval = clamp(k * last engine call
+    #: duration, interval_s, asr_interval_max_s) - like TalkType DecodePace.
+    asr_interval_adaptive_k: float = 0.0
+    asr_interval_max_s: float = 6.0
 
     _buffer: bytearray = field(default_factory=bytearray, init=False, repr=False)
     _last_transcribed_at: float = field(default=0.0, init=False, repr=False)
@@ -594,6 +600,10 @@ class StreamTranscriber:
     #: exception or stitch None): no further attempts; finalize() falls back
     #: to the full buffer.
     _mid_tail_failed: bool = field(default=False, init=False, repr=False)
+    #: Phase 2 (B): duration of the last successful live engine call.
+    _last_tick_s: float = field(default=0.0, init=False, repr=False)
+    #: Injectable clock (tests).
+    _clock: object = field(default=None, init=False, repr=False)
 
     # ------------------------------------------------------------------
     # State
@@ -618,6 +628,14 @@ class StreamTranscriber:
         """The most recently transcribed full text."""
         return self._last_text
 
+    @property
+    def effective_interval_s(self) -> float:
+        """Live interval honoring the adaptive pace (Phase 2, B)."""
+        if self.asr_interval_adaptive_k <= 0.0 or self._last_tick_s <= 0.0:
+            return self.interval_s
+        paced = self.asr_interval_adaptive_k * self._last_tick_s
+        return max(self.interval_s, min(paced, self.asr_interval_max_s))
+
     # ------------------------------------------------------------------
     # Control
     # ------------------------------------------------------------------
@@ -639,6 +657,7 @@ class StreamTranscriber:
         self._live_paused_pending = False
         self._mid_tail_checkpoint = None
         self._mid_tail_failed = False
+        self._last_tick_s = 0.0
         self._invalidate_cache()
 
     def take_live_paused(self) -> bool:
@@ -713,7 +732,7 @@ class StreamTranscriber:
         # The first transcription may occur immediately; thereafter, only
         # newly added audio is considered.
         if self._has_transcribed:
-            if self.audio_seconds - self._last_transcribed_at < self.interval_s:
+            if self.audio_seconds - self._last_transcribed_at < self.effective_interval_s:
                 return None
 
         # VAD gate: Silence/noise must never reach ASR. Only new audio (since
@@ -937,7 +956,7 @@ class StreamTranscriber:
         """
         if self._vad_checked_at <= 0.0:
             return True
-        return self.audio_seconds - self._vad_checked_at >= self.interval_s
+        return self.audio_seconds - self._vad_checked_at >= self.effective_interval_s
 
     def _transcribe(self) -> TranscriptionResult:
         self._last_transcribed_at = self.audio_seconds
@@ -948,7 +967,10 @@ class StreamTranscriber:
         # a tick that raises an exception must NOT mark the cache as valid.
         self._invalidate_cache()
 
+        clock = self._clock or time.monotonic
+        t0 = clock()
         result = self.engine.transcribe(data, initial_prompt=self._committed_text)
+        self._last_tick_s = clock() - t0
         text = result.text.strip()
         self._last_text = text
 

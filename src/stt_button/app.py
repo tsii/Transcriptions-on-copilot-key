@@ -165,6 +165,9 @@ class Application:
                 # STAGE 3: stop live ticks after this buffer length
                 # (0.0 = always active, previous behavior).
                 live_asr_until_s=cfg.live_asr_until_s,
+                # PHASE 2 (B): adaptive live interval (0.0 = off).
+                asr_interval_adaptive_k=cfg.asr_interval_adaptive_k,
+                asr_interval_max_s=cfg.asr_interval_max_s,
             )
 
         return PushToTalkController(

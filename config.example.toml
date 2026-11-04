@@ -40,6 +40,8 @@ paste_binary = "wl-copy"      # binary for the copy step (wl-clipboard)
 streaming_mode = "whole_buffer"
 min_audio_s = 3.0              # only transcribe once 3s of audio are in
 asr_interval_s = 1.0           # re-transcribe every X seconds of audio
+asr_interval_adaptive_k = 0.0  # >0: live interval = k x last tick (2.0 = TalkType)
+asr_interval_max_s = 6.0       # upper bound of the adaptive interval
 max_record_s = 300.0
 commit_agreements = 2          # prefix confirmations before commit
 sample_rate = 16000

@@ -407,3 +407,25 @@ class TestCachedMidTailConfig:
         p = write_config(tmp_path, 'finalize_mode = "mitte_schwanz"\n')
         with pytest.raises(ConfigError, match="finalize_mode"):
             load_config(p)
+
+
+class TestAdaptiveIntervalConfig:
+    def test_defaults_keep_behavior(self) -> None:
+        cfg = Config()
+        assert cfg.asr_interval_adaptive_k == 0.0
+        assert cfg.asr_interval_max_s == 6.0
+
+    def test_negative_k_rejected(self, tmp_path) -> None:
+        p = write_config(tmp_path, "asr_interval_adaptive_k = -1.0\n")
+        with pytest.raises(ConfigError):
+            load_config(p)
+
+    def test_max_below_interval_rejected(self, tmp_path) -> None:
+        p = write_config(tmp_path, "asr_interval_adaptive_k = 2.0\n"
+                                   "asr_interval_s = 2.0\nasr_interval_max_s = 1.0\n")
+        with pytest.raises(ConfigError):
+            load_config(p)
+
+    def test_max_below_interval_ok_when_off(self, tmp_path) -> None:
+        cfg = load_config(write_config(tmp_path, "asr_interval_s = 8.0\n"))
+        assert cfg.asr_interval_s == 8.0

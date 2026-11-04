@@ -81,6 +81,11 @@ class Config:
     min_audio_s: float = 3.0
     #: Interval (seconds of audio) at which re-transcription happens.
     asr_interval_s: float = 1.0
+    #: Phase 2 (B): adaptive live interval factor. 0.0 = off (default,
+    #: previous behavior); 2.0 = TalkType pacing (interval = 2x last tick).
+    asr_interval_adaptive_k: float = 0.0
+    #: Phase 2 (B): upper clamp of the adaptive interval (seconds).
+    asr_interval_max_s: float = 6.0
     #: Maximum recording duration (seconds) -> automatic finalization.
     max_record_s: float = 300.0
     #: Number of consecutive identical prefixes until a prefix is
@@ -229,6 +234,10 @@ class Config:
             raise ConfigError("live_asr_until_s must not be negative")
         if self.asr_interval_s <= 0:
             raise ConfigError("asr_interval_s must be greater than 0")
+        if self.asr_interval_adaptive_k < 0:
+            raise ConfigError("asr_interval_adaptive_k must not be negative")
+        if self.asr_interval_adaptive_k > 0 and self.asr_interval_max_s < self.asr_interval_s:
+            raise ConfigError("asr_interval_max_s must be >= asr_interval_s")
         if self.min_audio_s <= 0:
             raise ConfigError("min_audio_s must be greater than 0")
         if self.max_record_s <= 0:
