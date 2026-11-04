@@ -742,6 +742,10 @@ class StreamTranscriber:
         """
         if self.audio_seconds < self.min_audio_s:
             return None
+        # PHASE 2 (C): hard cap per segment; precedes the live limit so a
+        # segmented recording never reaches the pause indicator.
+        if self.segment_max_s > 0.0 and self.audio_seconds >= self.segment_max_s:
+            return self._cut_segment(self._quiet_cut_nbytes(), force=True)
         # STAGE 3: Live ASR limit reached -> no more live engine calls.
         # The buffer continues growing (feed()); finalize() transcribes all of it.
         # STAGE 4: The first crossing is recorded EXACTLY ONCE as a notification
@@ -1006,6 +1010,27 @@ class StreamTranscriber:
         except Exception as exc:  # noqa: BLE001 - gate is optional
             log.warning("VAD pause check failed (%s) - no segment cut", exc)
             return False
+
+    def _quiet_cut_nbytes(self, window_s: float = 2.0, frame_s: float = 0.1) -> int:
+        """Byte offset of the quietest 100 ms frame END in the last window_s.
+
+        Falls back to the buffer end if the window is too short.
+        """
+        import numpy as np
+
+        frame = int(frame_s * self.sample_rate)
+        win = int(window_s * self.sample_rate)
+        samples = np.frombuffer(bytes(self._buffer[: len(self._buffer) // 2 * 2]),
+                                dtype=np.int16)
+        if len(samples) < win + frame:
+            return len(self._buffer)
+        start = len(samples) - win
+        best, best_rms = len(samples), None
+        for pos in range(start, len(samples) - frame + 1, frame):
+            rms = float(np.sqrt(np.mean(samples[pos:pos + frame].astype(np.float32) ** 2)))
+            if best_rms is None or rms < best_rms:
+                best, best_rms = pos + frame, rms
+        return best * BYTES_PER_SAMPLE
 
     def _cut_segment(self, cut_nbytes: int, *, force: bool = False) -> TranscriptionResult:
         """Mini-final on buffer[:cut_nbytes]; close it if it ends a sentence.

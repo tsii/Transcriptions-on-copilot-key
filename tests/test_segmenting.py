@@ -180,3 +180,47 @@ def test_vad_error_never_cuts() -> None:
     speak(t, 4.0)
     speak(t, 1.5)
     assert t.closed_text == ""
+
+
+# --- Phase 2 (C2): hard cap segment_max_s ------------------------------------
+
+
+def _loud(seconds: float) -> bytes:
+    import numpy as np
+    n = int(seconds * RATE)
+    return (np.full(n, 8000, dtype=np.int16)).tobytes()
+
+
+def test_hard_cap_cuts_without_punctuation() -> None:
+    t, engine, _ = make(["und dann weiter", "und dann weiter"], segment_max_s=6.0)
+    speak(t, 4.0)
+    res = speak(t, 2.5)                 # 6.5s >= cap, no punctuation, speaking
+    assert t.closed_text == "und dann weiter "
+    assert res.committed_len == len("und dann weiter ")
+
+
+def test_hard_cap_cuts_at_quietest_point() -> None:
+    t, engine, _ = make(["a", "a b"], segment_max_s=6.0)
+    t.feed(_loud(4.0))
+    t.maybe_transcribe()
+    t.feed(_loud(1.0) + audio(0.2) + _loud(0.8))  # silence gap at 5.0-5.2s
+    t.maybe_transcribe()
+    cut = engine.calls[-1]
+    assert 5.0 * BPS <= cut <= 5.2 * BPS
+    remainder = t.audio_seconds
+    assert 0.8 <= remainder <= 1.0
+
+
+def test_cap_preempts_live_limit() -> None:
+    t, _, _ = make(["x y", "x y"], segment_max_s=6.0, live_asr_until_s=6.0)
+    speak(t, 4.0)
+    speak(t, 2.5)
+    assert t.closed_text == "x y "
+    assert t.take_live_paused() is False
+
+
+def test_cap_zero_means_no_cap() -> None:
+    t, _, _ = make(["x y"] * 5)
+    for _ in range(5):
+        speak(t, 2.0)
+    assert t.closed_text == ""
