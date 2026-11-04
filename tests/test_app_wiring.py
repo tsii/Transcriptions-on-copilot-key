@@ -59,6 +59,13 @@ def _application(monkeypatch, **config_kwargs) -> tuple[Application, ControllerS
 
 
 class TestTranscriberWiring:
+    def test_segment_keys_wired(self, monkeypatch) -> None:
+        _app, controller = _application(monkeypatch, segment_pause_s=1.2,
+                                        segment_min_s=2.0, segment_max_s=15.0)
+        t = controller.kwargs["transcriber_factory"](
+            engine=object(), interval_s=1.0, min_audio_s=0.8)
+        assert (t.segment_pause_s, t.segment_min_s, t.segment_max_s) == (1.2, 2.0, 15.0)
+
     def test_whole_buffer_gets_vad_gate(self, monkeypatch) -> None:
         """The VAD gate must be wired in default mode."""
         _app, controller = _application(monkeypatch, streaming_mode="whole_buffer")

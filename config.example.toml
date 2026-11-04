@@ -76,6 +76,14 @@ live_typing_mode = "committed"
 # costs ~0.75s < asr_interval_s (1.0s) - live preview up to 15s is viable.
 # 0.0 = live ticks always active (previous behavior, opt-in).
 live_asr_until_s = 15.0
+# Phase 2 (C): sentence-pause segmentation (opt-in). A VAD pause after a
+# hypothesis ending in .?! closes the segment; live_asr_until_s then
+# applies per segment. Requires streaming_mode="whole_buffer", excludes
+# finalize_mode="cached_mid_tail", needs 0 < segment_max_s <= live_asr_until_s.
+# Recommended when enabling: 1.2 / 3.0 / 15.0.
+segment_pause_s = 0.0
+segment_min_s = 3.0
+segment_max_s = 0.0
 
 # Done signal (operator, 31.10.): quiet tone after a SUCCESSFUL
 # finalization = 'text is in the clipboard, paste now'.

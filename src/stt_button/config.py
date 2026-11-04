@@ -167,6 +167,16 @@ class Config:
     #: 15s is viable, longer dictations pause with an indicator. 0.0 is
     #: the explicit opt-in "live ticks always active" (previous behavior).
     live_asr_until_s: float = 15.0
+    #: Phase 2 (C): sentence-pause segmentation. >0 = VAD pause (seconds)
+    #: after a hypothesis ending in .?! closes the segment (mini-final,
+    #: permanent commit, buffer reset). 0.0 = off (default). Requires
+    #: segment_max_s > 0; live_asr_until_s then applies PER SEGMENT.
+    segment_pause_s: float = 0.0
+    #: Phase 2 (C): minimum segment length (seconds) before a pause cut.
+    segment_min_s: float = 3.0
+    #: Phase 2 (C): hard cap per segment (seconds); 0.0 = none. Must be
+    #: <= live_asr_until_s so the live limit never pauses a segment.
+    segment_max_s: float = 0.0
     #: Done signal (operator, 31.10.): freedesktop sound name (e.g.
     #: "complete" or "bell") that plays quietly once via paplay after a
     #: SUCCESSFUL finalization - hearing instead of guessing when the
@@ -232,6 +242,18 @@ class Config:
             )
         if self.live_asr_until_s < 0:
             raise ConfigError("live_asr_until_s must not be negative")
+        for key in ("segment_pause_s", "segment_min_s", "segment_max_s"):
+            if getattr(self, key) < 0:
+                raise ConfigError(f"{key} must not be negative")
+        if self.segment_pause_s > 0:
+            if self.streaming_mode != "whole_buffer":
+                raise ConfigError("segment_pause_s requires streaming_mode='whole_buffer'")
+            if self.finalize_mode == "cached_mid_tail":
+                raise ConfigError("segment_pause_s cannot be combined with cached_mid_tail")
+            if self.segment_max_s <= 0:
+                raise ConfigError("segment_pause_s requires segment_max_s > 0")
+            if 0 < self.live_asr_until_s < self.segment_max_s:
+                raise ConfigError("segment_max_s must be <= live_asr_until_s")
         if self.asr_interval_s <= 0:
             raise ConfigError("asr_interval_s must be greater than 0")
         if self.asr_interval_adaptive_k < 0:

@@ -168,6 +168,10 @@ class Application:
                 # PHASE 2 (B): adaptive live interval (0.0 = off).
                 asr_interval_adaptive_k=cfg.asr_interval_adaptive_k,
                 asr_interval_max_s=cfg.asr_interval_max_s,
+                # Phase 2 (C): sentence-pause segmentation (0.0 = off).
+                segment_pause_s=cfg.segment_pause_s,
+                segment_min_s=cfg.segment_min_s,
+                segment_max_s=cfg.segment_max_s,
             )
 
         return PushToTalkController(

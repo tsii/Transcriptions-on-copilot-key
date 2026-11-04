@@ -429,3 +429,34 @@ class TestAdaptiveIntervalConfig:
     def test_max_below_interval_ok_when_off(self, tmp_path) -> None:
         cfg = load_config(write_config(tmp_path, "asr_interval_s = 8.0\n"))
         assert cfg.asr_interval_s == 8.0
+
+
+class TestSegmentConfig:
+    """Phase 2 (C3): sentence-pause segmentation keys and validation."""
+
+    def test_defaults_off(self) -> None:
+        cfg = Config()
+        assert (cfg.segment_pause_s, cfg.segment_min_s, cfg.segment_max_s) == (0.0, 3.0, 0.0)
+
+    @pytest.mark.parametrize("body", [
+        "segment_pause_s = -1.0\n",
+        "segment_min_s = -1.0\n",
+        "segment_max_s = -1.0\n",
+        "segment_pause_s = 1.2\n",                                  # no cap
+        "segment_pause_s = 1.2\nsegment_max_s = 20.0\n",            # cap > live limit 15
+        "segment_pause_s = 1.2\nsegment_max_s = 15.0\nfinalize_mode = \"cached_mid_tail\"\n",
+        "segment_pause_s = 1.2\nsegment_max_s = 15.0\nstreaming_mode = \"windowed\"\n",
+    ])
+    def test_invalid_combinations_rejected(self, tmp_path, body) -> None:
+        with pytest.raises(ConfigError):
+            load_config(write_config(tmp_path, body))
+
+    def test_valid_segment_config(self, tmp_path) -> None:
+        cfg = load_config(write_config(
+            tmp_path, "segment_pause_s = 1.2\nsegment_max_s = 15.0\n"))
+        assert cfg.segment_max_s == 15.0
+
+    def test_cap_unbounded_when_live_limit_off(self, tmp_path) -> None:
+        cfg = load_config(write_config(
+            tmp_path, "segment_pause_s = 1.2\nsegment_max_s = 40.0\nlive_asr_until_s = 0.0\n"))
+        assert cfg.segment_max_s == 40.0

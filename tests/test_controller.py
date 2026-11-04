@@ -2262,3 +2262,73 @@ class TestReleaseCancelsLiveTick:
         ctrl.stop_recording()
         _wait_state(ctrl, ControllerState.IDLE, timeout=5.0)
         assert ctrl.state == ControllerState.IDLE
+
+
+class TestSegmentDump:
+    """Phase 2 (C3): the debug dump contains ALL segments."""
+
+    def test_dump_contains_all_segments(self, tmp_path) -> None:
+        import wave
+
+        class SegTranscriber(RecordingTranscriber):
+            def full_audio(self) -> bytes:
+                return b"\x01\x00" * 16000 + bytes(self._buffer)
+
+        dump = tmp_path / "last.wav"
+        rec = SegTranscriber()
+        ctrl = PushToTalkController(
+            config=None,
+            source_factory=lambda: FakeAudioSource([b"\x00" * 16000] * 2),
+            engine=FakeEngine(),
+            delta_typer=DeltaTyper(FakeTyper(), append_space=True),
+            transcriber_factory=lambda *a, **kw: rec,
+            dump_path=str(dump),
+        )
+        ctrl.start_recording()
+        time.sleep(0.1)
+        ctrl.stop_recording()
+        _wait_state(ctrl, ControllerState.IDLE)
+        with wave.open(str(dump), "rb") as w:
+            assert w.getnframes() == 16000 + len(rec._buffer) // 2
+
+
+class TestSegmentsDoneSound:
+    """Phase 2 (C): mini-finals are live ticks - the done sound plays once."""
+
+    def test_done_sound_only_once_with_segments(self, monkeypatch) -> None:
+        from stt_button.asr import StreamTranscriber
+
+        class Vad:
+            def has_speech(self, arr) -> bool:
+                return False  # every tail is a pause
+
+        class Eng:
+            def transcribe(self, data, initial_prompt=""):
+                return TranscriptionResult(text="Satz.")
+
+        made: list[StreamTranscriber] = []
+
+        def factory(eng, **kw):
+            t = StreamTranscriber(
+                eng, interval_s=0.5, min_audio_s=0.5, vad=Vad(),
+                segment_pause_s=1.0, segment_min_s=1.0, segment_max_s=4.0)
+            made.append(t)
+            return t
+
+        plays: list[int] = []
+        ctrl = PushToTalkController(
+            config=None,
+            source_factory=lambda: FakeAudioSource([b"\x00" * 32000] * 12),
+            engine=Eng(),
+            delta_typer=DeltaTyper(FakeTyper(), append_space=True),
+            transcriber_factory=factory,
+        )
+        monkeypatch.setattr(ctrl, "_play_done_sound", lambda: plays.append(1))
+        ctrl.start_recording()
+        for _ in range(60):
+            ctrl.run_once()
+            time.sleep(0.01)
+        ctrl.stop_recording()
+        _wait_state(ctrl, ControllerState.IDLE, timeout=5.0)
+        assert made and made[0].closed_text  # at least one segment cut happened
+        assert plays == [1]

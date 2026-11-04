@@ -678,9 +678,11 @@ class PushToTalkController:
         if self._audio_dump_mode == "off" or transcriber is None:
             return
         try:
-            if not transcriber._buffer:
+            full_audio = getattr(transcriber, "full_audio", None)
+            # Phase 2 (C): dump ALL segments, not only the current buffer.
+            snapshot = full_audio() if full_audio is not None else bytes(transcriber._buffer)
+            if not snapshot:
                 return
-            snapshot = bytes(transcriber._buffer)
             sample_rate = transcriber.sample_rate
         except Exception as exc:  # noqa: BLE001
             log.debug("Audio dump failed: %s", exc)

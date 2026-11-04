@@ -733,3 +733,19 @@ If a live tick returns **after** release (inference blocked across the release),
 result is discarded instead of typed: It would preempt the final text, and the finalizer
 would have to revoke it via backspace. The finalizer delivers the complete text against
 the effective cursor state—the committed prefix is preserved.
+
+## 12. Segmentation (Phase 2 C, opt-in)
+
+With `segment_pause_s > 0`, a VAD pause of at least that length after a
+hypothesis ending in `.?!` closes the current segment (mini-final): its text
+is committed permanently and the audio buffer restarts. `segment_max_s` is a
+hard cap per segment (cut at the quietest point). `segment_min_s` is the
+minimum segment length before a pause cut. `live_asr_until_s` then applies
+per segment. Defaults (`0.0 / 3.0 / 0.0`) keep the previous behavior.
+
+Validation: no negative values; requires `streaming_mode="whole_buffer"`;
+excludes `finalize_mode="cached_mid_tail"`; requires `segment_max_s > 0`; with
+`live_asr_until_s > 0` also `segment_max_s <= live_asr_until_s`.
+
+Invariants: the done sound plays once, after the final output (never on a
+mini-final); the debug dump (`full_audio()`) contains all segments.
