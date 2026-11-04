@@ -37,3 +37,23 @@ class TestCapslockSection:
 
     def test_mentions_caps_diagnose_command(self) -> None:
         assert "caps-diagnose" in text()
+
+
+README = KONZEPT.parent.parent / "README.md"
+
+
+class TestModelSwitchDocs:
+    """B5: README documents switching ASR models."""
+
+    def test_readme_has_modelle_umschalten_section(self) -> None:
+        assert "## Modelle umschalten" in README.read_text(encoding="utf-8")
+
+    def test_readme_documents_qwen_bfloat16_switch(self) -> None:
+        body = README.read_text(encoding="utf-8")
+        assert 'backend = "qwen"' in body
+        assert 'compute_type = "bfloat16"' in body
+        assert "final-only" in body
+
+    def test_konzept_has_qwen_bf16_measurement(self) -> None:
+        body = text()
+        assert "Qwen3-ASR 1.7B (BF16)" in body

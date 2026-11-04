@@ -57,6 +57,39 @@ stt-button calibrate                        # recalibrate key
 
 The configuration is located at `~/.config/stt-button/config.toml`.
 
+## Modelle umschalten
+
+The ASR engine is selected in `~/.config/stt-button/config.toml`. After a
+change, restart the service (`systemctl --user restart stt-button`).
+Verify a switch first without touching the service:
+`nice -n 19 .venv/bin/python tools/model_switch_check.py --config <file>`.
+
+| Backend | Config | RAM (RSS) | Latency (CPU, 8 threads) | Live text |
+|---|---|---|---|---|
+| Parakeet TDT 0.6B v3, FP32 (**default, production**) | `backend = "parakeet"`<br>`compute_type = "float32"` | ~2-3 GB | RTF ~0.12 | yes |
+| Parakeet TDT 0.6B v3, ONNX int8 | `backend = "parakeet"`<br>`compute_type = "int8"` | ~1 GB | RTF ~0.05 | yes |
+| Qwen3-ASR 1.7B (opt-in) | `backend = "qwen"`<br>`compute_type = "bfloat16"` | ~4.7-5.0 GB | RTF ~0.5-0.8 | **no (final-only)** |
+| faster-whisper | `backend = "whisper"`<br>`model = "large-v3-turbo"` | ~1.6 GB | RTF ~0.43 | yes |
+
+Qwen example:
+
+```toml
+backend = "qwen"
+compute_type = "bfloat16"   # "float32" works too but needs ~11.7 GB RAM
+# model defaults to Qwen/Qwen3-ASR-1.7B-hf (pinned revision)
+streaming_mode = "whole_buffer"
+finalize_mode = "full"
+```
+
+Qwen is **final-only**: no text appears while speaking; on release the
+whole recording is transcribed once (wait ~0.5-0.9x the recording length).
+Not available with Qwen (no token timestamps): committed mode, the
+`windowed`/`buffered` streaming modes, `cached_mid_tail`, segmenting,
+the live pause indicator, vocabulary prompts and cancelling. Invalid
+combinations are rejected at startup with a `ConfigError`.
+
+Back to the default: `backend = "parakeet"` and `compute_type = "float32"`.
+
 ## Development
 
 ```bash

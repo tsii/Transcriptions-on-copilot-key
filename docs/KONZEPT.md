@@ -112,7 +112,7 @@ even while inference is running) · main thread (inference + output).
 |---|---|---|---|---|
 | **Parakeet TDT 0.6B v3** | Transducer (non-autoregressive) | 0.6 B | **~0.1–0.5** | ✅ **best choice** |
 | faster-whisper large-v3-turbo | seq2seq (autoregressive) | 0.8 B | ~0.5–1.8 | Fallback |
-| Qwen3-ASR 1.7B | LLM (autoregressive) | 1.7 B | ~2–3 | only for maximum quality |
+| Qwen3-ASR 1.7B | LLM (autoregressive) | 1.7 B | ~0.5–0.8 (BF16) | opt-in, final-only (see README "Modelle umschalten") |
 
 **Why Parakeet:** Transducers decode **greedily and in parallel** (no
 token-by-token sampling) → 5–10× faster than Whisper on CPU with better
@@ -627,6 +627,7 @@ This exact test uncovered the windowed defects (256 vs. 137 characters).
 | Parakeet TDT 0.6B (int8/float32) | ~2.5 s | **0.12** | ✅ recommended |
 | faster-whisper large-v3-turbo (int8) | ~8.5 s | 0.43 | Fallback |
 | Qwen3-ASR 1.7B | ~23 s | 1.15 | too slow for live use |
+| Qwen3-ASR 1.7B (BF16) | 15.4 s | 0.77 | spike 2026-11-04, RSS 4.65 GB (FP32: 11.7 GB); opt-in `backend="qwen"`, final-only (no live ticks) |
 
 **Model load time:** Parakeet ~2 s (keep it warm! Preload at service startup, not on
 the first key press).
