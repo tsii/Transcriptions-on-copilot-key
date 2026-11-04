@@ -22,10 +22,12 @@ OMP_NUM_THREADS=4`` so that the dictation service retains priority.
 
 Usage:  nice -n 19 OMP_NUM_THREADS=4 .venv/bin/python tools/gate_eval.py \
             ~/stt-korpus [--limit N] [--out report.json]
+            [--mode {mid_tail,segment}] [--min-seconds S]
 """
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import re
 import statistics
@@ -93,6 +95,45 @@ def fragment_grenze(ref: str, cand: str) -> bool:
     return False
 
 
+def _norm(text: str) -> list[str]:
+    return [w.lower().strip(".,!?;:") for w in words(text) if w.strip(".,!?;:")]
+
+
+def seam_word_indices(closed_texts: list[str]) -> list[int]:
+    """Word index of each seam (end of every successive closed prefix)."""
+    return [len(_norm(t)) for t in closed_texts]
+
+
+def seam_defects(ref: str, cand: str, seams: list[int], radius: int = 2) -> list[str]:
+    """Classify each seam: ok | lost | doubled | changed (normalized words)."""
+    r, c = _norm(ref), _norm(cand)
+    ops = difflib.SequenceMatcher(a=r, b=c, autojunk=False).get_opcodes()
+    out = []
+    for s in seams:
+        lo, hi = s - radius, s + radius
+        if 0 < s < len(c) and c[s - 1] == c[s]:
+            out.append("doubled")
+            continue
+        kind = "ok"
+        for tag, _i1, _i2, j1, j2 in ops:
+            if tag == "equal":
+                continue
+            # Deletions have j1 == j2 (a point in cand); widen to touch it.
+            if j2 < lo or j1 > hi:
+                continue
+            kind = {"delete": "lost", "insert": "doubled", "replace": "changed"}[tag]
+            if kind != "changed":
+                break
+        out.append(kind)
+    return out
+
+
+def cap_after_seam(cand: str, seams: list[int]) -> list[bool]:
+    """True if the first word after each seam starts upper-case (info only)."""
+    w = words(cand)
+    return [s < len(w) and w[s][:1].isupper() for s in seams]
+
+
 def replay_live(t: StreamTranscriber, pcm: bytes,
                 until_bytes: int) -> None:
     """Feeds audio like the service (0.5-second ticks) and observes the
@@ -133,14 +174,39 @@ def run_case(pcm: bytes, mode: str) -> dict:
             "audio_s": len(pcm) / 32000}
 
 
+def run_case_segment(pcm: bytes) -> dict:
+    """Segmented live replay (Phase 2 C) + finalize; collects seams."""
+    from stt_button.vad import SileroVadGate
+
+    t = StreamTranscriber(engine=run_case.engine, sample_rate=16000,
+                          interval_s=LIVE_INTERVAL_S, live_asr_until_s=LIMIT_S,
+                          finalize_mode="full", vad=SileroVadGate(),
+                          segment_pause_s=1.2, segment_min_s=3.0,
+                          segment_max_s=LIMIT_S)
+    chunk, closed = int(16000 * 2 * TICK_S), []
+    for off in range(0, len(pcm), chunk):
+        t.feed(pcm[off:off + chunk])
+        before = t.closed_text
+        t.maybe_transcribe()
+        if t.closed_text != before:
+            closed.append(t.closed_text)
+    t0 = time.monotonic()
+    res = t.finalize()
+    return {"text": res.text, "finalize_s": time.monotonic() - t0,
+            "seams": seam_word_indices(closed), "audio_s": len(pcm) / 32000}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("corpus", help="Directory containing WAV files")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--out", default="gate_report.json")
+    ap.add_argument("--mode", choices=["mid_tail", "segment"], default="mid_tail")
+    ap.add_argument("--min-seconds", type=float, default=0.0)
     args = ap.parse_args()
 
     wavs = sorted(Path(args.corpus).glob("*.wav"))
+    wavs = [p for p in wavs if p.stat().st_size / 32000 >= args.min_seconds]
     if args.limit:
         wavs = wavs[:args.limit]
     if not wavs:
@@ -149,6 +215,51 @@ def main() -> None:
 
     print(f"Loading model {MODEL} ...", flush=True)
     run_case.engine = ParakeetEngine(MODEL)
+
+    if args.mode == "segment":
+        rows = []
+        for w in wavs:
+            pcm = load_wav(w)
+            ref = run_case(pcm, "full")
+            cand = run_case_segment(pcm)
+            defects = seam_defects(ref["text"], cand["text"], cand["seams"])
+            rows.append({
+                "file": w.name, "audio_s": round(cand["audio_s"], 1),
+                "wer_kand": round(wer(ref["text"], cand["text"]), 4),
+                "seams": cand["seams"], "seam_defects": defects,
+                "cap_after_seam": cap_after_seam(cand["text"], cand["seams"]),
+                "fin_ref_s": round(ref["finalize_s"], 2),
+                "fin_kand_s": round(cand["finalize_s"], 2),
+                "ref": ref["text"], "cand": cand["text"],
+            })
+            print(json.dumps(rows[-1], ensure_ascii=False), flush=True)
+            Path(args.out).write_text(json.dumps(rows, ensure_ascii=False, indent=1))
+        allv = [d for r in rows for d in r["seam_defects"]]
+        n = len(allv)
+        lost, dbl, chg = allv.count("lost"), allv.count("doubled"), allv.count("changed")
+        mean_wer = statistics.mean(r["wer_kand"] for r in rows) if rows else 0.0
+        max_wer = max((r["wer_kand"] for r in rows), default=0.0)
+        long_ = [r for r in rows if r["audio_s"] > 20]
+        g5 = (statistics.median(r["fin_kand_s"] for r in long_)
+              <= 0.5 * statistics.median(r["fin_ref_s"] for r in long_)) if long_ else False
+        gates = {"G1_lost": lost == 0, "G2_doubled": dbl == 0,
+                 "G3_changed": n > 0 and chg / n <= 0.05,
+                 "G4_wer": mean_wer <= 0.005 and max_wer <= 0.03,
+                 "G5_speed": g5, "G6_seams": n >= 30}
+        summary = {"clips": len(rows), "seams": n, "lost": lost, "doubled": dbl,
+                   "changed": chg, "mean_wer": mean_wer, "max_wer": max_wer,
+                   "gates": gates}
+        Path(args.out).write_text(json.dumps({"summary": summary, "rows": rows},
+                                             ensure_ascii=False, indent=1))
+        print("\n== GATE (segment) ==")
+        print(json.dumps(summary, indent=1))
+        if not gates["G6_seams"]:
+            print("GATE INCONCLUSIVE")
+        elif all(gates[k] for k in ("G1_lost", "G2_doubled", "G3_changed", "G4_wer")):
+            print("GATE PASS" if gates["G5_speed"] else "GATE PASS (no speed gain: G5 fail)")
+        else:
+            print("GATE FAIL")
+        return
 
     rows = []
     for w in wavs:
