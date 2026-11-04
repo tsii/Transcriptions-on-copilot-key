@@ -1597,3 +1597,57 @@ class TestClipboardPasterCopy:
         t = FakeTyper()
         assert ClipboardPaster(t).copy("") is False
         assert calls == [] and t.calls == []
+
+
+class TestFocusUnknownFallback:
+    """F2: configurable fallback for unknown focus + loud first-None warning."""
+
+    @staticmethod
+    def _typer(monkeypatch, probe, **kw):
+        monkeypatch.setattr("stt_button.typing.shutil.which", lambda b: "/usr/bin/" + b)
+        t = FakeTyper()
+        p = ClipboardPaster(t, copy_binary="wl-copy", paste_key="ctrl+v")
+        return DeltaTyper(t, final_paster=p, focus_probe=probe, **kw)
+
+    def test_unknown_focus_default_copies(self, monkeypatch) -> None:
+        assert self._typer(monkeypatch, lambda: None)._final_mode() == "copy"
+
+    def test_unknown_focus_type_fallback(self, monkeypatch) -> None:
+        d = self._typer(monkeypatch, lambda: None, focus_unknown_fallback="type")
+        assert d._final_mode() == "type"
+
+    def test_type_fallback_keeps_terminal_copy(self, monkeypatch) -> None:
+        d = self._typer(monkeypatch, lambda: True, focus_unknown_fallback="type")
+        assert d._final_mode() == "copy"
+
+    def test_unknown_focus_warns_once(self, monkeypatch, caplog) -> None:
+        d = self._typer(monkeypatch, lambda: None)
+        with caplog.at_level("WARNING", logger="stt_button.typing"):
+            d._final_mode(); d._final_mode()
+        assert sum("focus extension unreachable" in r.message
+                   for r in caplog.records) == 1
+
+    def test_warning_rearms_after_recovery(self, monkeypatch, caplog) -> None:
+        states = iter([None, False, None])
+        d = self._typer(monkeypatch, lambda: next(states))
+        with caplog.at_level("WARNING", logger="stt_button.typing"):
+            d._final_mode(); d._final_mode(); d._final_mode()
+        assert sum("focus extension unreachable" in r.message
+                   for r in caplog.records) == 2
+
+    def test_on_focus_unknown_called_once_per_outage(self, monkeypatch) -> None:
+        hits = []
+        d = self._typer(monkeypatch, lambda: None,
+                        on_focus_unknown=lambda: hits.append(1))
+        d._final_mode(); d._final_mode()
+        assert hits == [1]
+
+    def test_on_focus_unknown_exception_is_swallowed(self, monkeypatch) -> None:
+        def boom():
+            raise RuntimeError("no notify")
+        d = self._typer(monkeypatch, lambda: None, on_focus_unknown=boom)
+        assert d._final_mode() == "copy"
+
+    def test_invalid_fallback_rejected(self, monkeypatch) -> None:
+        with pytest.raises(ValueError):
+            self._typer(monkeypatch, lambda: None, focus_unknown_fallback="paste")

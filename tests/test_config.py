@@ -460,3 +460,19 @@ class TestSegmentConfig:
         cfg = load_config(write_config(
             tmp_path, "segment_pause_s = 1.2\nsegment_max_s = 40.0\nlive_asr_until_s = 0.0\n"))
         assert cfg.segment_max_s == 40.0
+
+
+class TestFocusUnknownFallbackKey:
+    """F2: focus_unknown_fallback 'copy' (default) | 'type'."""
+
+    def test_default_is_copy(self) -> None:
+        assert Config().focus_unknown_fallback == "copy"
+
+    def test_parse_type(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, 'focus_unknown_fallback = "type"\n')
+        assert load_config(p).focus_unknown_fallback == "type"
+
+    def test_invalid_is_rejected(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, 'focus_unknown_fallback = "paste"\n')
+        with pytest.raises(ConfigError, match="focus_unknown_fallback"):
+            load_config(p)

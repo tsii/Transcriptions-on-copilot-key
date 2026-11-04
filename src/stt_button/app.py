@@ -6,7 +6,9 @@ stays testable and the CLI stays lean.
 from __future__ import annotations
 
 import logging
+import shutil
 import signal
+import subprocess
 import threading
 
 from .audio import PwRecordSource
@@ -28,6 +30,22 @@ from .vad import SileroVadGate
 from .windowed import WindowedTranscriber
 
 log = logging.getLogger(__name__)
+
+
+def _notify_focus_unknown() -> None:
+    """Visible desktop signal on the first unknown focus of an outage (F2)."""
+    if shutil.which("notify-send") is None:
+        return
+    try:
+        subprocess.Popen(
+            ["notify-send", "-u", "critical",
+             "STT: Fokus unbekannt – Text nur in Zwischenablage",
+             "Focus extension unreachable - run tools/focus_check.py"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        log.debug("notify-send failed (%s)", exc)
 
 
 class Application:
@@ -118,6 +136,8 @@ class Application:
             focus_probe=focus_probe,
             latency_trace=cfg.latency_trace,
             live_typing_mode=cfg.live_typing_mode,
+            focus_unknown_fallback=cfg.focus_unknown_fallback,
+            on_focus_unknown=_notify_focus_unknown,
         )
 
         def make_source() -> PwRecordSource:

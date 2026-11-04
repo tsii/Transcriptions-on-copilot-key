@@ -149,6 +149,26 @@ class TestFinalPasteWiring:
         Application(Config())._build_controller()
         assert captured.get("focus_probe") is None
 
+    def test_focus_unknown_fallback_wired(self, monkeypatch) -> None:
+        from stt_button import app as app_mod
+
+        captured: dict[str, object] = {}
+
+        class DeltaStub:
+            def __init__(self, typer, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("stt_button.app.DeltaTyper", DeltaStub)
+        monkeypatch.setattr("stt_button.app.ClipboardPaster", lambda *a, **k: None)
+        monkeypatch.setattr("stt_button.app.DotoolTyper", TyperStub)
+        monkeypatch.setattr("stt_button.app.SileroVadGate", VadStub)
+        monkeypatch.setattr("stt_button.app.PushToTalkController", ControllerStub)
+
+        Application(Config(final_paste=True,
+                           focus_unknown_fallback="type"))._build_controller()
+        assert captured["focus_unknown_fallback"] == "type"
+        assert captured["on_focus_unknown"] is app_mod._notify_focus_unknown
+
 
 class TestTyperWiring:
     def test_typer_receives_autocorrect_flag(self, monkeypatch) -> None:

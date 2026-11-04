@@ -612,8 +612,21 @@ class DeltaTyper:
         latency_trace: bool = False,
         live_typing_mode: str = "full",
         focus_probe: Callable[[], bool | None] | None = None,
+        focus_unknown_fallback: str = "copy",
+        on_focus_unknown: Callable[[], None] | None = None,
     ) -> None:
         self._typer = typer
+        if focus_unknown_fallback not in ("copy", "type"):
+            raise ValueError(
+                "focus_unknown_fallback must be 'copy' or 'type', "
+                f"is {focus_unknown_fallback!r}"
+            )
+        # F2: what to do when focus is unknown (None): "copy" (default,
+        # terminal-safe) or "type". Never silent: the first None of an
+        # outage logs a WARNING and calls on_focus_unknown (notify).
+        self._focus_unknown_fallback = focus_unknown_fallback
+        self._on_focus_unknown = on_focus_unknown
+        self._focus_unknown_warned = False
         # Focus gating for the final delta (only with final_paster):
         # None = legacy (copy + chord). Otherwise probe() -> False (no
         # terminal) types the delta via the typer and leaves the clipboard
@@ -655,7 +668,13 @@ class DeltaTyper:
         except Exception as exc:  # noqa: BLE001 - finalize must never crash
             log.debug("focus probe failed (%s) - treating as terminal", exc)
             state = None
-        if state is False:
+        if state is None:
+            self._warn_focus_unknown()
+        else:
+            self._focus_unknown_warned = False
+        if state is False or (
+            state is None and self._focus_unknown_fallback == "type"
+        ):
             mode = "type"
         elif callable(getattr(self._final_paster, "copy", None)):
             mode = "copy"
@@ -663,6 +682,22 @@ class DeltaTyper:
             mode = "legacy"
         self._trace(f"focus {state!r} -> {mode}")
         return mode
+
+    def _warn_focus_unknown(self) -> None:
+        """Warn once per outage (re-armed by the next known focus)."""
+        if self._focus_unknown_warned:
+            return
+        self._focus_unknown_warned = True
+        log.warning(
+            "focus extension unreachable - run tools/focus_check.py; "
+            "final text -> %s",
+            "typed" if self._focus_unknown_fallback == "type" else "clipboard",
+        )
+        if self._on_focus_unknown is not None:
+            try:
+                self._on_focus_unknown()
+            except Exception as exc:  # noqa: BLE001 - finalize must never crash
+                log.debug("on_focus_unknown failed (%s)", exc)
 
     @property
     def last_text(self) -> str:

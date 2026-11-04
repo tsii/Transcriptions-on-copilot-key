@@ -97,3 +97,8 @@ done_sound_volume = 65536        # paplay permille (0..65536); 65536 = desktop l
 # "always" (default) = on every dictation.
 done_sound_mode = "always"
 max_queue_depth = 4              # max recordings waiting for finalization
+# focus_unknown_fallback: final output when the focus extension is
+# unreachable or no window is focused. "copy" (default, terminal-safe:
+# clipboard only, paste yourself) or "type" (typed like a browser).
+# The first unknown focus of an outage logs a WARNING + notify-send.
+focus_unknown_fallback = "copy"

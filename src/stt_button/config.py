@@ -195,8 +195,16 @@ class Config:
     #: always.
     done_sound_mode: str = "always"
     max_queue_depth: int = 4
+    #: Final output when the focus is unknown (extension unreachable or no
+    #: window): "copy" (default, terminal-safe) or "type".
+    focus_unknown_fallback: str = "copy"
 
     def validate(self) -> None:
+        if self.focus_unknown_fallback not in ("copy", "type"):
+            raise ConfigError(
+                "focus_unknown_fallback must be 'copy' or 'type', "
+                f"is {self.focus_unknown_fallback!r}"
+            )
         if self.max_queue_depth < 1:
             raise ConfigError("max_queue_depth must be >= 1")
         if self.done_sound_mode not in ("terminal", "always"):
