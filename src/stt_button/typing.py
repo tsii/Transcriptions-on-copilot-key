@@ -843,10 +843,15 @@ class DeltaTyper:
             to_add = new_tail
             to_remove = 0
 
-        if to_remove:
-            self._typer.backspace(to_remove)
-        if to_add:
-            self._typer.type_text(to_add)
+        # M2b: backspace + type in ONE dotool process when supported.
+        merged = getattr(self._typer, "backspace_and_type", None)
+        if to_add and merged is not None:
+            merged(to_remove, to_add)
+        else:
+            if to_remove:
+                self._typer.backspace(to_remove)
+            if to_add:
+                self._typer.type_text(to_add)
 
         self._last_text = old[:committed] + new_tail
         self._last_committed = committed

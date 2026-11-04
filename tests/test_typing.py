@@ -1770,3 +1770,44 @@ class TestM2aSingleDotoolPayload:
             d.finalize("Hallo")
         msgs = [r.getMessage() for r in caplog.records]
         assert not any(m.startswith("latency[space ") and "in type" not in m for m in msgs)
+
+
+class TestM2bLiveCorrectionSinglePayload:
+    def test_correction_tick_is_one_merged_call(self) -> None:
+        t = MergingFakeTyper()
+        d = DeltaTyper(t)
+        d.update("abcd")
+        t.calls.clear()
+        d.update("abXY")
+        assert t.calls == [("bs_type", "2", "XY", "None")]
+
+    def test_append_only_tick_single_call(self) -> None:
+        t = MergingFakeTyper()
+        d = DeltaTyper(t)
+        d.update("ab")
+        t.calls.clear()
+        d.update("abcd")
+        assert len(t.calls) == 1
+        assert t.calls[0][2] == "cd"
+
+    def test_backspace_only_tick_keeps_plain_backspace(self) -> None:
+        t = MergingFakeTyper()
+        d = DeltaTyper(t)
+        d.update("abcd")
+        t.calls.clear()
+        d.update("ab")
+        assert t.calls == [("backspace", "2")]
+
+    def test_dotool_correction_one_process(self, monkeypatch) -> None:
+        stdin = _capture_stdin(monkeypatch)
+        d = DeltaTyper(DotoolTyper())
+        d.update("abcd")
+        stdin.clear()
+        d.update("abXY")
+        assert stdin == ["key backspace\nkey backspace\n" + _PRE + "type XY\n"]
+
+    def test_committed_mode_unchanged(self) -> None:
+        t = MergingFakeTyper()
+        d = DeltaTyper(t, live_typing_mode="committed")
+        d.update("Hallo Welt", committed_len=6)
+        assert t.calls == [("type", "Hallo ")]
