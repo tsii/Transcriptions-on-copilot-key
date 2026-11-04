@@ -1483,3 +1483,117 @@ class TestOpt1CombinedBackspacePaste:
         events.clear()
         d.finalize("Xbcd efgh")
         assert ("bs", 9) in events and ("paste", "Xbcd efgh ") in events
+
+
+class TestFocusGatedFinalPaste:
+    """Final delta: terminal focus -> clipboard only (no chord);
+    browser focus -> typed via typer, clipboard untouched."""
+
+    @staticmethod
+    def _delta(monkeypatch, probe, **kw):
+        calls = _capture(monkeypatch)
+        monkeypatch.setattr("stt_button.typing.shutil.which", lambda b: "/usr/bin/" + b)
+        t = FakeTyper()
+        p = ClipboardPaster(t, copy_binary="wl-copy", paste_key="ctrl+v")
+        d = DeltaTyper(t, final_paster=p, focus_probe=probe, **kw)
+        return d, t, calls
+
+    @staticmethod
+    def _wl_copies(calls):
+        return [c for c in calls if c and c[0] == "wl-copy"]
+
+    def test_terminal_focus_copies_delta_with_space(self, monkeypatch) -> None:
+        d, t, calls = self._delta(monkeypatch, lambda: True, append_space=True)
+        d.update("Hallo", committed_len=5)
+        t.calls.clear()
+        d.finalize("Hallo Welt", committed_len=5)
+        assert self._wl_copies(calls) == [["wl-copy", " Welt "]]
+        assert ("key", "space") not in t.calls
+
+    def test_terminal_focus_sends_no_chord(self, monkeypatch) -> None:
+        d, t, calls = self._delta(monkeypatch, lambda: True)
+        d.update("abcd", committed_len=0)
+        t.calls.clear()
+        d.finalize("abXY")
+        assert not any(c[0] == "key" and "+" in c[1] for c in t.calls)
+        assert ("backspace", "2") in t.calls
+        assert t.typed == ""
+        assert self._wl_copies(calls) == [["wl-copy", "XY "]]
+
+    def test_unknown_focus_behaves_like_terminal(self, monkeypatch) -> None:
+        d, t, calls = self._delta(monkeypatch, lambda: None)
+        d.finalize("Hallo")
+        assert self._wl_copies(calls) == [["wl-copy", "Hallo "]]
+        assert ("key", "ctrl+v") not in t.calls
+
+    def test_probe_exception_behaves_like_terminal(self, monkeypatch) -> None:
+        def boom():
+            raise RuntimeError("dbus down")
+        d, t, calls = self._delta(monkeypatch, boom)
+        d.finalize("Hallo")
+        assert self._wl_copies(calls) == [["wl-copy", "Hallo "]]
+        assert ("key", "ctrl+v") not in t.calls
+
+    def test_browser_focus_types_and_never_touches_clipboard(self, monkeypatch) -> None:
+        d, t, calls = self._delta(monkeypatch, lambda: False, append_space=True)
+        d.update("abcd", committed_len=0)
+        t.calls.clear()
+        d.finalize("abXY")
+        assert self._wl_copies(calls) == []
+        assert t.calls == [("backspace", "2"), ("type", "XY"), ("key", "space")]
+
+    def test_browser_focus_without_space(self, monkeypatch) -> None:
+        d, t, calls = self._delta(monkeypatch, lambda: False, append_space=False)
+        d.finalize("Hallo")
+        assert self._wl_copies(calls) == []
+        assert t.calls == [("type", "Hallo")]
+
+    def test_no_probe_keeps_legacy_chord(self, monkeypatch) -> None:
+        d, t, calls = self._delta(monkeypatch, None, append_space=True)
+        d.finalize("Hallo")
+        assert self._wl_copies(calls) == [["wl-copy", "Hallo "]]
+        assert ("key", "ctrl+v") in t.calls
+        assert ("key", "space") not in t.calls
+
+    def test_no_paster_ignores_probe_and_types(self, monkeypatch) -> None:
+        """final_paste=false: typer path unchanged, probe never consulted."""
+        calls = _capture(monkeypatch)
+        t = FakeTyper()
+        asked: list[int] = []
+        d = DeltaTyper(t, focus_probe=lambda: asked.append(1) or True)
+        d.finalize("Hallo")
+        assert t.calls == [("type", "Hallo"), ("key", "space")]
+        assert self._wl_copies(calls) == []
+        assert asked == []
+
+    def test_probe_called_once_per_finalize(self, monkeypatch) -> None:
+        asked: list[int] = []
+        d, t, calls = self._delta(monkeypatch, lambda: asked.append(1) or False)
+        d.update("abcd", committed_len=0)
+        assert asked == []
+        d.finalize("abXY")
+        assert asked == [1]
+
+
+class TestClipboardPasterCopy:
+    def test_copy_runs_wl_copy_without_chord(self, monkeypatch) -> None:
+        calls = _capture(monkeypatch)
+        monkeypatch.setattr("stt_button.typing.shutil.which", lambda b: "/usr/bin/" + b)
+        t = FakeTyper()
+        p = ClipboardPaster(t, copy_binary="wl-copy")
+        assert p.copy("abc") is True
+        assert calls == [["wl-copy", "abc"]]
+        assert t.calls == []
+
+    def test_copy_missing_binary_falls_back_to_typing(self, monkeypatch) -> None:
+        _capture(monkeypatch)
+        monkeypatch.setattr("stt_button.typing.shutil.which", lambda b: None)
+        t = FakeTyper()
+        assert ClipboardPaster(t, copy_binary="wl-copy").copy("abc") is False
+        assert t.calls == [("type", "abc")]
+
+    def test_copy_empty_is_noop(self, monkeypatch) -> None:
+        calls = _capture(monkeypatch)
+        t = FakeTyper()
+        assert ClipboardPaster(t).copy("") is False
+        assert calls == [] and t.calls == []

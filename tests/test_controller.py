@@ -225,9 +225,9 @@ class TestStateLifecycle:
         # Now allow finalization to complete.
         ctrl._test_unblock_finalize.set()
         _wait_state(ctrl, ControllerState.IDLE)
-        # NO ghost recording: the key is not held.
+        # Press during FINALIZING started rec 2; release finalized it.
         assert ctrl.state == ControllerState.IDLE
-        assert ctx["source"].started == 1
+        assert ctx["source"].started == 2
 
     def test_key_held_through_finalize_restarts_recording(self) -> None:
         """Key remains held: recording starts after finalization."""
@@ -243,19 +243,16 @@ class TestStateLifecycle:
         assert ctx["source"].started == 2
 
     def test_start_after_finalizing_only_when_key_held(self) -> None:
-        """Alternating press: press+release before finalization ends.
-
-        The key was released before finalization ended, so NO recording may start.
-        """
+        """Press+release during FINALIZING: rec 2 starts and finalizes, ends IDLE."""
         ctrl, ctx = make_controller(blocking_transcriber=True)
         ctrl.start_recording()
         ctrl.stop_recording()
-        ctrl.start_recording()           # recorded
-        ctrl.stop_recording()            # ... but already released
+        ctrl.start_recording()           # starts rec 2 immediately
+        ctrl.stop_recording()            # release queues rec 2 for finalize
         ctrl._test_unblock_finalize.set()
         _wait_state(ctrl, ControllerState.IDLE)
         assert ctrl.state == ControllerState.IDLE
-        assert ctx["source"].started == 1
+        assert ctx["source"].started == 2
 
     def test_release_after_finalized_start_stops_fresh_recording(self) -> None:
         """Release immediately after automatic start stops the new recording.
@@ -288,6 +285,39 @@ class TestStateLifecycle:
         ctrl._test_unblock_finalize.set()
         _wait_state(ctrl, ControllerState.IDLE)
         assert ctx["source"].started == 1
+
+    def test_keydown_during_finalize_starts_recording_immediately(self) -> None:
+        ctrl, ctx = make_controller(blocking_transcriber=True)
+        ctrl.start_recording()
+        ctrl.stop_recording()            # job 1 blocks in finalize()
+        assert ctrl.state == ControllerState.FINALIZING
+        ctrl.start_recording()           # press during FINALIZING
+        assert ctrl.state == ControllerState.RECORDING
+        assert ctx["source"].started == 2
+        ctrl.stop_recording()            # job 2 queued
+        ctrl._test_unblock_finalize.set()
+        _wait_state(ctrl, ControllerState.IDLE)
+        assert ctx["source"].stopped == 2
+        assert len(ctrl._finalize_queue) == 0
+        assert ctrl._finalizer_running is False
+
+    def test_capture_loop_binds_own_queue(self) -> None:
+        ctrl, ctx = make_controller(blocking_transcriber=True)
+        ctrl.start_recording()
+        first_queue = ctrl._audio_queue
+        first_thread = ctrl._capture_thread
+        first_stop = ctrl._capture_stop
+        ctrl.stop_recording()
+        ctrl.start_recording()           # immediate restart
+        assert first_stop.is_set()
+        assert not ctrl._capture_stop.is_set()
+        assert ctrl._audio_queue is not first_queue
+        first_thread.join(timeout=2.0)
+        assert not first_thread.is_alive(), "old capture thread still running"
+        assert ctrl._capture_thread.is_alive()
+        ctrl.stop_recording()
+        ctrl._test_unblock_finalize.set()
+        _wait_state(ctrl, ControllerState.IDLE)
 
 
     def test_stop_without_start_is_noop(self) -> None:
@@ -633,6 +663,42 @@ class TestLatencyLockDecoupling:
             "Queue-Chunks und stop()-Rest nicht exakt einmal in richtiger "
             "Reihenfolge gefuettert"
         )
+
+    def test_source_stopped_before_finalizer_starts(self) -> None:
+        """Hard rule: source.stop() runs before the finalizer feeds/finalizes."""
+        order: list[str] = []
+
+        class OrderSource(FakeAudioSource):
+            def stop(self) -> bytes:
+                order.append("stop")
+                return super().stop()
+
+        class OrderTranscriber(RecordingTranscriber):
+            def feed(self, chunk: bytes) -> None:
+                order.append("feed")
+                super().feed(chunk)
+
+            def finalize(self):
+                order.append("finalize")
+                return super().finalize()
+
+        source = OrderSource([b"\x00" * 16000] * 4)
+        ctrl = PushToTalkController(
+            config=None,
+            source_factory=lambda: source,
+            engine=FakeEngine(),
+            delta_typer=DeltaTyper(FakeTyper(), append_space=True),
+            transcriber_factory=lambda *a, **kw: OrderTranscriber(),
+        )
+        ctrl.start_recording()
+        time.sleep(0.2)  # capture thread fills the queue; NO run_once
+        ctrl.stop_recording()
+        _wait_state(ctrl, ControllerState.IDLE)
+
+        assert order, "nothing recorded"
+        assert order[0] == "stop", f"finalizer ran before source.stop(): {order}"
+        assert order.count("stop") == 1, order
+        assert order[-1] == "finalize", order
 
 
 class BlockingEngine:
@@ -1855,3 +1921,221 @@ class TestDoneSoundAbsolutePath:
         _wait_state(ctrl, ControllerState.IDLE)
         assert len(calls) == 1
         assert calls[0][-1] == str(wav), "absoluter Pfad unverwendet verwenden"
+
+
+class TestFinalizeQueue:
+    """Dictation queue: recordings finalize FIFO while the next one records."""
+
+    @staticmethod
+    def _two_jobs(**kwargs):
+        ctrl, ctx = make_controller(blocking_transcriber=True, **kwargs)
+        ctrl.start_recording()
+        ctrl.stop_recording()            # job 1 (blocked)
+        ctrl.start_recording()           # rec 2 immediately
+        return ctrl, ctx
+
+    def test_live_typing_waits_for_pending_finalize(self) -> None:
+        ctrl, ctx = self._two_jobs()
+        ctrl._audio_queue.put(b"\x00" * 32000)
+        # Job 1's finalizer holds _exec_lock while blocked in finalize(), so
+        # run_once() would deadlock here; call the tick body directly. The
+        # busy guard returns before any DeltaTyper access.
+        ctrl._run_once_exec()            # live tick of rec 2
+        assert ctx["typer"].calls == [], "rec 2 typed before job 1 finished"
+        assert ctrl._typed_epoch != ctrl._typing_epoch
+        ctrl.stop_recording()
+        ctrl._test_unblock_finalize.set()
+        _wait_state(ctrl, ControllerState.IDLE)
+        assert ctx["typer"].typed_text_final == "fertigfertig"
+
+    def test_abort_keeps_pending_job(self) -> None:
+        ctrl, ctx = self._two_jobs()
+        ctrl.abort()                     # aborts rec 2 only
+        assert ctrl._finalizer_running is True
+        # Accepted: state is already IDLE while job 1 still runs.
+        assert ctrl.state == ControllerState.IDLE
+        ctrl._test_unblock_finalize.set()
+        deadline = time.monotonic() + 5.0
+        while ctrl._finalizer_running and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert ctrl._finalizer_running is False
+        assert ctrl.state == ControllerState.IDLE
+        assert ctx["typer"].typed_text_final == "fertig"
+
+    def test_shutdown_drops_queued_jobs(self) -> None:
+        ctrl, ctx = self._two_jobs()
+        ctrl.stop_recording()            # job 2 queued behind job 1
+        ctrl.shutdown()
+        assert len(ctrl._finalize_queue) == 0
+        ctrl._test_unblock_finalize.set()
+        deadline = time.monotonic() + 5.0
+        while ctrl._finalizer_running and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert ctx["typer"].typed_text_final == "fertig"   # only job 1
+
+
+class TestQueueDepth:
+    def test_start_refused_when_queue_full(self) -> None:
+        ctrl, ctx = make_controller(blocking_transcriber=True)
+        ctrl._max_queue_depth = 1
+        ctrl.start_recording(); ctrl.stop_recording()   # 1 job pending
+        ctrl.start_recording()
+        assert ctrl.state == ControllerState.FINALIZING
+        assert ctx["source"].started == 1
+        ctrl.stop_recording()
+        ctrl._test_unblock_finalize.set()
+        _wait_state(ctrl, ControllerState.IDLE)
+
+
+class TestFailingJob:
+    def test_failing_job_does_not_block_next(self) -> None:
+        unblock = threading.Event()
+        made = []
+
+        class Boom(BlockingTranscriber):
+            def finalize(self):
+                self._unblock.wait()
+                raise RuntimeError("asr crash")
+
+        def factory(*a, **kw):
+            t = Boom(unblock) if not made else BlockingTranscriber(unblock)
+            made.append(t)
+            return t
+
+        typer = FakeTyper()
+        ctrl = PushToTalkController(
+            config=None,
+            source_factory=FakeSourceFactory([b"\x00" * 16000] * 2),
+            engine=FakeEngine(),
+            delta_typer=DeltaTyper(typer, append_space=True),
+            transcriber_factory=factory,
+        )
+        ctrl.start_recording(); ctrl.stop_recording()
+        ctrl.start_recording(); ctrl.stop_recording()
+        unblock.set()
+        _wait_state(ctrl, ControllerState.IDLE)
+        assert typer.typed_text_final == "fertig"
+        assert ctrl._finalizer_running is False
+
+
+class TestDoneSoundPerJob(TestDoneSound):
+    def test_two_jobs_two_sounds(self, monkeypatch, tmp_path) -> None:
+        from stt_button.config import Config
+        calls = self._play_calls(monkeypatch)
+        unblock = threading.Event()
+        ctrl = PushToTalkController(
+            config=Config(done_sound="complete"),
+            source_factory=FakeSourceFactory([b"\x00" * 16000] * 2),
+            engine=FakeEngine(),
+            delta_typer=DeltaTyper(FakeTyper(), append_space=True),
+            transcriber_factory=lambda *a, **kw: BlockingTranscriber(unblock),
+            dump_path=str(tmp_path / "last.wav"),
+        )
+        ctrl.start_recording(); ctrl.stop_recording()
+        ctrl.start_recording(); ctrl.stop_recording()
+        unblock.set()
+        _wait_state(ctrl, ControllerState.IDLE)
+        assert len(calls) == 2
+
+
+class TextBlockingTranscriber(BlockingTranscriber):
+    """BlockingTranscriber returning a per-instance text."""
+
+    def __init__(self, unblock: threading.Event, text: str) -> None:
+        super().__init__(unblock)
+        self._text = text
+
+    def finalize(self):
+        self._unblock.wait()
+        return TranscriptionResult(text=self._text)
+
+
+def _make_text_queue_controller(texts: list[str], **kwargs):
+    """Controller whose n-th recording finalizes to texts[n]; collects finalize texts."""
+    unblock = threading.Event()
+    pending = list(texts)
+    factory = FakeSourceFactory([b"\x00" * 16000] * 6)
+    typer = FakeTyper()
+    delta = DeltaTyper(typer, append_space=True)
+    finalized: list[str] = []
+    orig_finalize = delta.finalize
+
+    def recording_finalize(text, *a, **kw):
+        finalized.append(text)
+        return orig_finalize(text, *a, **kw)
+
+    delta.finalize = recording_finalize
+    ctrl = PushToTalkController(
+        config=None,
+        source_factory=factory,
+        engine=FakeEngine(),
+        delta_typer=delta,
+        transcriber_factory=lambda *a, **kw: TextBlockingTranscriber(
+            unblock, pending.pop(0)),
+        **kwargs,
+    )
+    ctrl._test_unblock_finalize = unblock
+    return ctrl, {"source": factory, "typer": typer, "finalized": finalized}
+
+
+def _wait_finalizer_idle(ctrl: PushToTalkController, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while ctrl._finalizer_running and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert ctrl._finalizer_running is False
+
+
+class TestQueueFifoThreeJobs:
+    def test_three_dictations_finalize_in_fifo_order(self) -> None:
+        ctrl, ctx = _make_text_queue_controller(["alpha", "beta", "gamma"])
+        for _ in range(3):
+            ctrl.start_recording()
+            assert ctrl.state == ControllerState.RECORDING
+            ctrl.stop_recording()
+        # All three are queued/in flight while job 1 blocks in finalize().
+        assert ctx["finalized"] == []
+        ctrl._test_unblock_finalize.set()
+        _wait_finalizer_idle(ctrl)
+        _wait_state(ctrl, ControllerState.IDLE)
+        assert ctx["finalized"] == ["alpha", "beta", "gamma"]
+        assert ctx["source"].started == 3
+
+
+class TestQueuedRecordingTimeouts:
+    def test_max_record_on_queued_recording(self) -> None:
+        """Rec N+1 hits max_record_s while job N still finalizes."""
+        ctrl, ctx = _make_text_queue_controller(["first", "second"])
+        ctrl.start_recording()
+        ctrl.stop_recording()                 # job N blocked in finalize()
+        ctrl.start_recording()                # rec N+1
+        assert ctrl.state == ControllerState.RECORDING
+        ctrl._max_record_s = 0.01
+        time.sleep(0.02)
+        ctrl._enforce_max_duration()          # timeout on the ACTIVE recording
+        assert ctrl.state == ControllerState.FINALIZING
+        assert ctx["source"].stopped == 2
+        assert ctx["finalized"] == []         # queue untouched, N still pending
+        ctrl.stop_recording()                 # key release, no restart
+        ctrl._test_unblock_finalize.set()
+        _wait_finalizer_idle(ctrl)
+        _wait_state(ctrl, ControllerState.IDLE)
+        assert ctx["finalized"] == ["first", "second"]
+
+    def test_no_audio_timeout_on_queued_recording(self) -> None:
+        """Rec N+1 aborts on no_audio_timeout; job N still completes."""
+        ctrl, ctx = _make_text_queue_controller(
+            ["first", "unused"], no_audio_timeout_s=0.01)
+        ctrl.start_recording()
+        ctrl.stop_recording()                 # job N blocked in finalize()
+        ctx["source"]._chunks = []            # rec N+1 delivers no audio
+        ctrl.start_recording()                # rec N+1
+        assert ctrl.state == ControllerState.RECORDING
+        ctrl._last_audio_at = time.monotonic() - 1.0
+        # run_once() would block on _exec_lock held by job N; call the body.
+        ctrl._run_once_exec()
+        assert ctrl.state != ControllerState.RECORDING
+        assert ctrl._finalizer_running is True
+        ctrl._test_unblock_finalize.set()
+        _wait_finalizer_idle(ctrl)
+        _wait_state(ctrl, ControllerState.IDLE)
+        assert ctx["finalized"] == ["first"]

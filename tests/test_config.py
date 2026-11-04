@@ -37,6 +37,13 @@ class TestDefaults:
     def test_cpu_threads_positive(self) -> None:
         assert Config().cpu_threads >= 1
 
+    def test_max_queue_depth_default(self) -> None:
+        assert Config().max_queue_depth == 4
+
+    def test_max_queue_depth_must_be_positive(self) -> None:
+        with pytest.raises(ConfigError):
+            Config(max_queue_depth=0).validate()
+
     def test_done_sound_mode_default_is_always(self) -> None:
         assert Config().done_sound_mode == "always"
 

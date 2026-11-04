@@ -14,13 +14,20 @@ locally (NVIDIA Parakeet TDT 0.6B, CPU-only, automatic DE+EN).
 ## [Unreleased]
 
 ### Added
-- **Dictation queue** *(in progress)* — pressing the key while a previous dictation
-  is still finalizing immediately starts a new recording instead of waiting.
-  Final transcriptions are then typed strictly in FIFO order. Planned as a
-  `FinalizeJob` queue + background dispatcher in the controller; new config
-  `max_queue_depth` (default `4`). Not yet merged.
+- **Dictation queue** — press during finalization starts the next recording
+  immediately; jobs finalize FIFO (`max_queue_depth`, default `4`). Implemented
+  as a `FinalizeJob` queue + background dispatcher in the controller. A job whose
+  final transcription fails is dropped (logged, no done-sound) and never blocks
+  the next job.
 
 ### Changed
+- **Focus-gated final output** — the final dictation delta no longer always
+  uses the clipboard. With `final_paste` enabled the focus is checked (GNOME
+  Shell extension): **terminal** (or unknown) focus copies the delta to the
+  clipboard *without* the paste chord (operator pastes manually, `ctrl+v` is
+  inert/harmful in terminals); **browser/UI** focus types the delta directly
+  and leaves the clipboard completely untouched. With no focus probe injected,
+  behaviour is exactly the previous legacy clipboard+chord path.
 - **Chime default** — `done_sound_mode` now defaults to `"always"` (previously
   `"terminal"`). The done-sound now plays after every successful dictation, not
   only when a terminal is focused. `"terminal"` remains a valid option. This
@@ -103,6 +110,6 @@ locally (NVIDIA Parakeet TDT 0.6B, CPU-only, automatic DE+EN).
 ### Added
 - Initial commit: push-to-talk dictation (Parakeet TDT, windowed streaming).
 
-[Unreleased]: https://github.com/tsii/Parakeet-on-copilot-key/compare/0.1.0...master
-[0.1.0]: https://github.com/tsii/Parakeet-on-copilot-key/compare/0.0.0...0.1.0
-[0.0.0]: https://github.com/tsii/Parakeet-on-copilot-key/releases/tag/0.0.0
+[Unreleased]: https://github.com/tsii/Transcriptions-on-copilot-key/compare/0.1.0...master
+[0.1.0]: https://github.com/tsii/Transcriptions-on-copilot-key/compare/0.0.0...0.1.0
+[0.0.0]: https://github.com/tsii/Transcriptions-on-copilot-key/releases/tag/0.0.0
