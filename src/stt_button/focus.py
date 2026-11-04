@@ -65,12 +65,13 @@ def _call_focus() -> tuple[str, str] | None:
         import json
 
         doc = json.loads(proc.stdout or "{}")
-        ret = (doc.get("result") or [None, None, None])[2]
-        if not ret or len(ret) < 2:
+        # Real busctl call output: {"type":"ss","data":[app_id,title]}.
+        data = doc.get("data")
+        if not isinstance(data, list) or len(data) < 2:
             return None
-        app_id, title = str(ret[0]), str(ret[1])
+        app_id, title = str(data[0]), str(data[1])
         return app_id, title
-    except (ValueError, TypeError, IndexError) as exc:
+    except (ValueError, TypeError) as exc:
         log.debug("focus reply unreadable (%s)", exc)
         return None
 

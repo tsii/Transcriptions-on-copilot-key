@@ -8,6 +8,40 @@ import pytest
 from stt_button import focus
 
 
+class TestCallFocusParsing:
+    """_call_focus() must parse the REAL busctl --json output.
+
+    busctl call returns {"type":"ss","data":[app_id,title]} -- not a
+    'result' key. This was live-verified on the running extension
+    (04.11.): the previous parser never matched and made
+    terminal_focused() always return None (silent fallback).
+    """
+
+    class _Proc:
+        def __init__(self, stdout: str, returncode: int = 0) -> None:
+            self.stdout = stdout
+            self.returncode = returncode
+
+    def test_parses_real_busctl_json(self, monkeypatch) -> None:
+        doc = '{"type":"ss","data":["org.gnome.Terminal","Terminal"]}'
+        monkeypatch.setattr(
+            focus.subprocess, "run",
+            lambda *a, **kw: self._Proc(doc))
+        assert focus._call_focus() == ("org.gnome.Terminal", "Terminal")
+
+    def test_empty_data_none(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            focus.subprocess, "run",
+            lambda *a, **kw: self._Proc('{"type":"ss","data":[]}'))
+        assert focus._call_focus() is None
+
+    def test_non_json_none(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            focus.subprocess, "run",
+            lambda *a, **kw: self._Proc("not json", returncode=1))
+        assert focus._call_focus() is None
+
+
 class TestTerminalFocused:
     def test_terminal_app_id_true(self, monkeypatch) -> None:
         monkeypatch.setattr(focus, "_call_focus",

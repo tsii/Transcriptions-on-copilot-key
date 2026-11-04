@@ -34,6 +34,17 @@ locally (NVIDIA Parakeet TDT 0.6B, CPU-only, automatic DE+EN).
   changes only the default: existing configs with an explicit `done_sound_mode`
   are unaffected.
 
+### Fixed
+- **Focus chain now actually works** (live-verified 04.11.): the GNOME Shell
+  extension was silently broken twice — (a) it used the legacy extension
+  format and per-field `DBusMethodInfo` construction, both removed in
+  GNOME 45+/GJS 1.7x (extension rewritten as an ESM module with the
+  closure-based `register_object` API); (b) `focus.py` parsed a
+  `{"result": ...}` shape that `busctl --json` never emits (now parses the
+  real `{"type":"ss","data":[app,title]}`; 3 new parser tests using the
+  real busctl output). Before this fix `terminal_focused()` always returned
+  `None`, so the focus-gated behaviour silently fell back everywhere.
+
 ---
 
 ## [0.1.0] - 2026-11-01
