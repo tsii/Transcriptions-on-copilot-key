@@ -48,6 +48,36 @@ def _notify_focus_unknown() -> None:
         log.debug("notify-send failed (%s)", exc)
 
 
+def build_engine(cfg):
+    """Builds the ASR engine based on the configuration (no model load).
+
+    Heavy dependencies (torch/transformers) are only imported in
+    ``engine.load()``, so an absent optional dependency never breaks the
+    default Parakeet path at build time.
+    """
+    backend = getattr(cfg, "backend", "whisper")
+    if backend == "parakeet":
+        return ParakeetEngine(
+            cfg.model,
+            language=cfg.language,
+            compute_type=cfg.compute_type,
+            cpu_threads=cfg.cpu_threads,
+        )
+    if backend == "qwen":
+        return QwenEngine(
+            cfg.model,
+            language=cfg.language,
+            compute_type=cfg.compute_type,
+            cpu_threads=cfg.cpu_threads,
+        )
+    return WhisperEngine(
+        cfg.model,
+        language=cfg.language,
+        compute_type=cfg.compute_type,
+        cpu_threads=cfg.cpu_threads,
+    )
+
+
 class Application:
     """Holds the running service together."""
 
@@ -60,28 +90,7 @@ class Application:
 
     def _build_engine(self):
         """Builds the ASR engine based on the configuration."""
-        cfg = self.config
-        backend = getattr(cfg, "backend", "whisper")
-        if backend == "parakeet":
-            return ParakeetEngine(
-                cfg.model,
-                language=cfg.language,
-                compute_type=cfg.compute_type,
-                cpu_threads=cfg.cpu_threads,
-            )
-        if backend == "qwen":
-            return QwenEngine(
-                cfg.model,
-                language=cfg.language,
-                compute_type=cfg.compute_type,
-                cpu_threads=cfg.cpu_threads,
-            )
-        return WhisperEngine(
-            cfg.model,
-            language=cfg.language,
-            compute_type=cfg.compute_type,
-            cpu_threads=cfg.cpu_threads,
-        )
+        return build_engine(self.config)
 
     def _build_typer(self):
         if self.config.typer == "clipboard":
@@ -175,6 +184,8 @@ class Application:
                 )
             return StreamTranscriber(
                 engine,
+                # B3/B4: final-only engines (Qwen) get no live ticks.
+                live_enabled=getattr(engine, "supports_live", True),
                 interval_s=interval_s,
                 min_audio_s=min_audio_s,
                 sample_rate=cfg.sample_rate,

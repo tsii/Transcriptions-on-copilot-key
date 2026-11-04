@@ -295,3 +295,57 @@ class TestCachedMidTailWiring:
         transcriber = factory(engine=object(), interval_s=1.0, min_audio_s=0.8)
         assert isinstance(transcriber, StreamTranscriber)
         assert transcriber.finalize_mode == "cached_mid_tail"
+
+
+class TestBackendWiring:
+    """B4: backend selection + final-only wiring for Qwen."""
+
+    def test_qwen_backend_builds_qwen_engine_with_compute_type(self) -> None:
+        from stt_button.app import build_engine
+        from stt_button.asr import QwenEngine
+        from stt_button.config import config_from_mapping
+        cfg = config_from_mapping({"backend": "qwen", "compute_type": "bfloat16"})
+        engine = build_engine(cfg)
+        assert isinstance(engine, QwenEngine)
+        assert engine.compute_type == "bfloat16"
+        assert engine.model == "Qwen/Qwen3-ASR-1.7B-hf"
+        assert engine.loaded is False  # lazy: no model load at build time
+
+    def test_parakeet_default_wiring_unchanged(self) -> None:
+        from stt_button.app import build_engine
+        from stt_button.asr import ParakeetEngine
+        engine = build_engine(Config())
+        assert isinstance(engine, ParakeetEngine)
+        assert engine.compute_type == "int8"
+        assert engine.model == "nvidia/parakeet-tdt-0.6b-v3"
+
+    def test_non_live_engine_wires_live_disabled(self, monkeypatch) -> None:
+        _app, controller = _application(monkeypatch)
+        factory = controller.kwargs["transcriber_factory"]
+
+        class FinalOnly:
+            supports_live = False
+
+        t = factory(engine=FinalOnly(), interval_s=1.0, min_audio_s=0.8)
+        assert t.live_enabled is False
+        t2 = factory(engine=object(), interval_s=1.0, min_audio_s=0.8)
+        assert t2.live_enabled is True
+
+    def test_app_import_without_transformers_parakeet_ok(self) -> None:
+        import subprocess
+        import sys
+        code = (
+            "import sys; sys.modules['transformers'] = None; sys.modules['torch'] = None\n"
+            "from stt_button.app import Application, build_engine\n"
+            "from stt_button.config import Config\n"
+            "e = build_engine(Config()); assert type(e).__name__ == 'ParakeetEngine'\n"
+        )
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+
+    def test_compare_cli_uses_build_engine(self, monkeypatch) -> None:
+        import inspect
+        from stt_button import __main__ as cli
+        src = inspect.getsource(cli)
+        assert "build_engine(cfg)" in src
+        assert "QwenEngine(cfg.model, language=cfg.language)" not in src

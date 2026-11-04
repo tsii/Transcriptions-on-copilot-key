@@ -247,21 +247,15 @@ def _cmd_compare_stream(args: argparse.Namespace) -> int:
     """
     import wave
 
-    from .asr import ParakeetEngine, QwenEngine, StreamTranscriber, WhisperEngine
+    from .app import build_engine
+    from .asr import StreamTranscriber
     from .config import load_config
 
     cfg = load_config(args.config)
     path = args.file or "/tmp/stt_last.wav"
 
-    # Engine anhand des Backends bauen
-    if cfg.backend == "qwen":
-        engine = QwenEngine(cfg.model, language=cfg.language)
-    elif cfg.backend == "parakeet":
-        engine = ParakeetEngine(cfg.model, language=cfg.language)
-    else:
-        engine = WhisperEngine(
-            cfg.model, language=cfg.language, compute_type=cfg.compute_type
-        )
+    # Build the engine exactly like the app does (backend + compute_type).
+    engine = build_engine(cfg)
 
     with wave.open(path, "rb") as wf:
         data = wf.readframes(wf.getnframes())
