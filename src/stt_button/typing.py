@@ -15,7 +15,7 @@ import logging
 import shutil
 import subprocess
 import time
-from typing import Callable, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 log = logging.getLogger(__name__)
 
@@ -489,27 +489,17 @@ class ClipboardPaster:
         self.copy_binary = copy_binary
         self.paste_key = paste_key
 
-    def copy(self, text: str) -> bool:
-        """Copy ``text`` to the clipboard WITHOUT pressing the paste chord.
-
-        Used when a terminal is focused: the chord is ineffective there
-        (and ctrl+v = quoted-insert may swallow the next keystroke), so
-        the user pastes manually after the done sound.
-
-        Returns:
-            True if the copy succeeded. False for empty text, or if the
-            copy binary is missing/failed; in that case the text was typed
-            character by character instead (same fallback as paste()).
-        """
+    def paste(self, text: str) -> None:
+        """Copy ``text`` to the clipboard and press the paste chord."""
         if not text:
-            return False
+            return
         if shutil.which(self.copy_binary) is None:
             log.warning(
                 "%s unavailable - typing the delta character by character",
                 self.copy_binary,
             )
             self._typer.type_text(text)
-            return False
+            return
         try:
             log.debug("final paste: copy start (%d characters)", len(text))
             _run([self.copy_binary, text])
@@ -520,12 +510,6 @@ class ClipboardPaster:
                 self.copy_binary, exc,
             )
             self._typer.type_text(text)
-            return False
-        return True
-
-    def paste(self, text: str) -> None:
-        """Copy ``text`` to the clipboard and press the paste chord."""
-        if not self.copy(text):
             return
         try:
             log.debug("final paste: chord %s", self.paste_key)
@@ -611,14 +595,8 @@ class DeltaTyper:
         final_paster: FinalPaster | None = None,
         latency_trace: bool = False,
         live_typing_mode: str = "full",
-        focus_probe: Callable[[], bool | None] | None = None,
     ) -> None:
         self._typer = typer
-        # Focus gating for the final delta (only with final_paster):
-        # None = legacy (copy + chord). Otherwise probe() -> False (no
-        # terminal) types the delta via the typer and leaves the clipboard
-        # untouched; True/None (terminal/unknown) copies WITHOUT chord.
-        self._focus_probe = focus_probe
         self._append_space = append_space
         self._max_revision_chars = max_revision_chars
         # Optional: paste the final delta via the clipboard instead of typing
@@ -643,26 +621,6 @@ class DeltaTyper:
         if not self._latency_trace:
             return
         log.debug("latency[%s]", point)
-
-    def _final_mode(self) -> str:
-        """Decide the final output path: 'legacy' | 'copy' | 'type'."""
-        if self._final_paster is None:
-            return "type"
-        if self._focus_probe is None:
-            return "legacy"
-        try:
-            state = self._focus_probe()
-        except Exception as exc:  # noqa: BLE001 - finalize must never crash
-            log.debug("focus probe failed (%s) - treating as terminal", exc)
-            state = None
-        if state is False:
-            mode = "type"
-        elif callable(getattr(self._final_paster, "copy", None)):
-            mode = "copy"
-        else:
-            mode = "legacy"
-        self._trace(f"focus {state!r} -> {mode}")
-        return mode
 
     @property
     def last_text(self) -> str:
@@ -785,9 +743,6 @@ class DeltaTyper:
         is inserted exactly once via the clipboard; the committed prefix and
         text already typed are never included. Without ``final_paster``, the
         existing path applies: backspace and delta via the normal typer.
-        With a ``focus_probe``, the paster path is focus-gated: terminal or
-        unknown focus copies to the clipboard without a chord; other focus
-        types the delta via the typer and leaves the clipboard untouched.
 
         Empty final output must not delete text already typed (e.g., if the
         model failed during the final transcription).
@@ -813,8 +768,6 @@ class DeltaTyper:
         # to_add there is no paste, so the separate space key remains. Without
         # a paster and with append_space=False, nothing changes.
         space_in_paste = False
-        mode = self._final_mode()
-        log.debug("final output mode: %s", mode)
 
         if len(final_text) >= effective_committed:
             committed = min(effective_committed, len(old), len(final_text))
@@ -841,7 +794,7 @@ class DeltaTyper:
             # combined_pasted=True prohibits the old backspace()/paste()
             # follow-up.
             combined_pasted = False
-            if to_remove and to_add and mode == "legacy":
+            if to_remove and to_add and self._final_paster is not None:
                 paste_combined = getattr(
                     self._final_paster, "paste_combined", None
                 )
@@ -872,7 +825,7 @@ class DeltaTyper:
                 self._trace(f"backspace {time.monotonic() - t0:.3f}s")
             if to_add:
                 t0 = time.monotonic()
-                if mode == "legacy":
+                if self._final_paster is not None:
                     # Appended space instead of a separate space key
                     # (no duplicate space; see above).
                     space_in_paste = self._append_space
@@ -882,18 +835,7 @@ class DeltaTyper:
                     self._trace("paste")
                     if space_in_paste:
                         self._trace("space 0.000s (in paste)")
-                elif mode == "copy":
-                    # Terminal focus: clipboard only, NO chord. The space
-                    # rides along in the clipboard (manual paste). On copy
-                    # failure the fallback already typed text + space.
-                    copied = self._final_paster.copy(
-                        to_add + " " if self._append_space else to_add
-                    )
-                    space_in_paste = self._append_space
-                    self._trace(f"copy (no chord) ok={copied}")
                 else:
-                    # Browser focus or no paster: typer path, clipboard
-                    # untouched.
                     self._typer.type_text(to_add)
                     self._trace("type")
                 self._trace(f"output {time.monotonic() - t0:.3f}s")

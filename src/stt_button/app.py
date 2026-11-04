@@ -14,7 +14,6 @@ from .asr import ParakeetEngine, QwenEngine, StreamTranscriber, WhisperEngine
 from .buffered import BufferedTranscriber
 from .config import Config
 from .controller import PushToTalkController
-from . import focus
 from .keys import KeyListener, resolve_device
 from .typing import (
     ClipboardPaster,
@@ -99,23 +98,18 @@ class Application:
         # character by character. Without the flag the previous behavior
         # stays (final_paster=None).
         final_paster = None
-        focus_probe = None
         if cfg.final_paste:
             final_paster = ClipboardPaster(
                 typer,
                 copy_binary=cfg.paste_binary,
                 paste_key=cfg.paste_key,
             )
-            # Focus gating (default of the paster path, no config option):
-            # terminal/unknown -> clipboard only; browser -> typed.
-            focus_probe = focus.terminal_focused
 
         delta = DeltaTyper(
             typer,
             append_space=cfg.append_space,
             max_revision_chars=cfg.max_revision_chars,
             final_paster=final_paster,
-            focus_probe=focus_probe,
             latency_trace=cfg.latency_trace,
             live_typing_mode=cfg.live_typing_mode,
         )

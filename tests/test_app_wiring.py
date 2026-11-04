@@ -108,33 +108,6 @@ class TestFinalPasteWiring:
         }
 
 
-    def test_final_paste_injects_terminal_focus_probe(self, monkeypatch) -> None:
-        from stt_button import focus
-
-        captured: dict[str, object] = {}
-
-        class DeltaStub:
-            def __init__(self, typer, **kwargs):
-                captured.update(kwargs)
-
-        class PasterStub:
-            def __init__(self, typer, **kwargs):
-                pass
-
-        monkeypatch.setattr("stt_button.app.DeltaTyper", DeltaStub)
-        monkeypatch.setattr("stt_button.app.ClipboardPaster", PasterStub)
-        monkeypatch.setattr("stt_button.app.DotoolTyper", TyperStub)
-        monkeypatch.setattr("stt_button.app.SileroVadGate", VadStub)
-        monkeypatch.setattr("stt_button.app.PushToTalkController", ControllerStub)
-
-        Application(Config(final_paste=True))._build_controller()
-        assert captured["focus_probe"] is focus.terminal_focused
-
-        captured.clear()
-        Application(Config())._build_controller()
-        assert captured.get("focus_probe") is None
-
-
 class TestTyperWiring:
     def test_typer_receives_autocorrect_flag(self, monkeypatch) -> None:
         monkeypatch.setattr("stt_button.app.DotoolTyper", TyperStub)

@@ -22,8 +22,6 @@ import shutil
 import subprocess
 import threading
 import time
-from collections import deque
-from dataclasses import dataclass
 from typing import Callable
 
 from .asr import StreamTranscriber, TranscriptionResult
@@ -41,18 +39,6 @@ class ControllerState(enum.Enum):
     IDLE = "idle"
     RECORDING = "recording"
     FINALIZING = "finalizing"
-
-
-@dataclass
-class FinalizeJob:
-    """One released recording waiting for final transcription."""
-
-    transcriber: object
-    audio_queue: "queue.Queue[bytes]"
-    rest: bytes
-    started_at: float
-    epoch: int = 0
-    total_bytes: int = 0
 
 
 class PushToTalkController:
@@ -99,7 +85,6 @@ class PushToTalkController:
         # stt-button-focus, GetFocus via DBus); 'always': always. None
         # (extension missing/not responding) -> play sound anyway, feedback
         # instead of silence.
-        self._max_queue_depth = int(getattr(config, "max_queue_depth", 4) or 4)
         self._done_sound_mode = str(
             getattr(config, "done_sound_mode", "always") or "always"
         )
@@ -134,12 +119,6 @@ class PushToTalkController:
         # Physical state of the trigger key (press/release). Updated on EVERY
         # key event; a release is never lost, even during finalization.
         self._key_down: bool = False
-        self._finalize_queue: deque[FinalizeJob] = deque()  # under _lock
-        self._finalizer_running: bool = False  # dispatcher alive; under _lock
-        self._shutdown: bool = False  # set once by shutdown(); under _lock
-        self._capture_stop = threading.Event()
-        self._typing_epoch = 0  # under _lock
-        self._typed_epoch = 0  # under _exec_lock (read/written only in _run_once_exec and _run_finalize_job)
 
     # ------------------------------------------------------------------
     # Trigger
@@ -148,17 +127,19 @@ class PushToTalkController:
         """Begin recording (called on key press).
 
         Important: The key state (``_key_down``) is ALWAYS set, even during
-        finalization. IDLE and FINALIZING both start now; earlier recordings
-        keep finalizing in the background queue.
+        finalization. Starting occurs only in IDLE (atomically under the
+        lock); in FINALIZING, recording starts only after completion and only
+        if the key is still held. Otherwise, a quickly following dictation
+        would be lost (data loss), or a phantom recording without a held key
+        would be created.
         """
         with self._lock:
             self._key_down = True
             if self.state == ControllerState.RECORDING:
                 return  # already active -> idempotent
-            # Count includes the job the dispatcher is currently working on.
-            pending = len(self._finalize_queue) + (1 if self._finalizer_running else 0)
-            if pending >= self._max_queue_depth:
-                log.warning("Finalize queue full (%d) - press ignored", pending)
+            if self.state == ControllerState.FINALIZING:
+                # Start after finalization ends, only if the key is held.
+                log.info("Key held - start after finalization")
                 return
             self._start_now()
             self._notify_work()
@@ -216,17 +197,16 @@ class PushToTalkController:
             interval_s=self._asr_interval_s,
             min_audio_s=self._min_audio_s,
         )
-        self._typing_epoch += 1
+        self._delta_typer.reset()
         self.state = ControllerState.RECORDING
         self._started_at = time.monotonic()
         self._last_audio_at = time.monotonic()
         self._total_bytes = 0
 
         self._audio_queue = queue.Queue()
-        self._capture_stop = threading.Event()
         self._capture_thread = threading.Thread(
             target=self._capture_loop,
-            args=(self._source, self._audio_queue, self._capture_stop),
+            args=(self._source, self._audio_queue),
             name="audio-capture",
             daemon=True,
         )
@@ -267,7 +247,6 @@ class PushToTalkController:
     def abort(self) -> None:
         """Abort without outputting text (error case)."""
         with self._lock:
-            self._capture_stop.set()
             if self._source is not None:
                 try:
                     self._source.stop()
@@ -280,13 +259,7 @@ class PushToTalkController:
             log.info("Recording aborted")
 
     def shutdown(self) -> None:
-        """Shut down everything (SIGTERM / process exit).
-
-        Queued finalize jobs are dropped; a job already running finishes.
-        """
-        with self._lock:
-            self._shutdown = True
-            self._finalize_queue.clear()
+        """Shut down everything (SIGTERM / process exit)."""
         self.abort()
 
     # ------------------------------------------------------------------
@@ -379,15 +352,6 @@ class PushToTalkController:
             log.info("Discarding live tick: recording already completed")
             return
 
-        with self._lock:
-            busy = bool(self._finalize_queue) or self._finalizer_running
-            epoch = self._typing_epoch
-        if busy:
-            return  # older recording still finalizing; audio stays buffered
-        if self._typed_epoch != epoch:
-            self._delta_typer.reset()
-            self._typed_epoch = epoch
-
         # STAGE 4 (pause indicator): If the transcriber reports that live ASR
         # has reached the live_asr_until_s limit, DeltaTyper types the
         # indicator EXACTLY ONCE ("still listening, but not writing right
@@ -406,10 +370,7 @@ class PushToTalkController:
             self._trace("live typing end")
 
     def _capture_loop(
-        self,
-        source: AudioSource,
-        audio_queue: "queue.Queue[bytes]",
-        stop_event: threading.Event,
+        self, source: AudioSource, audio_queue: "queue.Queue[bytes]"
     ) -> None:
         """Continuously read audio from the source into the queue.
 
@@ -417,7 +378,7 @@ class PushToTalkController:
         thread from an old recording never writes into a new recording's
         queue.
         """
-        while not stop_event.is_set():
+        while self.state == ControllerState.RECORDING:
             try:
                 chunk = source.read(block=False)
             except AudioSourceError:
@@ -461,14 +422,7 @@ class PushToTalkController:
             transcriber = self._transcriber
             audio_queue = self._audio_queue
             capture_thread = self._capture_thread
-            self._capture_stop.set()
             self._capture_thread = None
-            self._transcriber = None
-            job = FinalizeJob(transcriber=transcriber, audio_queue=audio_queue,
-                              rest=b"", started_at=self._started_at,
-                              epoch=self._typing_epoch,
-                              total_bytes=self._total_bytes)
-            self._total_bytes = 0
             self._notify_work()
 
         # RC-B2/B3: First stop the capture thread (it checks the state, which
@@ -490,24 +444,20 @@ class PushToTalkController:
                 self._source = None
         self._trace("source stopped")
 
-        # Final transcription can take several seconds (CPU). It runs in the
-        # BACKGROUND via a FIFO dispatcher so the key thread is immediately
-        # ready again and a quickly following dictation is not lost.
-        if transcriber is None:
+        # Final transcription can take several seconds (CPU). It therefore
+        # runs in the BACKGROUND so that the key thread is immediately ready
+        # again and a quickly following second dictation is not lost.
+        if transcriber is not None:
+            finalizer = threading.Thread(
+                target=self._finalize_worker,
+                args=(transcriber, audio_queue, rest),
+                name="finalize",
+                daemon=True,
+            )
+            finalizer.start()
+        else:
             with self._lock:
-                if not self._finalizer_running and self.state == ControllerState.FINALIZING:
-                    self.state = ControllerState.IDLE
-                self._notify_work()
-            return
-        job.rest = rest
-        with self._lock:
-            self._finalize_queue.append(job)
-            start_dispatcher = not self._finalizer_running
-            self._finalizer_running = True
-            self._notify_work()
-        if start_dispatcher:  # source already stopped above (hard rule)
-            threading.Thread(target=self._finalize_worker, name="finalize",
-                             daemon=True).start()
+                self.state = ControllerState.IDLE
 
     def _play_done_sound(self) -> None:
         """Play the configured completion signal (config.done_sound).
@@ -555,44 +505,30 @@ class PushToTalkController:
         except Exception as exc:  # noqa: BLE001 - sound is optional, never required
             log.debug("Completion signal failed (%s)", exc)
 
-    def _finalize_worker(self) -> None:
-        """Dispatcher thread: run queued FinalizeJobs strictly FIFO."""
-        while True:
-            with self._lock:
-                if self._shutdown or not self._finalize_queue:
-                    self._finalizer_running = False
-                    if self.state != ControllerState.RECORDING:
-                        self.state = ControllerState.IDLE
-                    self._stop_entered_at = 0.0
-                    self._notify_work()
-                    return
-                job = self._finalize_queue.popleft()
-            self._run_finalize_job(job)
+    def _finalize_worker(
+        self, transcriber, audio_queue: "queue.Queue[bytes]", rest: bytes
+    ) -> None:
+        """Run final transcription (background thread).
 
-    def _run_finalize_job(self, job: FinalizeJob) -> None:
-        """Final transcription of ONE job under ``_exec_lock``.
-
-        No live inference or DeltaTyper access runs in parallel with the
-        final feed/finalize/output. Errors drop only this job.
+        Runs under ``_exec_lock``: no live inference or DeltaTyper access can
+        operate in parallel with the final feed/finalize/output on the same
+        transcriber. State/log briefly under _lock.
         """
-        transcriber = job.transcriber
         try:
             with self._exec_lock:
                 self._trace("finalizer exec acquired")
-                if self._typed_epoch != job.epoch:
-                    self._delta_typer.reset()
-                    self._typed_epoch = job.epoch
                 # 1) Drain the queue in chronological order (older bytes
                 #    first), 2) append the stop() remainder.
                 while True:
                     try:
-                        chunk = job.audio_queue.get_nowait()
+                        chunk = audio_queue.get_nowait()
                     except queue.Empty:
                         break
-                    job.total_bytes += len(chunk)
+                    with self._lock:
+                        self._total_bytes += len(chunk)
                     transcriber.feed(chunk)
-                if job.rest:
-                    transcriber.feed(job.rest)
+                if rest:
+                    transcriber.feed(rest)
 
                 # BUG 1 (fix b): The live path may NEVER have seen the limit:
                 # the last live tick started below the limit, its inference
@@ -628,10 +564,19 @@ class PushToTalkController:
         except Exception as exc:  # noqa: BLE001
             log.error("Final transcription failed: %s", exc)
         finally:
-            duration = time.monotonic() - job.started_at
-            self._trace(f"job done after {duration:.3f}s")
-            log.info("Recording finished (%d bytes of audio, %.2f s since recording start)",
-                     job.total_bytes, duration)
+            with self._lock:
+                self._transcriber = None
+                self.state = ControllerState.IDLE
+                self._stop_entered_at = 0.0
+                log.info("Recording finished (%d bytes of audio)", self._total_bytes)
+                self._total_bytes = 0
+                # The deferred start occurs only if the key is still held;
+                # check and start are atomic under the same lock (no handoff
+                # window for races).
+                if self._key_down:
+                    log.info("Key held - starting new recording")
+                    self._start_now()
+                self._notify_work()
 
     def _dump_audio(self, transcriber) -> None:
         """Save the complete recording as a debug WAV.
