@@ -492,3 +492,59 @@ class TestFinalPasteMinChars:
         p.write_text("final_paste_min_chars = -1\n")
         with pytest.raises(ConfigError):
             load_config(p)
+
+
+class TestQwenBackendConfig:
+    """B1: validation rules for the opt-in Qwen3-ASR backend."""
+
+    @staticmethod
+    def _cfg(**kw):
+        from stt_button.config import config_from_mapping
+        base = {"backend": "qwen", "compute_type": "bfloat16"}
+        base.update(kw)
+        return config_from_mapping(base)
+
+    def test_default_backend_is_parakeet_float32_unchanged(self) -> None:
+        cfg = Config()
+        assert cfg.backend == "parakeet"
+        assert cfg.model == "nvidia/parakeet-tdt-0.6b-v3"
+        assert cfg.compute_type == "int8"  # dataclass default; FP32 comes from operator config
+        assert cfg.streaming_mode == "whole_buffer"
+        assert cfg.finalize_mode == "full"
+        assert cfg.live_asr_until_s == 15.0
+        from stt_button.config import config_from_mapping
+        prod = config_from_mapping({"backend": "parakeet", "compute_type": "float32"})
+        assert prod.model == "nvidia/parakeet-tdt-0.6b-v3"
+        assert prod.compute_type == "float32"
+
+    def test_qwen_backend_defaults_model_to_qwen(self) -> None:
+        assert self._cfg().model == "Qwen/Qwen3-ASR-1.7B-hf"
+        assert self._cfg(model="nvidia/parakeet-tdt-0.6b-v3").model == "Qwen/Qwen3-ASR-1.7B-hf"
+
+    def test_qwen_explicit_model_kept(self) -> None:
+        assert self._cfg(model="Qwen/Qwen3-ASR-0.6B-hf").model == "Qwen/Qwen3-ASR-0.6B-hf"
+
+    def test_qwen_rejects_int8_compute_type(self) -> None:
+        with pytest.raises(ConfigError, match="compute_type"):
+            self._cfg(compute_type="int8")
+
+    def test_qwen_accepts_bfloat16_and_float32(self) -> None:
+        assert self._cfg(compute_type="float32").compute_type == "float32"
+        assert self._cfg().compute_type == "bfloat16"
+
+    @pytest.mark.parametrize("mode", ["windowed", "buffered"])
+    def test_qwen_rejects_windowed_and_buffered(self, mode) -> None:
+        with pytest.raises(ConfigError, match="streaming_mode"):
+            self._cfg(streaming_mode=mode)
+
+    def test_qwen_rejects_cached_mid_tail(self) -> None:
+        with pytest.raises(ConfigError, match="finalize_mode"):
+            self._cfg(finalize_mode="cached_mid_tail")
+
+    def test_qwen_rejects_segmenting(self) -> None:
+        with pytest.raises(ConfigError, match="segment"):
+            self._cfg(segment_max_s=10.0)
+
+    def test_unknown_backend_raises_config_error(self) -> None:
+        with pytest.raises(ConfigError, match="backend"):
+            self._cfg(backend="parakeet_onnx")

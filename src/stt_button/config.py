@@ -20,6 +20,11 @@ DEFAULT_CONFIG_PATH = CONFIG_DIR / "config.toml"
 VALID_LANGUAGES = ("de", "en", "auto")
 VALID_TYPERS = ("wtype", "clipboard", "dotool")
 VALID_BACKENDS = ("whisper", "parakeet", "qwen")
+#: Default model id per backend (used when backend="qwen" keeps the Parakeet id).
+PARAKEET_DEFAULT_MODEL = "nvidia/parakeet-tdt-0.6b-v3"
+QWEN_DEFAULT_MODEL = "Qwen/Qwen3-ASR-1.7B-hf"
+#: Qwen3-ASR runs through torch; int8/ctranslate2 types do not apply.
+QWEN_COMPUTE_TYPES = ("bfloat16", "float32")
 VALID_STREAMING_MODES = ("windowed", "whole_buffer", "buffered")
 VALID_PASTE_KEYS = ("ctrl+v", "ctrl+shift+v")
 #: Finalization mode: "full" = re-transcribe the buffer (proven),
@@ -232,6 +237,8 @@ class Config:
             raise ConfigError(
                 f"backend must be one of {VALID_BACKENDS}, is {self.backend!r}"
             )
+        if self.backend == "qwen":
+            _validate_qwen(self)
         if self.streaming_mode not in VALID_STREAMING_MODES:
             raise ConfigError(
                 f"streaming_mode must be one of {VALID_STREAMING_MODES}, "
@@ -337,6 +344,26 @@ def _coerce(name: str, value: Any, target_type: Any) -> Any:
     return value
 
 
+def _validate_qwen(cfg: "Config") -> None:
+    """Qwen3-ASR is final-only (no timestamps, no live ticks)."""
+    if cfg.compute_type not in QWEN_COMPUTE_TYPES:
+        raise ConfigError(
+            f"compute_type for backend 'qwen' must be one of "
+            f"{QWEN_COMPUTE_TYPES}, is {cfg.compute_type!r}"
+        )
+    if cfg.streaming_mode != "whole_buffer":
+        raise ConfigError(
+            "backend 'qwen' requires streaming_mode='whole_buffer', "
+            f"is {cfg.streaming_mode!r}"
+        )
+    if cfg.finalize_mode != "full":
+        raise ConfigError(
+            f"backend 'qwen' requires finalize_mode='full', is {cfg.finalize_mode!r}"
+        )
+    if cfg.segment_max_s > 0:
+        raise ConfigError("backend 'qwen' does not support segmenting (segment_max_s > 0)")
+
+
 def config_from_mapping(data: dict[str, Any]) -> Config:
     """Builds a :class:`Config` from a mapping and validates it."""
     known = {f.name: f for f in fields(Config)}
@@ -354,6 +381,10 @@ def config_from_mapping(data: dict[str, Any]) -> Config:
                       "list[str]": list}[target]
         kwargs[name] = _coerce(name, value, target)
 
+    if kwargs.get("backend") == "qwen" and kwargs.get("model", PARAKEET_DEFAULT_MODEL) in (
+        PARAKEET_DEFAULT_MODEL, ""
+    ):
+        kwargs["model"] = QWEN_DEFAULT_MODEL
     cfg = Config(**kwargs)
     cfg.validate()
     return cfg
