@@ -179,8 +179,11 @@ class Config:
     #: -> it still plays, feedback over silence); 'always' (default) =
     #: always.
     done_sound_mode: str = "always"
+    max_queue_depth: int = 4
 
     def validate(self) -> None:
+        if self.max_queue_depth < 1:
+            raise ConfigError("max_queue_depth must be >= 1")
         if self.done_sound_mode not in ("terminal", "always"):
             raise ConfigError(
                 "done_sound_mode must be 'terminal' or 'always', "
