@@ -24,7 +24,9 @@ def xpu_available() -> tuple[bool, str]:
     try:
         if not hasattr(torch, "xpu"):
             return False, "torch build has no xpu"
-        if not torch.xpu.is_available():
+        # is_available() alone is not enough: torch-xpu can report True
+        # with zero devices when the GPU compute runtime is missing.
+        if not torch.xpu.is_available() or torch.xpu.device_count() < 1:
             return False, f"no XPU device/runtime (torch {torch.__version__})"
         return True, ""
     except Exception as exc:  # noqa: BLE001

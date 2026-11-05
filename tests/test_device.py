@@ -72,3 +72,18 @@ def test_import_does_not_import_torch() -> None:
     code = "import sys, stt_button.device; print('torch' in sys.modules)"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "False"
+
+
+def test_xpu_available_requires_nonzero_device_count(monkeypatch) -> None:
+    """D7 finding: torch-xpu reports is_available()=True with zero devices
+    when the GPU compute runtime (libze-intel-gpu1) is absent."""
+    import types
+    import stt_button.device as dev
+    fake = types.SimpleNamespace(
+        __version__="2.14.1+xpu",
+        xpu=types.SimpleNamespace(is_available=lambda: True, device_count=lambda: 0),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake)
+    ok, reason = dev.xpu_available()
+    assert ok is False
+    assert "no XPU device/runtime" in reason
