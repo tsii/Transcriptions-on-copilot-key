@@ -28,6 +28,9 @@ def xpu_available() -> tuple[bool, str]:
         # with zero devices when the GPU compute runtime is missing.
         if not torch.xpu.is_available() or torch.xpu.device_count() < 1:
             return False, f"no XPU device/runtime (torch {torch.__version__})"
+        # device_count() can be 1 without the GPU runtime (non-GPU SYCL
+        # devices); only a real allocation proves a usable XPU.
+        torch.zeros(1, device="xpu")
         return True, ""
     except Exception as exc:  # noqa: BLE001
         return False, repr(exc)

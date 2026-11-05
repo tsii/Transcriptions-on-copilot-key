@@ -39,7 +39,7 @@ fi
 "${PIP[@]}" install -q --no-deps -e .
 
 # 4) Report.
-if "$XPU_VENV/bin/python" -c "import torch,sys;print(torch.__version__,'xpu',torch.xpu.is_available());ok=torch.xpu.is_available() and torch.xpu.device_count()>0;sys.exit(0 if ok else 3)"; then
+if "$XPU_VENV/bin/python" -c "import sys,torch;from stt_button.device import xpu_available as p;ok,r=p();print(torch.__version__,'xpu usable:',ok,r);sys.exit(0 if ok else 3)"; then
     echo "OK: XPU usable. Run qwen with $XPU_VENV/bin/python -m stt_button ..."
 else
     echo "XPU not usable (GPU compute runtime missing). Operator, run once:"

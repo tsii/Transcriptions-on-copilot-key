@@ -87,3 +87,33 @@ def test_xpu_available_requires_nonzero_device_count(monkeypatch) -> None:
     ok, reason = dev.xpu_available()
     assert ok is False
     assert "no XPU device/runtime" in reason
+
+
+def test_xpu_available_requires_working_allocation(monkeypatch) -> None:
+    """D7 finding: without the GPU runtime torch-xpu reports
+    is_available()=True and device_count()=1, but allocation raises."""
+    import types
+    import stt_button.device as dev
+
+    def zeros(*a, **kw):
+        raise RuntimeError("No XPU devices are available.")
+
+    fake = types.SimpleNamespace(
+        __version__="2.14.1+xpu", zeros=zeros,
+        xpu=types.SimpleNamespace(is_available=lambda: True, device_count=lambda: 1),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake)
+    ok, reason = dev.xpu_available()
+    assert ok is False
+    assert "No XPU devices" in reason
+
+
+def test_xpu_available_true_when_allocation_works(monkeypatch) -> None:
+    import types
+    import stt_button.device as dev
+    fake = types.SimpleNamespace(
+        __version__="2.14.1+xpu", zeros=lambda *a, **kw: object(),
+        xpu=types.SimpleNamespace(is_available=lambda: True, device_count=lambda: 1),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake)
+    assert dev.xpu_available() == (True, "")
