@@ -54,6 +54,18 @@ class TestModelSwitchDocs:
         assert 'compute_type = "bfloat16"' in body
         assert "final-only" in body
 
+    def test_readme_documents_qwen_xpu(self) -> None:
+        """qwen-xpu B7: GPU path, separate venv and operator command."""
+        body = README.read_text(encoding="utf-8")
+        assert "qwen_device" in body
+        assert ".venv-xpu" in body
+        assert "tools/setup_qwen_xpu.sh" in body
+        assert "intel-opencl-icd libze-intel-gpu1" in body
+
+    def test_changelog_mentions_qwen_xpu(self) -> None:
+        body = (README.parent / "CHANGELOG.md").read_text(encoding="utf-8")
+        assert "qwen_device" in body
+
     def test_konzept_has_qwen_bf16_measurement(self) -> None:
         body = text()
         assert "Qwen3-ASR 1.7B (BF16)" in body

@@ -14,6 +14,13 @@ locally (NVIDIA Parakeet TDT 0.6B, CPU-only, automatic DE+EN).
 ## [Unreleased]
 
 ### Added
+- Qwen backend on the Intel Arc iGPU: new config key `qwen_device`
+  (`auto` default | `xpu` | `cpu`). It falls back to the CPU with a log
+  line and never crashes. The separate `.venv-xpu` is built by
+  `tools/setup_qwen_xpu.sh`. `model_switch_check.py --device`.
+  Production backend stays Parakeet.
+
+### Added
 - **Switchable ASR backends (04.11., opt-in; default stays
   `backend="parakeet"` FP32):** `backend = "qwen"` selects
   `Qwen/Qwen3-ASR-1.7B-hf` (BF16 default, revision-pinned, apache-2.0,

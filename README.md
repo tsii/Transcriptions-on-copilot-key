@@ -88,6 +88,29 @@ Not available with Qwen (no token timestamps): committed mode, the
 the live pause indicator, vocabulary prompts and cancelling. Invalid
 combinations are rejected at startup with a `ConfigError`.
 
+### Qwen on the Intel Arc iGPU (XPU)
+
+`qwen_device = "auto"` (default) | `"xpu"` | `"cpu"` applies only to
+`backend = "qwen"`. `auto` uses the Arc iGPU when torch can see it and
+otherwise falls back to the CPU, writing one log line. `xpu` also falls
+back, but logs a warning; startup never fails over this. The measured
+GPU RTF is ~0.16-0.28, against ~0.34-0.81 on the CPU. Loading the model
+takes ~7 s.
+
+The GPU stack (torch 2.14.1+xpu, ~3.5 GB) lives in a **separate venv
+`.venv-xpu`**. The production `.venv` stays CPU-only:
+
+```bash
+tools/setup_qwen_xpu.sh                          # user space, no sudo
+.venv-xpu/bin/python tools/model_switch_check.py --config <file> --device auto
+# -> "device: requested=auto resolved=xpu ..."
+```
+
+The GPU compute runtime is a system package and is installed once by the
+operator:
+`sudo apt install -y intel-opencl-icd libze-intel-gpu1 libze1`.
+Until that is done, `.venv-xpu` also reports `resolved=cpu`.
+
 Back to the default: `backend = "parakeet"` and `compute_type = "float32"`.
 
 ## Development
