@@ -11,7 +11,8 @@ Gates (plan_qwen_asr.md, spike protocol):
 Exit code 0 = gates pass, 1 = gate failed, 2 = usage/input error.
 
 Usage:  nice -n 19 .venv/bin/python tools/model_switch_check.py \
-            --config my.toml [--clips a.wav b.wav ...]
+            --config my.toml [--device auto|xpu|cpu] [--clips a.wav b.wav ...]
+Real XPU test: STT_QWEN_XPU_REAL=1 .venv-xpu/bin/python -m pytest tests/test_model_switch_check.py
 """
 from __future__ import annotations
 
@@ -41,12 +42,30 @@ def max_rss_gb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6
 
 
-def engine_from_config(path: Path | str | None):
-    """Builds (does not load) the engine the app would use for ``path``."""
+def engine_from_config(path: Path | str | None, device: str | None = None):
+    """Builds (does not load) the engine the app would use for ``path``.
+
+    ``device`` overrides ``qwen_device`` (auto|xpu|cpu) for backend qwen.
+    """
     from stt_button.app import build_engine
     from stt_button.config import load_config
 
-    return build_engine(load_config(path))
+    override = {"qwen_device": device} if device else None
+    return build_engine(load_config(path, override=override))
+
+
+def device_report(engine) -> str | None:
+    """'device: requested=.. resolved=.. reason=..' for device-aware engines."""
+    requested = getattr(engine, "device", None)
+    if requested is None:
+        return None
+    from stt_button import device as dev
+
+    ok, reason = dev.xpu_available()
+    resolved = getattr(engine, "resolved_device", None)
+    if resolved is None:
+        resolved = dev.resolve_qwen_device(requested, probe=lambda: (ok, reason))
+    return f"device: requested={requested} resolved={resolved} reason={reason or 'ok'}"
 
 
 def _read_pcm(path: Path) -> bytes:
@@ -88,6 +107,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--config", default=None, help="config TOML (default: user config)")
     ap.add_argument("--clips", nargs="*", default=None, help="WAV files (16 kHz mono)")
+    ap.add_argument("--device", choices=("auto", "xpu", "cpu"), default=None,
+                    help="override qwen_device (backend qwen)")
     ap.add_argument("--dry-run", action="store_true", help="validate inputs only")
     args = ap.parse_args(argv)
 
@@ -96,13 +117,19 @@ def main(argv=None) -> int:
     if missing:
         print("missing clips: " + ", ".join(missing), file=sys.stderr)
         return 2
-    engine = engine_from_config(args.config)
+    engine = engine_from_config(args.config, args.device)
     if args.dry_run:
         print(f"engine: {type(engine).__name__} ({engine.model})")
+        line = device_report(engine)
+        if line:
+            print(line)
         return 0
     t0 = time.perf_counter()
     engine.load()
     print(f"engine: {type(engine).__name__} ({engine.model}) load {time.perf_counter() - t0:.1f}s")
+    line = device_report(engine)
+    if line:
+        print(line)
     rows, ok = run_check(engine, clips)
     for row in rows:
         print(format_row(row))
