@@ -69,6 +69,7 @@ def build_engine(cfg):
             language=cfg.language,
             compute_type=cfg.compute_type,
             cpu_threads=cfg.cpu_threads,
+            device=getattr(cfg, "qwen_device", "auto"),
         )
     return WhisperEngine(
         cfg.model,

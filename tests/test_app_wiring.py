@@ -360,3 +360,30 @@ class TestBackendWiring:
         src = inspect.getsource(cli)
         assert "build_engine(cfg)" in src
         assert "QwenEngine(cfg.model, language=cfg.language)" not in src
+
+
+class TestQwenDeviceWiring:
+    """qwen-xpu B4: build_engine passes cfg.qwen_device to QwenEngine."""
+
+    def test_default_passes_auto(self) -> None:
+        from stt_button.app import build_engine
+        from stt_button.config import config_from_mapping
+        e = build_engine(config_from_mapping({"backend": "qwen", "compute_type": "bfloat16"}))
+        assert e.device == "auto"
+
+    def test_cpu_passed_through(self) -> None:
+        from stt_button.app import build_engine
+        from stt_button.config import config_from_mapping
+        e = build_engine(config_from_mapping(
+            {"backend": "qwen", "compute_type": "bfloat16", "qwen_device": "cpu"}))
+        assert e.device == "cpu"
+
+    def test_build_does_not_import_torch(self) -> None:
+        import subprocess
+        import sys
+        code = ("import sys\nfrom stt_button.app import build_engine\n"
+                "from stt_button.config import config_from_mapping\n"
+                "build_engine(config_from_mapping({'backend':'qwen','compute_type':'bfloat16',"
+                "'qwen_device':'xpu'}))\nprint('torch' in sys.modules)")
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+        assert out.stdout.strip() == "False"
