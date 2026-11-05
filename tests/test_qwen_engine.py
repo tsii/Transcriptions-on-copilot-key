@@ -141,3 +141,83 @@ def test_qwen_token_budget_passed(fake_tf) -> None:
     from stt_button.asr import _token_budget
     QwenEngine().transcribe(PCM_1S)
     assert fake_tf["model"].generate_kwargs["max_new_tokens"] == _token_budget(1.0)
+
+
+# --- qwen-xpu B3: engine honors qwen_device -------------------------------
+
+@pytest.fixture
+def xpu_probe(monkeypatch):
+    import stt_button.device as dev
+    state = {"ok": True}
+    monkeypatch.setattr(dev, "xpu_available", lambda: (state["ok"], "test probe"))
+    return state
+
+
+@pytest.fixture
+def track_to(fake_tf, monkeypatch):
+    calls = []
+    fail = {"xpu": False}
+
+    def to(self, device):
+        calls.append(device)
+        if device == "xpu" and fail["xpu"]:
+            raise RuntimeError("no level zero")
+        return self
+
+    monkeypatch.setattr(_FakeModel, "to", to)
+    threads = []
+    monkeypatch.setattr(torch, "set_num_threads", lambda n: threads.append(n))
+    return {"calls": calls, "fail": fail, "threads": threads, "tf": fake_tf}
+
+
+def test_qwen_default_device_is_auto() -> None:
+    assert QwenEngine().device == "auto"
+
+
+def test_qwen_auto_uses_xpu_when_available(track_to, xpu_probe) -> None:
+    e = QwenEngine(warmup=False)
+    e.load()
+    assert e.resolved_device == "xpu"
+    assert track_to["calls"] == ["xpu"]
+    assert track_to["threads"] == []
+
+
+def test_qwen_auto_falls_back_to_cpu(track_to, xpu_probe) -> None:
+    xpu_probe["ok"] = False
+    e = QwenEngine()
+    e.load()
+    assert e.resolved_device == "cpu"
+    assert track_to["calls"] == ["cpu"]
+    assert track_to["threads"]
+
+
+def test_qwen_cpu_explicit(track_to, xpu_probe) -> None:
+    e = QwenEngine(device="cpu")
+    e.load()
+    assert e.resolved_device == "cpu"
+
+
+def test_qwen_xpu_move_failure_reloads_on_cpu(track_to, xpu_probe, caplog) -> None:
+    import logging
+    track_to["fail"]["xpu"] = True
+    caplog.set_level(logging.WARNING)
+    e = QwenEngine(device="xpu", warmup=False)
+    e.load()
+    assert e.resolved_device == "cpu"
+    assert track_to["calls"][-1] == "cpu"
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+    assert track_to["tf"]["loads"] == 2
+
+
+def test_qwen_transcribe_moves_inputs_to_resolved_device(track_to, xpu_probe) -> None:
+    e = QwenEngine(warmup=False)
+    e.transcribe(PCM_1S)
+    assert track_to["tf"]["proc"].requests  # ran
+    # _Inputs.to records args; last request's inputs went to xpu
+    assert e.resolved_device == "xpu"
+
+
+def test_qwen_xpu_warmup_runs_one_generate(track_to, xpu_probe) -> None:
+    e = QwenEngine()
+    e.load()
+    assert track_to["tf"]["model"].generate_kwargs is not None

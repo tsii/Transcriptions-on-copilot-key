@@ -431,7 +431,7 @@ QWEN_DEFAULT_REVISION = "bcd2b5b7f32b480ab5790554cfa8347f246a14f3"
 
 
 class QwenEngine:
-    """Transcribes with Qwen3-ASR (transformers, CPU-only).
+    """Transcribes with Qwen3-ASR (transformers; Intel XPU or CPU).
 
     Qwen3-ASR-1.7B is a multimodal model that runs natively through
     ``AutoModelForMultimodalLM`` + ``apply_transcription_request``.
@@ -458,7 +458,8 @@ class QwenEngine:
         language: str = "auto",
         compute_type: str = "bfloat16",
         cpu_threads: int | None = None,
-        device: str = "cpu",
+        device: str = "auto",
+        warmup: bool = True,
     ) -> None:
         if compute_type not in self._DTYPES:
             raise ValueError(
@@ -469,7 +470,11 @@ class QwenEngine:
         self.language = language
         self.compute_type = compute_type
         self.cpu_threads = cpu_threads or (os.cpu_count() or 4)
+        #: Requested device ("auto" | "xpu" | "cpu"), see stt_button.device.
         self.device = device
+        #: Concrete torch device after load() ("xpu" or "cpu").
+        self.resolved_device: str | None = None
+        self.warmup = warmup
         self._model = None
         self._processor = None
 
@@ -478,22 +483,47 @@ class QwenEngine:
         return self._model is not None
 
     def load(self) -> None:
-        """Loads the model and processor (idempotent)."""
+        """Loads the model and processor (idempotent).
+
+        Resolves ``device`` (auto/xpu/cpu) lazily; an unusable XPU falls
+        back to CPU with a log line and never raises.
+        """
         if self._model is not None:
             return
         import torch
         from transformers import AutoModelForMultimodalLM, AutoProcessor
 
-        log.info("Loading Qwen3-ASR model %s (%s) ...", self.model, self.compute_type)
+        from stt_button import device as _device
+
+        target = _device.resolve_qwen_device(self.device, probe=_device.xpu_available)
+        log.info("Loading Qwen3-ASR model %s (%s) on %s ...",
+                 self.model, self.compute_type, target)
         pin = {"revision": QWEN_DEFAULT_REVISION} if self.model == QWEN_DEFAULT_MODEL else {}
         dtype = torch.bfloat16 if self.compute_type == "bfloat16" else torch.float32
         self._processor = AutoProcessor.from_pretrained(self.model, **pin)
-        self._model = AutoModelForMultimodalLM.from_pretrained(
-            self.model, dtype=dtype, **pin
-        ).to(self.device).eval()
-        if self.device == "cpu":
+
+        def _load_on(dev: str):
+            return AutoModelForMultimodalLM.from_pretrained(
+                self.model, dtype=dtype, **pin
+            ).to(dev).eval()
+
+        try:
+            model = _load_on(target)
+        except Exception as exc:  # noqa: BLE001
+            if target == "cpu":
+                raise
+            log.warning("Qwen3-ASR: moving model to %s failed (%r), reloading on CPU",
+                        target, exc)
+            target = "cpu"
+            model = _load_on(target)
+        self._model = model
+        self.resolved_device = target
+        if target == "cpu":
             torch.set_num_threads(self.cpu_threads)
-        log.info("Qwen3-ASR model loaded.")
+        elif self.warmup:
+            # Pay the XPU kernel-JIT cost at startup, not on first dictation.
+            self.transcribe(b"\x00\x00" * 8000)
+        log.info("Qwen3-ASR model loaded on %s.", target)
 
     def transcribe(
         self, data: bytes, initial_prompt: str = ""
@@ -519,7 +549,7 @@ class QwenEngine:
                 w.writeframes((np.clip(audio, -1, 1) * 32767).astype(np.int16).tobytes())
             inputs = self._processor.apply_transcription_request(
                 audio=f.name
-            ).to(self.device, self._model.dtype)
+            ).to(self.resolved_device, self._model.dtype)
             output_ids = self._model.generate(
                 **inputs, max_new_tokens=_token_budget(len(data) / (16000 * 2))
             )
