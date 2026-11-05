@@ -20,6 +20,7 @@ DEFAULT_CONFIG_PATH = CONFIG_DIR / "config.toml"
 VALID_LANGUAGES = ("de", "en", "auto")
 VALID_TYPERS = ("wtype", "clipboard", "dotool")
 VALID_BACKENDS = ("whisper", "parakeet", "qwen")
+VALID_QWEN_DEVICES = ("auto", "xpu", "cpu")
 #: Default model id per backend (used when backend="qwen" keeps the Parakeet id).
 PARAKEET_DEFAULT_MODEL = "nvidia/parakeet-tdt-0.6b-v3"
 QWEN_DEFAULT_MODEL = "Qwen/Qwen3-ASR-1.7B-hf"
@@ -73,6 +74,9 @@ class Config:
     language: str = "auto"
     compute_type: str = "int8"
     cpu_threads: int = field(default_factory=lambda: os.cpu_count() or 4)
+    #: Compute device for backend "qwen": "auto" (Intel XPU if usable,
+    #: else CPU), "xpu" (warns + falls back to CPU) or "cpu".
+    qwen_device: str = "auto"
     # --- Streaming ---------------------------------------------------------
     #: Streaming mode: "windowed" (windows + timestamp commit),
     #: "whole_buffer" (old approach, whole buffer re-transcribed) or
@@ -236,6 +240,11 @@ class Config:
         if self.backend not in VALID_BACKENDS:
             raise ConfigError(
                 f"backend must be one of {VALID_BACKENDS}, is {self.backend!r}"
+            )
+        if self.qwen_device not in VALID_QWEN_DEVICES:
+            raise ConfigError(
+                f"qwen_device must be one of {VALID_QWEN_DEVICES}, "
+                f"is {self.qwen_device!r}"
             )
         if self.backend == "qwen":
             _validate_qwen(self)

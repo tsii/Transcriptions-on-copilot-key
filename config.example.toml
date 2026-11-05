@@ -20,6 +20,7 @@ backend = "parakeet"           # "parakeet" (NVIDIA TDT, fast) or "whisper"
 model = "nvidia/parakeet-tdt-0.6b-v3"   # for backend=whisper: "large-v3-turbo"
 language = "auto"             # Parakeet detects DE/EN automatically
 compute_type = "float32"     # parakeet: float32 (CPU); whisper: int8
+# qwen_device = "auto"       # only for backend="qwen": auto (Intel Arc XPU if usable, else CPU) | xpu | cpu
 cpu_threads = 8
 
 # --- Output -----------------------------------------------------------

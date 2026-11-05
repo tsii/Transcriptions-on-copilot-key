@@ -570,3 +570,27 @@ class TestQwenDirectConstruction:
         cfg2.validate()  # valid; still no model mutation (mapping does the switch)
         assert cfg2.model == PARAKEET_DEFAULT_MODEL
         assert cfg2.model != QWEN_DEFAULT_MODEL
+
+
+class TestQwenDeviceConfig:
+    """qwen-xpu B2: qwen_device key (auto|xpu|cpu)."""
+
+    def test_default_is_auto_and_backend_stays_parakeet(self) -> None:
+        cfg = Config()
+        assert cfg.qwen_device == "auto"
+        assert cfg.backend == "parakeet"
+
+    def test_invalid_value_rejected(self) -> None:
+        from stt_button.config import config_from_mapping
+        with pytest.raises(ConfigError):
+            config_from_mapping({"qwen_device": "gpu"})
+
+    @pytest.mark.parametrize("dev", ["auto", "xpu", "cpu"])
+    def test_toml_roundtrip(self, tmp_path: Path, dev: str) -> None:
+        p = tmp_path / "c.toml"
+        p.write_text(f'backend = "qwen"\ncompute_type = "bfloat16"\nqwen_device = "{dev}"\n')
+        assert load_config(p).qwen_device == dev
+
+    def test_example_documents_key(self) -> None:
+        text = (Path(__file__).resolve().parent.parent / "config.example.toml").read_text()
+        assert "qwen_device" in text
