@@ -168,3 +168,171 @@ class SummaryBuffer:
         self._chunks = []
         self._last_ts = None
         self._last_identity = None
+
+
+#: Statuses returned by :func:`apply_summary` / :func:`undo_summary`.
+APPLY_TYPED = "typed"
+APPLY_PASTED = "pasted"
+APPLY_PASTED_FALLBACK = "pasted_fallback"
+UNDO_NOT_FOUND = "undo_not_found"
+UNDO_DONE = "undone"
+ABORTED = "aborted"
+FAILED = "failed"
+
+#: Paste threshold (mirrors config.summary_paste_min_chars).
+DEFAULT_PASTE_MIN_CHARS = 40
+
+
+@dataclass(frozen=True)
+class ApplyResult:
+    """Frozen result of :func:`apply_summary` / :func:`undo_summary` (B6).
+
+    One object carries both channels: the outcome for the caller
+    (``ok``/``status``/``reason``) and the exact undo bookkeeping
+    (``removed_text``/``inserted_text``/``mode``). Privacy rule D5: the
+    texts themselves never reach the journal, so ``__repr__`` only
+    reports character lengths and a truncated sha1 over both texts.
+    """
+
+    ok: bool
+    status: str
+    mode: str
+    removed_text: str
+    inserted_text: str
+    reason: Optional[str]
+
+    def __repr__(self) -> str:
+        digest = hashlib.sha1(
+            (self.removed_text + "\x00" + self.inserted_text).encode()
+        ).hexdigest()[:8]
+        return (
+            "ApplyResult(ok=%r, status=%r, mode=%r, reason=%r, "
+            "removed_len=%d, inserted_len=%d, sha1=%s)"
+            % (self.ok, self.status, self.mode, self.reason,
+               len(self.removed_text), len(self.inserted_text), digest)
+        )
+
+
+def _restore(restore_clipboard: Callable[[], None],
+             restore_primary: Callable[[], None]) -> None:
+    """Restore clipboard first, then primary selection (both, in order)."""
+    restore_clipboard()
+    restore_primary()
+
+
+def _put(text: str, n: int, *, typer, paster,
+         paste_min_chars: int) -> tuple[str, str, Optional[str]]:
+    """Replace ``n`` characters with ``text``: type or paste (B6).
+
+    Short output goes through :meth:`backspace_and_type` with a separate
+    trailing space key - the ``type`` payload itself never carries a
+    synthetic trailing space (G24). Long output goes through
+    ``paste_combined``; if that is not possible (``False``), the fallback
+    is to type the text via ``backspace_and_type`` (plan decision (c):
+    ``pasted_fallback`` carries ``mode="typed"``).
+
+    Returns ``(status, mode, reason)``; ``status`` is ``None`` on error
+    and ``reason`` is then ``"typer_error"`` or ``"paster_error"``.
+    Never raises.
+    """
+    if len(text) < paste_min_chars:
+        try:
+            typer.backspace_and_type(n, text, trailing_key="space")
+        except Exception:  # noqa: BLE001 - contract: never raise outward
+            return "", "", "typer_error"
+        return APPLY_TYPED, "typed", None
+    try:
+        combined = paster.paste_combined(text, backspaces=n)
+    except Exception:  # noqa: BLE001
+        return "", "", "paster_error"
+    if combined:
+        return APPLY_PASTED, "pasted", None
+    try:
+        typer.backspace_and_type(n, text, trailing_key="space")
+    except Exception:  # noqa: BLE001
+        return "", "", "typer_error"
+    return APPLY_PASTED_FALLBACK, "typed", None
+
+
+def apply_summary(
+    replacement_text: str,
+    *,
+    original_text: str,
+    n: int,
+    typer,
+    paster,
+    restore_clipboard: Callable[[], None],
+    restore_primary: Callable[[], None],
+    paste_min_chars: int = DEFAULT_PASTE_MIN_CHARS,
+) -> ApplyResult:
+    """Replace the located block (``n`` chars) with the summary text.
+
+    Returns an :class:`ApplyResult` whose ``removed_text``/
+    ``inserted_text`` carry the exact undo bookkeeping for a later
+    :func:`undo_summary`. Never raises and never reports ``ok=True``
+    after an error (contract D5). Clipboard and primary selection are
+    restored in EVERY branch, clipboard first.
+    """
+    try:
+        status, mode, reason = _put(replacement_text, n, typer=typer,
+                                    paster=paster,
+                                    paste_min_chars=paste_min_chars)
+    finally:
+        _restore(restore_clipboard, restore_primary)
+    if reason is not None:  # typer_error / paster_error
+        return ApplyResult(ok=False, status=FAILED, mode="",
+                           removed_text="", inserted_text="", reason=reason)
+    digest = hashlib.sha1(replacement_text.encode()).hexdigest()[:8]
+    log.info("summary applied: replaced=%d repl_len=%d sha1=%s",
+             n, len(replacement_text), digest)
+    return ApplyResult(ok=True, status=status, mode=mode,
+                       removed_text=original_text,
+                       inserted_text=replacement_text, reason=None)
+
+
+def undo_summary(
+    result: ApplyResult,
+    *,
+    read_text: str,
+    typer,
+    paster,
+    restore_clipboard: Callable[[], None],
+    restore_primary: Callable[[], None],
+    paste_min_chars: int = DEFAULT_PASTE_MIN_CHARS,
+) -> ApplyResult:
+    """Undo an applied summary by re-typing the original block.
+
+    Takes the :class:`ApplyResult` returned by :func:`apply_summary` and
+    swaps ``removed_text``/``inserted_text`` back. The undo only fires
+    when the current field content (``read_text``) ends with the inserted
+    text (endsuffix proof). Without that proof nothing is typed or
+    deleted (``ok=False``, ``status="aborted"``, ``reason="undo_not_found"``);
+    only the clipboard/primary restore runs (in every branch, clipboard
+    first). Never raises.
+    """
+    if not read_text.endswith(result.inserted_text):
+        log.info("summary undo: replacement not at end - aborted")
+        try:
+            _restore(restore_clipboard, restore_primary)
+        finally:
+            pass
+        return ApplyResult(ok=False, status=ABORTED, mode="",
+                           removed_text="", inserted_text="",
+                           reason=UNDO_NOT_FOUND)
+    try:
+        status, mode, reason = _put(result.removed_text,
+                                   len(result.inserted_text),
+                                   typer=typer, paster=paster,
+                                   paste_min_chars=paste_min_chars)
+    finally:
+        _restore(restore_clipboard, restore_primary)
+    if reason is not None:  # typer_error / paster_error
+        return ApplyResult(ok=False, status=FAILED, mode="",
+                           removed_text="", inserted_text="", reason=reason)
+    digest = hashlib.sha1(result.removed_text.encode()).hexdigest()[:8]
+    log.info("summary undone: repl=%d orig_len=%d sha1=%s status=%s",
+             len(result.inserted_text), len(result.removed_text),
+             digest, status)
+    return ApplyResult(ok=True, status=UNDO_DONE, mode=mode,
+                        removed_text=result.inserted_text,
+                        inserted_text=result.removed_text, reason=None)
