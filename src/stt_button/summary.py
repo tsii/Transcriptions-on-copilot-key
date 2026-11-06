@@ -453,6 +453,10 @@ FOCUS_NOT_EDITABLE = "focus_not_editable"
 #: Abort reason when neither selection nor field read yields work (D4).
 NOTHING_TO_DO = "nothing_to_do"
 
+#: Abort reason when the D3 field roundtrip read comes back empty or
+#: is denied (B9b, plan line 134): not silent, it plays the error tone.
+EMPTY_READ = "empty_read"
+
 #: Focus classifications that block every emission (plan lines 66-72):
 #: in a terminal ctrl+shift+Home is a terminal keybinding, and without a
 #: reachable window there is nothing editable to act on at all.
@@ -772,13 +776,15 @@ class SummaryCoordinator:
         # D3 roundtrip: select to field start, read, then clean up with
         # `key right` so no selection state remains in the field.
         typer.key("ctrl+shift+Home")
-        read = clip.read_clipboard()
+        read = clip.read_primary()
         typer.key("right")
         if not read:
             restore()
+            # An empty/denied roundtrip read is not silent (plan 134/272).
+            self._play_busy_sound()
             return ApplyResult(ok=False, status=ABORTED, mode="",
                                removed_text="", inserted_text="",
-                               reason=NOTHING_TO_DO)
+                               reason=EMPTY_READ)
         location = locate_block(
             chunks, read,
             summary_max_gap_chars=int(getattr(

@@ -299,8 +299,8 @@ def test_d3_roundtrip_ends_with_key_right_when_aborted():
     ctrl = FakeController([False])
     typer, paster = FakeTyper(), FakePaster()
     # read ends NOT with the anchor -> caret_not_at_end abort
-    clip = FakeClipboard(clipboard_texts=["old clip", "anchor typed-on"],
-                         primary_texts=[""])
+    clip = FakeClipboard(clipboard_texts=["old clip"],
+                         primary_texts=["", "anchor typed-on"])
     coord, clock, sleeper, sounds = _make_coord(
         ctrl, focus=FakeFocus("other"), clipboard=clip,
         typer=typer, paster=paster)
@@ -324,8 +324,8 @@ def test_d3_roundtrip_mutates_block_after_key_right():
     ctrl = FakeController([False])
     typer, paster = FakeTyper(), FakePaster()
     read = "pre anchor one anchor two"  # ends with the last anchor
-    clip = FakeClipboard(clipboard_texts=["old clip", read],
-                         primary_texts=[""])
+    clip = FakeClipboard(clipboard_texts=["old clip"],
+                         primary_texts=["", read])
     coord, clock, sleeper, sounds = _make_coord(
         ctrl, focus=FakeFocus("other"), clipboard=clip,
         typer=typer, paster=paster)
@@ -336,12 +336,55 @@ def test_d3_roundtrip_mutates_block_after_key_right():
 
     assert result is not None and result.ok is True
     assert result.status == "typed"
-    assert result.removed_text == "anchor one anchor two"
-    # roundtrip: ctrl+shift+Home -> read -> key right, THEN mutation
-    assert typer.keys == ["ctrl+shift+Home", "right"]
-    assert len(typer.calls) == 1
-    n, text, trailing = typer.calls[0]
-    assert n == len("anchor one anchor two")
-    assert text == "new summary"
     assert clip.writes[0] == ("clipboard", "old clip")
     assert sounds == []
+
+
+def test_d3_roundtrip_reads_primary_not_clipboard():
+    ctrl = FakeController([False])
+    typer, paster = FakeTyper(), FakePaster()
+    read = "pre anchor one anchor two"
+    # roundtrip read must come from PRIMARY; clipboard only holds the
+    # pre-flow snapshot and is never popped for the roundtrip
+    clip = FakeClipboard(clipboard_texts=["old clip"],
+                         primary_texts=["", read])
+    coord, clock, sleeper, sounds = _make_coord(
+        ctrl, focus=FakeFocus("other"), clipboard=clip,
+        typer=typer, paster=paster)
+
+    coord.submit_apply("new summary",
+                       [chunk("anchor one"), chunk("anchor two")])
+    result = coord.wait_for_result(timeout=5)
+
+    assert result is not None and result.ok is True
+    assert result.status == "typed"
+    assert typer.keys == ["ctrl+shift+Home", "right"]
+    assert clip.reads.count("clipboard") == 1  # snapshot only
+    assert clip.reads.count("primary") == 2  # D4 check + roundtrip
+    assert sounds == []
+
+
+def test_d3_roundtrip_empty_read_aborts_with_empty_read_and_tone():
+    ctrl = FakeController([False])
+    typer, paster = FakeTyper(), FakePaster()
+    clip = FakeClipboard(clipboard_texts=["old clip"],
+                         primary_texts=[""])
+    coord, clock, sleeper, sounds = _make_coord(
+        ctrl, focus=FakeFocus("other"), clipboard=clip,
+        typer=typer, paster=paster)
+
+    coord.submit_apply("new summary", [chunk("anchor")])
+    result = coord.wait_for_result(timeout=5)
+
+    assert result is not None and result.ok is False
+    assert result.status == "aborted"
+    assert result.mode == ""
+    assert result.reason == "empty_read"
+    # cleanup still happened and the last emitted act is `key right`
+    assert typer.keys == ["ctrl+shift+Home", "right"]
+    assert typer.calls == []
+    assert paster.calls == []
+    assert clip.writes[0] == ("clipboard", "old clip")
+    # not silent: exactly one error tone
+    assert len(sounds) == 1
+    assert sounds[0] == ("you_lose", 24000)
