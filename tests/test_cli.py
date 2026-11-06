@@ -217,3 +217,102 @@ class TestCapsDiagnose:
         )
         monkeypatch.setattr("stt_button.typing._capslock_state", lambda: "an")
         assert _cmd_caps_diagnose(_args(tmp_path / "config.toml")) == 0
+
+# --- B11a: summary-models + summary-test ----------------------------------
+
+from stt_button.config import load_config
+from stt_button.summary import SummaryCoordinator
+from stt_button.__main__ import _cmd_summary_models, _cmd_summary_test
+
+FALLBACK_MODELS = [
+    "my-qwen38-flash-next",
+    "work-sipgate-coding-flash",
+    "work-zai-org-glm-5.3-flash",
+    "work-deepseek-ai-deepseek-v4.1-flash-1017-verda",
+]
+
+
+def _summary_config(tmp_path: Path, model: str = "my-qwen38-flash-next") -> Path:
+    p = tmp_path / "config.toml"
+    p.write_text(f'summary_model = "{model}"\n')
+    return p
+
+
+def _models_args(config: Path, set_id: str | None = None) -> argparse.Namespace:
+    return argparse.Namespace(config=str(config), set=set_id)
+
+
+class TestSummaryModelsCli:
+    def test_live_list_marks_active_and_filters_400_name(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(
+            "stt_button.__main__._fetch_summary_models",
+            lambda base, token: ["my-qwen38-flash-next", "work-other",
+                                 "qwen38-flash-ext", "my/qwen38-flash-ext"],
+        )
+        rc = _cmd_summary_models(_models_args(_summary_config(tmp_path)))
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "work-other" in out
+        assert "qwen38-flash-ext" not in out
+        active = [l for l in out.splitlines() if "<- aktiv" in l]
+        assert active and "my-qwen38-flash-next" in active[0]
+
+    def test_network_error_falls_back_to_measured_four(
+            self, tmp_path, monkeypatch, capsys):
+        def boom(base, token):
+            raise OSError("network down")
+        monkeypatch.setattr("stt_button.__main__._fetch_summary_models", boom)
+        rc = _cmd_summary_models(_models_args(_summary_config(tmp_path)))
+        out = capsys.readouterr().out
+        assert rc == 0
+        for name in FALLBACK_MODELS:
+            assert name in out
+        assert "Traceback" not in out
+
+    def test_set_writes_and_roundtrips_via_load_config(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(
+            "stt_button.__main__._fetch_summary_models",
+            lambda base, token: FALLBACK_MODELS,
+        )
+        cfg_path = _summary_config(tmp_path)
+        rc = _cmd_summary_models(_models_args(cfg_path, set_id="work-sipgate-coding-flash"))
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "work-sipgate-coding-flash" in out  # roundtrip evidence
+        assert load_config(cfg_path).summary_model == "work-sipgate-coding-flash"
+
+
+class TestSummaryTestCli:
+    def test_dry_run_prints_without_submit(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.delenv("STT_SUMMARY_REAL", raising=False)
+        calls = []
+        monkeypatch.setattr(SummaryCoordinator, "submit_summary",
+                            lambda self, text, chunks: calls.append(text))
+        monkeypatch.setattr(SummaryCoordinator, "wait_for_result",
+                            lambda self, timeout=None: calls.append("wait"))
+        rc = _cmd_summary_test(argparse.Namespace(
+            config=str(_summary_config(tmp_path)), text="hallo zusammenfassung"))
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "hallo zusammenfassung" in out
+        assert calls == []  # no gateway, no keys, no sound
+
+    def test_real_env_uses_public_route_only(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("STT_SUMMARY_REAL", "1")
+        calls = []
+        monkeypatch.setattr(SummaryCoordinator, "submit_summary",
+                            lambda self, text, chunks:
+                            calls.append(("submit", text)) or True)
+        monkeypatch.setattr(SummaryCoordinator, "wait_for_result",
+                            lambda self, timeout=None:
+                            calls.append(("wait", timeout)) or "ok")
+        monkeypatch.setattr(SummaryCoordinator, "shutdown", lambda self: None)
+        rc = _cmd_summary_test(argparse.Namespace(
+            config=str(_summary_config(tmp_path)), text="kurzer test"))
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert ("submit", "kurzer test") in calls
+        assert any(c[0] == "wait" for c in calls)

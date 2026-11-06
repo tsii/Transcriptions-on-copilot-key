@@ -10,9 +10,12 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import re
 import subprocess
 import sys
+import urllib.request
 
 from .config import ConfigError, load_config
 from .typing import _capslock_leds, _capslock_state
@@ -23,6 +26,45 @@ def _setup_logging(verbose: bool) -> None:
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+
+# B11a: measured fallback list (brief 2026-11-05, G21). The gateway
+# answers "400 Invalid model name" for "qwen38-flash-ext" - filtered.
+FALLBACK_SUMMARY_MODELS = [
+    "my-qwen38-flash-next",
+    "work-sipgate-coding-flash",
+    "work-zai-org-glm-5.3-flash",
+    "work-deepseek-ai-deepseek-v4.1-flash-1017-verda",
+]
+_BANNED_SUMMARY_MODELS = {"qwen38-flash-ext", "my/qwen38-flash-ext"}
+
+
+def _fetch_summary_models(base_url: str, token: str) -> list[str]:
+    """Live model list from ``GET {base_url}/models`` (timeout 3 s)."""
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/models", headers=headers)
+    with urllib.request.urlopen(req, timeout=3) as resp:
+        data = json.loads(resp.read().decode())
+    ids = [m.get("id") for m in data.get("data", [])]
+    return [m for m in ids if m]
+
+
+def _write_summary_model(path, model: str) -> None:
+    """Persist ``summary_model`` into the TOML config (line-based)."""
+    from pathlib import Path
+
+    target = Path(path)
+    text = target.read_text() if target.is_file() else ""
+    pattern = re.compile(r"^\s*summary_model\s*=.*$", re.MULTILINE)
+    if pattern.search(text):
+        text = pattern.sub(f'summary_model = "{model}"', text, count=1)
+    else:
+        text = text.rstrip("\n") + f'\nsummary_model = "{model}"\n'
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text)
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
@@ -384,6 +426,71 @@ def _cmd_bootstrap(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_summary_models(args: argparse.Namespace) -> int:
+    """List summary models (live, with measured fallback) / --set <id>."""
+    from .config import DEFAULT_CONFIG_PATH
+
+    cfg = load_config(args.config)
+    try:
+        fetched = _fetch_summary_models(cfg.summary_base_url, cfg.summary_token)
+        source = "live"
+    except Exception:
+        fetched = FALLBACK_SUMMARY_MODELS
+        source = "fallback (network error)"
+    models = [m for m in fetched if m not in _BANNED_SUMMARY_MODELS]
+
+    if args.set is not None:
+        if args.set not in models:
+            print(f"Unknown model: {args.set}", file=sys.stderr)
+            print("Choose one of:\n  " + "\n  ".join(models), file=sys.stderr)
+            return 1
+        path = args.config or DEFAULT_CONFIG_PATH
+        _write_summary_model(path, args.set)
+        cfg2 = load_config(args.config)
+        print(f"summary_model = {cfg2.summary_model} (read back via load_config)")
+        return 0
+
+    print(f"Summary models ({source}) - active: {cfg.summary_model}")
+    for m in models:
+        mark = "  <- aktiv" if m == cfg.summary_model else ""
+        print(f"  {m}{mark}")
+    return 0
+
+
+def _cmd_summary_test(args: argparse.Namespace) -> int:
+    """Test the summary route - dry-run unless STT_SUMMARY_REAL=1."""
+    import os
+
+    cfg = load_config(args.config)
+    if os.environ.get("STT_SUMMARY_REAL") != "1":
+        print(f"[summary-test] dry-run (gateway only with STT_SUMMARY_REAL=1), "
+              f"model={cfg.summary_model}, len={len(args.text)}")
+        print(args.text)
+        return 0
+
+    from .summary import SummaryClient, SummaryCoordinator
+
+    client = SummaryClient(
+        base_url=cfg.summary_base_url,
+        token=cfg.summary_token,
+        model=cfg.summary_model,
+        timeout_s=cfg.summary_timeout_s,
+        max_chars=cfg.summary_max_read_chars,
+    )
+    coord = SummaryCoordinator(None, cfg, client=client)
+    try:
+        ok = coord.submit_summary(args.text, [])
+        result = coord.wait_for_result()
+    finally:
+        coord.shutdown()
+    print(f"submit_summary -> {ok}")
+    if result is None:
+        print("wait_for_result -> no result (timeout)")
+        return 1
+    print(f"wait_for_result -> {result}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="stt-button",
                                       description="Push-to-talk dictation (Whisper)")
@@ -442,6 +549,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_diag = sub.add_parser("caps-diagnose",
                             help="diagnose CapsLock LEDs per device + target state")
     p_diag.set_defaults(func=_cmd_caps_diagnose)
+
+    p_sum = sub.add_parser("summary-models",
+                           help="list summary models (live/fallback), --set <id>")
+    p_sum.add_argument("--set", metavar="ID", default=None,
+                       help="set summary_model to ID and read it back")
+    p_sum.set_defaults(func=_cmd_summary_models)
+
+    p_stest = sub.add_parser("summary-test", help="test summary route (dry-run)")
+    p_stest.add_argument("text", help="text to summarize")
+    p_stest.set_defaults(func=_cmd_summary_test)
 
     return parser
 
