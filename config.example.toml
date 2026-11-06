@@ -108,3 +108,25 @@ focus_unknown_fallback = "copy"
 # typing them (~35 ms/char via dotool). Overwrites the clipboard. Terminal
 # and unknown focus never paste. 0 (default) = disabled, always type.
 final_paste_min_chars = 0
+
+# --- Summary mode (B1) ------------------------------------------------------
+# Privacy master switch: summary mode reads back the focused window and
+# sends text to a gateway - default OFF, nothing happens unless you
+# enable it here. All keys are inert while summary_enabled = false.
+# Measurement note (2026-11): the model id "my/qwen38-flash-ext"
+# returns HTTP 400 at the gateway; use "my-qwen38-flash-next".
+summary_enabled = false
+summary_base_url = "http://172.28.8.10:9000/v1"
+summary_token = ""               # gateway needs no token (G21)
+summary_model = "my-qwen38-flash-next"
+summary_timeout_s = 12
+summary_max_chars = 4000         # max chars of the model answer
+summary_max_read_chars = 20000    # max chars read back from the window
+summary_max_gap_chars = 2000     # max interior chars between anchor and block
+summary_paste_min_chars = 40     # min chars for clipboard-based output
+summary_session_idle_s = 600     # idle time after which the session resets
+summary_undo_ttl_s = 300         # TTL of the undo entry
+summary_press_max_s = 0.35       # max hold time (s) of a "short" press
+summary_gap_max_s = 0.35         # max gap (s) between release and 2nd press
+summary_error_sound = "you_lose" # freedesktop sound on summary errors; '' = off
+summary_error_sound_volume = 24000  # paplay permille (0..65536)

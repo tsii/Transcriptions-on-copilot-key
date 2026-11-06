@@ -211,6 +211,42 @@ class Config:
     #: focus is confirmed non-terminal (0 = disabled, always type).
     final_paste_min_chars: int = 0
 
+    # --- Summary mode (B1, plan_summary_mode_v2) --------------------------
+    #: Privacy master switch for summary mode. Default False: nothing
+    #: is read, summarized or sent unless explicitly enabled.
+    summary_enabled: bool = False
+    #: OpenAI-compatible gateway endpoint (chat/completions).
+    summary_base_url: str = "http://172.28.8.10:9000/v1"
+    #: Gateway token; empty = no Authorization header (G21).
+    summary_token: str = ""
+    #: Model id for the summary gateway. Measurement note: the earlier
+    #: "my/qwen38-flash-ext" returns HTTP 400 at the gateway, hence
+    #: the "-next" variant (operator choice O1).
+    summary_model: str = "my-qwen38-flash-next"
+    #: HTTP timeout for the summary request in seconds.
+    summary_timeout_s: int = 12
+    #: Maximum characters of the model answer.
+    summary_max_chars: int = 4000
+    #: Maximum characters read back from the focused window.
+    summary_max_read_chars: int = 20000
+    #: Maximum "interior" characters between anchor and block end.
+    summary_max_gap_chars: int = 2000
+    #: Minimum characters for a paste-based summary output.
+    summary_paste_min_chars: int = 40
+    #: Idle time (seconds) after which the session buffer resets.
+    summary_session_idle_s: int = 600
+    #: TTL (seconds) of the undo entry.
+    summary_undo_ttl_s: int = 300
+    #: Maximum hold time (seconds) of a press that still counts as
+    #: "short" for the double-press gesture.
+    summary_press_max_s: float = 0.35
+    #: Maximum gap (seconds) between release and the second press.
+    summary_gap_max_s: float = 0.35
+    #: freedesktop sound name on summary errors; '' = off.
+    summary_error_sound: str = "you_lose"
+    #: Volume of the error signal as paplay permille (0..65536).
+    summary_error_sound_volume: int = 24000
+
     def validate(self) -> None:
         if self.focus_unknown_fallback not in ("copy", "type"):
             raise ConfigError(
@@ -219,6 +255,21 @@ class Config:
             )
         if self.final_paste_min_chars < 0:
             raise ConfigError("final_paste_min_chars must be >= 0")
+        if self.summary_timeout_s <= 0:
+            raise ConfigError("summary_timeout_s must be greater than 0")
+        for key in ("summary_max_chars", "summary_max_read_chars",
+                    "summary_max_gap_chars", "summary_paste_min_chars",
+                    "summary_session_idle_s", "summary_undo_ttl_s"):
+            if getattr(self, key) < 0:
+                raise ConfigError(f"{key} must not be negative")
+        for key in ("summary_press_max_s", "summary_gap_max_s"):
+            if getattr(self, key) <= 0:
+                raise ConfigError(f"{key} must be greater than 0")
+        if not 0 <= self.summary_error_sound_volume <= 65536:
+            raise ConfigError(
+                "summary_error_sound_volume must be within 0..65536, "
+                f"is {self.summary_error_sound_volume}"
+            )
         if self.max_queue_depth < 1:
             raise ConfigError("max_queue_depth must be >= 1")
         if self.done_sound_mode not in ("terminal", "always"):

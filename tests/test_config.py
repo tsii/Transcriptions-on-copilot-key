@@ -594,3 +594,57 @@ class TestQwenDeviceConfig:
     def test_example_documents_key(self) -> None:
         text = (Path(__file__).resolve().parent.parent / "config.example.toml").read_text()
         assert "qwen_device" in text
+
+
+class TestSummaryModeConfig:
+    """B1: summary mode configuration keys (plan_summary_mode_v2, B1)."""
+
+    SUMMARY_KEYS = {
+        "summary_enabled": False,
+        "summary_base_url": "http://172.28.8.10:9000/v1",
+        "summary_token": "",
+        "summary_model": "my-qwen38-flash-next",
+        "summary_timeout_s": 12,
+        "summary_max_chars": 4000,
+        "summary_max_read_chars": 20000,
+        "summary_max_gap_chars": 2000,
+        "summary_paste_min_chars": 40,
+        "summary_session_idle_s": 600,
+        "summary_undo_ttl_s": 300,
+        "summary_press_max_s": 0.35,
+        "summary_gap_max_s": 0.35,
+        "summary_error_sound": "you_lose",
+        "summary_error_sound_volume": 24000,
+    }
+
+    def test_summary_defaults(self) -> None:
+        cfg = Config()
+        for key, expected in self.SUMMARY_KEYS.items():
+            assert getattr(cfg, key) == expected, key
+        assert Config().summary_enabled is False
+        assert Config().summary_model == "my-qwen38-flash-next"
+        assert Config().summary_token == ""
+        assert Config().summary_press_max_s == 0.35
+
+    def test_summary_error_sound_volume_out_of_range_rejected(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, "summary_error_sound_volume = 70000")
+        with pytest.raises(ConfigError):
+            load_config(p)
+
+    def test_summary_toml_roundtrip(self, tmp_path: Path) -> None:
+        lines = []
+        for key, value in self.SUMMARY_KEYS.items():
+            if isinstance(value, bool):
+                lines.append(f"{key} = {str(value).lower()}")
+            elif isinstance(value, str):
+                lines.append(f'{key} = "{value}"')
+            else:
+                lines.append(f"{key} = {value}")
+        p = write_config(tmp_path, "\n".join(lines))
+        cfg = load_config(p)
+        for key, expected in self.SUMMARY_KEYS.items():
+            assert getattr(cfg, key) == expected, key
+
+    def test_production_defaults_unchanged(self) -> None:
+        cfg = Config()
+        assert cfg.backend == "parakeet"
