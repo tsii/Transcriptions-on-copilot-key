@@ -95,6 +95,12 @@ locally (NVIDIA Parakeet TDT 0.6B, CPU-only, automatic DE+EN).
     `.pi/reports/slowdown_opus.md`.
 
 ### Fixed
+- **Trailing space after sentence punctuation** — when the final text ends
+  with sentence-final punctuation (`. ! ? : ;`), the trailing space is now
+  always delivered as a real `key("space")` keystroke, never only inside
+  pasted clipboard text (many fields trim a pasted trailing space away).
+  Commits `cd580e1` (test) and `18944bf` (typing.py). No-code rollback:
+  `final_paste = false` or `final_paste_min_chars = 0` in the user config.
 - **Focus extension froze on every screen lock/unlock:** GNOME re-enables
   extensions on unlock, and `disable()` passed the object path instead of
   the registration ID to `unregister_object()` while an empty `catch`

@@ -31,7 +31,7 @@ typedelay_ms = 20              # typing speed; raise on modifier hangs (e.g. 30)
 typehold_ms = 15               # key hold time
 capslock_autocorrect = false   # app must NEVER toggle CapsLock unasked (warn only); true = force target state before typing
 capslock_led_inverted = true    # LED semantics of this system (established): true = LED off means CapsLock active; target with autocorrect = LED on
-append_space = true            # space after the dictation
+append_space = true           # space after the dictation; with true, a dictation ending in sentence punctuation (. ! ? : ;) always ends with exactly one space in the target field (delivered as a real keystroke, also when the final text was pasted — fields that trim pasted trailing spaces still receive it); with false nothing is appended
 max_revision_chars = 60
 final_paste = false           # true = final delta pasted via clipboard on finalize instead of typed (throughput)
 paste_key = "ctrl+v"          # insert chord; "ctrl+shift+v" for terminals
