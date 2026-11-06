@@ -6,10 +6,10 @@ no focus/DBus access (that wiring arrives in a later block).
 """
 from __future__ import annotations
 
-import logging
-
 import hashlib
 import logging
+
+import pytest
 
 from stt_button.summary import (
     UNDO_NOT_FOUND,
@@ -421,3 +421,196 @@ class TestB6PrivacyLogging:
             ("geheimer alttext" + "\x00" + "geheimer neutext").encode()
         ).hexdigest()[:8]
         assert digest in rendered
+
+
+class TestSummaryClient:
+    """Tests for SummaryClient.chat() (D6, block B7) - monkeypatched
+    requests.post, NEVER a real network request (D5/plan line 382)."""
+
+    TOKEN = "supersecret-token-xyz"
+    SYSTEM_PROMPT = (
+        "knapp, sachlich, sauber gegliedert; Stil der Vorlage erhalten "
+        "(Du/Sie, lässig/formell); nichts hinzufügen, keine Zahlen "
+        "erfinden; bei Zweifel Vorlage zurückgeben"
+    )
+
+    def _client(self, **overrides):
+        from stt_button.summary import SummaryClient
+        params = dict(
+            base_url="http://gateway.test/v1",
+            token=TestSummaryClient.TOKEN,
+            model="my/test-model",
+            timeout_s=12,
+            max_chars=4000,
+        )
+        params.update(overrides)
+        return SummaryClient(**params)
+
+    @staticmethod
+    def _response(status_code=200, content="kurze antwort"):
+        class _Resp:
+            def __init__(self):
+                self.status_code = status_code
+
+            def json(self):
+                return {"choices": [{"message": {"content": content}}]}
+
+        return _Resp()
+
+    def test_success_returns_answer(self, monkeypatch) -> None:
+        """200 with content -> the text is returned, my/ prefix stripped."""
+        calls = {}
+
+        def fake_post(url, json=None, timeout=None, headers=None):
+            calls.update(url=url, json=json, timeout=timeout, headers=headers)
+            return self._response(content="die antwort")
+
+        monkeypatch.setattr("stt_button.summary.requests.post", fake_post)
+        client = self._client()
+        assert client.chat("diktat text") == "die antwort"
+        assert calls["url"] == "http://gateway.test/v1/chat/completions"
+        payload = calls["json"]
+        assert payload["model"] == "test-model"  # my/ stripped
+        assert payload["temperature"] == 0
+        assert payload["messages"][0]["role"] == "system"
+        assert payload["messages"][0]["content"] == self.SYSTEM_PROMPT
+        assert payload["messages"][1] == {
+            "role": "user", "content": "diktat text"}
+        assert calls["timeout"] == 12
+        assert calls["headers"]["Authorization"] == f"Bearer {self.TOKEN}"
+
+    def test_empty_token_sends_no_auth_header(self, monkeypatch) -> None:
+        """summary_token='' -> no Authorization header at all (G21)."""
+        calls = {}
+
+        def fake_post(url, json=None, timeout=None, headers=None):
+            calls["headers"] = headers
+            return self._response()
+
+        monkeypatch.setattr("stt_button.summary.requests.post", fake_post)
+        self._client(token="").chat("text")
+        assert "Authorization" not in calls["headers"]
+
+    def test_http_400_invalid_model(self, monkeypatch) -> None:
+        """400 'Invalid model name' -> ModelUnavailable."""
+        from stt_button.summary import ModelUnavailable
+
+        monkeypatch.setattr("stt_button.summary.requests.post",
+                            lambda *a, **k: self._response(status_code=400))
+        with pytest.raises(ModelUnavailable):
+            self._client().chat("text")
+
+    def test_timeout(self, monkeypatch) -> None:
+        import requests as _r
+        from stt_button.summary import ModelUnavailable
+
+        def fake_post(*a, **k):
+            raise _r.exceptions.Timeout("too slow")
+
+        monkeypatch.setattr("stt_button.summary.requests.post", fake_post)
+        with pytest.raises(ModelUnavailable):
+            self._client().chat("text")
+
+    def test_connection_error(self, monkeypatch) -> None:
+        import requests as _r
+        from stt_button.summary import ModelUnavailable
+
+        def fake_post(*a, **k):
+            raise _r.exceptions.ConnectionError("dns fail")
+
+        monkeypatch.setattr("stt_button.summary.requests.post", fake_post)
+        with pytest.raises(ModelUnavailable):
+            self._client().chat("text")
+
+    def test_http_500(self, monkeypatch) -> None:
+        from stt_button.summary import ModelUnavailable
+
+        monkeypatch.setattr("stt_button.summary.requests.post",
+                            lambda *a, **k: self._response(status_code=500))
+        with pytest.raises(ModelUnavailable):
+            self._client().chat("text")
+
+    def test_empty_answer(self, monkeypatch) -> None:
+        from stt_button.summary import ModelUnavailable
+
+        monkeypatch.setattr(
+            "stt_button.summary.requests.post",
+            lambda *a, **k: self._response(content=""))
+        with pytest.raises(ModelUnavailable):
+            self._client().chat("text")
+
+    def test_answer_equals_prompt(self, monkeypatch) -> None:
+        """answer == prompt -> model did not work -> ModelUnavailable."""
+        from stt_button.summary import ModelUnavailable
+
+        monkeypatch.setattr(
+            "stt_button.summary.requests.post",
+            lambda *a, **k: self._response(content="diktat text"))
+        with pytest.raises(ModelUnavailable):
+            self._client().chat("diktat text")
+
+    def test_token_never_in_log(self, monkeypatch, caplog) -> None:
+        """The Authorization token NEVER appears in any log line."""
+        import logging as _l
+        import requests as _r
+
+        from stt_button.summary import ModelUnavailable
+
+        def fake_post(*a, **k):
+            raise _r.exceptions.Timeout("boom")
+
+        monkeypatch.setattr("stt_button.summary.requests.post", fake_post)
+        with caplog.at_level(_l.DEBUG, logger="stt_button.summary"):
+            with pytest.raises(ModelUnavailable):
+                self._client().chat("text")
+        assert self.TOKEN not in caplog.text
+
+    def test_long_prompt_truncated_before_request(self, monkeypatch, caplog) -> None:
+        """Prompt > summary_max_chars is truncated BEFORE the request
+        and the truncation is logged (lengths only, D5)."""
+        import logging as _l
+
+        calls = {}
+
+        def fake_post(url, json=None, timeout=None, headers=None):
+            calls["json"] = json
+            return self._response()
+
+        monkeypatch.setattr("stt_button.summary.requests.post", fake_post)
+        long_prompt = "a" * 5000
+        with caplog.at_level(_l.INFO, logger="stt_button.summary"):
+            result = self._client(max_chars=4000).chat(long_prompt)
+        assert result == "kurze antwort"
+        sent = calls["json"]["messages"][1]["content"]
+        assert len(sent) == 4000
+        assert sent == "a" * 4000
+        assert "trunc" in caplog.text.lower()
+
+    def test_truncation_logged_without_text(self, monkeypatch, caplog) -> None:
+        """Truncation log line carries lengths only, never the text."""
+        import logging as _l
+
+        calls = {}
+
+        def fake_post(url, json=None, timeout=None, headers=None):
+            calls["json"] = json
+            return self._response()
+
+        monkeypatch.setattr("stt_button.summary.requests.post", fake_post)
+        with caplog.at_level(_l.INFO, logger="stt_button.summary"):
+            self._client(max_chars=100).chat("w" * 300)
+        assert "www" not in caplog.text
+        assert "trunc" in caplog.text.lower()
+        assert "len=300" in caplog.text
+        assert "len=100" in caplog.text
+
+    def test_prompt_text_never_in_log(self, monkeypatch, caplog) -> None:
+        """Neither prompt nor answer reaches the log on success (D5)."""
+        import logging as _l
+
+        monkeypatch.setattr("stt_button.summary.requests.post",
+                            lambda *a, **k: self._response(content="antwort geheim"))
+        with caplog.at_level(_l.DEBUG, logger="stt_button.summary"):
+            self._client().chat("diktat geheim")
+        assert "diktat geheim" not in caplog.text
+        assert "antwort geheim" not in caplog.text

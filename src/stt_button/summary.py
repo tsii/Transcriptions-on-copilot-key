@@ -12,6 +12,8 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Hashable, Optional
 
+import requests
+
 log = logging.getLogger(__name__)
 
 #: Fallback idle window (seconds) when no idle value is given.
@@ -168,6 +170,84 @@ class SummaryBuffer:
         self._chunks = []
         self._last_ts = None
         self._last_identity = None
+
+
+#: Default request timeout for the summary gateway (seconds).
+DEFAULT_TIMEOUT_S = 30.0
+
+#: German system prompt for the summarizing model (plan, D6).
+SUMMARY_SYSTEM_PROMPT = (
+    "knapp, sachlich, sauber gegliedert; Stil der Vorlage erhalten "
+    "(Du/Sie, lässig/formell); nichts hinzufügen, keine Zahlen "
+    "erfinden; bei Zweifel Vorlage zurückgeben"
+)
+
+
+class ModelUnavailable(Exception):
+    """The summary model is not usable (network, HTTP, empty or no-op)."""
+
+
+@dataclass
+class SummaryClient:
+    """Minimal OpenAI-compatible chat client for summary mode (B7).
+
+    Privacy rule D5: prompt, answer and token never reach the log -
+    only character lengths and truncated sha1 hashes.
+    """
+
+    base_url: str
+    token: str
+    model: str
+    timeout_s: float = DEFAULT_TIMEOUT_S
+    max_chars: int = DEFAULT_MAX_READ_CHARS
+
+    def chat(self, text: str) -> str:
+        """Send ``text`` to the gateway and return the summary.
+
+        Raises :class:`ModelUnavailable` for connection errors, timeouts,
+        HTTP 4xx/5xx, empty answers and no-op answers (answer == prompt).
+        """
+        prompt = text[: self.max_chars]
+        if len(prompt) != len(text):
+            log.info("summary prompt truncated: len=%d trunc_len=%d sha1=%s",
+                     len(text), len(prompt),
+                     hashlib.sha1(prompt.encode()).hexdigest()[:8])
+        model = self.model
+        if model.startswith("my/"):
+            model = model[len("my/"):]
+        headers = {"Content-Type": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        payload = {
+            "model": model,
+            "temperature": 0,
+            "messages": [
+                {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+        }
+        try:
+            resp = requests.post(
+                f"{self.base_url.rstrip('/')}/chat/completions",
+                json=payload, timeout=self.timeout_s, headers=headers)
+        except requests.exceptions.Timeout as exc:
+            raise ModelUnavailable("timeout") from exc
+        except requests.exceptions.RequestException as exc:
+            raise ModelUnavailable("connection error") from exc
+        if resp.status_code >= 400:
+            raise ModelUnavailable(f"http {resp.status_code}")
+        try:
+            answer = resp.json()["choices"][0]["message"]["content"] or ""
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            raise ModelUnavailable("bad response body") from exc
+        if not answer:
+            raise ModelUnavailable("empty answer")
+        if answer == prompt:
+            raise ModelUnavailable("answer equals prompt")
+        log.info("summary answer received: prompt_len=%d answer_len=%d sha1=%s",
+                 len(prompt), len(answer),
+                 hashlib.sha1(answer.encode()).hexdigest()[:8])
+        return answer
 
 
 #: Statuses returned by :func:`apply_summary` / :func:`undo_summary`.
