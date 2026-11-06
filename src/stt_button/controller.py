@@ -71,6 +71,7 @@ class PushToTalkController:
         no_audio_timeout_s: float = 5.0,
         transcriber_factory: Callable[..., StreamTranscriber] | None = None,
         dump_path: str = "/tmp/stt_last.wav",
+        on_output: Callable[[str, int], None] | None = None,
     ) -> None:
         self._source_factory = source_factory
         self._engine = engine
@@ -82,6 +83,10 @@ class PushToTalkController:
         self._transcriber_factory = transcriber_factory or StreamTranscriber
         # Destination for the debug WAV dump; modes from config.audio_dump_mode.
         self._dump_path = dump_path
+        # Summary hook (B4): called with (text, epoch) right after a
+        # SUCCESSFUL final output, just before _play_done_sound(). None
+        # (default) keeps today's behavior unchanged.
+        self._on_output = on_output
         self._audio_dump_mode = str(
             getattr(config, "audio_dump_mode", "sync") or "sync"
         )
@@ -265,6 +270,14 @@ class PushToTalkController:
             return
         base = self._stop_entered_at or self._started_at
         log.debug("latency[%s] +%.3fs", point, time.monotonic() - base)
+
+    def has_pending_work(self) -> bool:
+        """True if finalization work is queued or running (read-only).
+
+        Pure check under ``_lock``: no state change, no side effects.
+        """
+        with self._lock:
+            return bool(self._finalize_queue) or self._finalizer_running
 
     def abort(self) -> None:
         """Abort without outputting text (error case)."""
@@ -649,6 +662,14 @@ class PushToTalkController:
                 self._trace("finalize end")
                 self._delta_typer.finalize(result.text, result.committed_len)
                 self._trace("paste")
+                # Summary hook (B4): after output completed successfully,
+                # before the completion signal. A failing callback must
+                # NEVER break the finalizer (same policy as the sound).
+                if self._on_output is not None:
+                    try:
+                        self._on_output(result.text, job.epoch)
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("on_output callback failed: %s", exc)
                 # Completion signal (operator, 31.10.): only AFTER output has
                 # completed successfully. The sound means "text is ready and
                 # can now be pasted" (Kimi semantics: after triggering the

@@ -2332,3 +2332,57 @@ class TestSegmentsDoneSound:
         _wait_state(ctrl, ControllerState.IDLE, timeout=5.0)
         assert made and made[0].closed_text  # at least one segment cut happened
         assert plays == [1]
+
+
+class TestOnOutputHook:
+    """B4: additive summary hook ``on_output`` and ``has_pending_work``."""
+
+    def _make(self, on_output):
+        source = FakeAudioSource([b"\x00" * 16000] * 6)
+        typer = FakeTyper()
+        ctrl = PushToTalkController(
+            config=None,
+            source_factory=lambda: source,
+            engine=FakeEngine(),
+            delta_typer=DeltaTyper(typer, append_space=True),
+            transcriber_factory=lambda *a, **kw: InstantTranscriber(),
+            on_output=on_output,
+        )
+        return ctrl, typer
+
+    def test_callback_receives_text_and_epoch(self) -> None:
+        """on_output fires with (final text, epoch) after successful output."""
+        received: list = []
+        ctrl, _ = self._make(lambda text, epoch: received.append((text, epoch)))
+        assert not ctrl.has_pending_work()
+
+        ctrl.start_recording()
+        ctrl.stop_recording()
+        _wait_state(ctrl, ControllerState.IDLE, timeout=5.0)
+
+        assert received == [("fertig", 1)]
+        assert not ctrl.has_pending_work()
+
+    def test_callback_exception_does_not_break_finalizer(self) -> None:
+        """An exception in the callback must never break finalization."""
+        def boom(text, epoch):
+            raise RuntimeError("callback boom")
+
+        ctrl, typer = self._make(boom)
+        ctrl.start_recording()
+        ctrl.stop_recording()
+        _wait_state(ctrl, ControllerState.IDLE, timeout=5.0)
+
+        # The finalizer completed anyway: final text is on the typer.
+        assert "fertig" in typer.typed_text_final
+        assert ctrl.state == ControllerState.IDLE
+
+    def test_default_none_changes_nothing(self) -> None:
+        """Without on_output the finalizer path is identical to today's."""
+        ctrl, typer = self._make(None)
+        ctrl.start_recording()
+        ctrl.stop_recording()
+        _wait_state(ctrl, ControllerState.IDLE, timeout=5.0)
+
+        assert "fertig" in typer.typed_text_final
+        assert ctrl.state == ControllerState.IDLE
