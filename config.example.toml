@@ -130,3 +130,4 @@ summary_press_max_s = 0.35       # max hold time (s) of a "short" press
 summary_gap_max_s = 0.35         # max gap (s) between release and 2nd press
 summary_error_sound = "you_lose" # freedesktop sound on summary errors; '' = off
 summary_error_sound_volume = 24000  # paplay permille (0..65536)
+summary_wait_idle_s = 20         # wait budget (s) of the coordinator on has_pending_work()

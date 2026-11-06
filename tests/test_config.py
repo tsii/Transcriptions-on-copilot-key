@@ -648,3 +648,28 @@ class TestSummaryModeConfig:
     def test_production_defaults_unchanged(self) -> None:
         cfg = Config()
         assert cfg.backend == "parakeet"
+
+
+class TestSummaryWaitIdleConfig:
+    """B9a-key: summary_wait_idle_s config key."""
+
+    def test_summary_wait_idle_s_default(self) -> None:
+        assert Config().summary_wait_idle_s == 20
+
+    def test_summary_wait_idle_s_override(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, "summary_wait_idle_s = 45")
+        assert load_config(p).summary_wait_idle_s == 45
+
+    def test_summary_wait_idle_s_zero_rejected(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, "summary_wait_idle_s = 0")
+        with pytest.raises(ConfigError):
+            load_config(p)
+
+    def test_summary_wait_idle_s_negative_rejected(self, tmp_path: Path) -> None:
+        p = write_config(tmp_path, "summary_wait_idle_s = -1")
+        with pytest.raises(ConfigError):
+            load_config(p)
+
+    def test_example_documents_key(self) -> None:
+        text = (Path(__file__).resolve().parent.parent / "config.example.toml").read_text()
+        assert "summary_wait_idle_s" in text

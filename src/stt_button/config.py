@@ -246,6 +246,9 @@ class Config:
     summary_error_sound: str = "you_lose"
     #: Volume of the error signal as paplay permille (0..65536).
     summary_error_sound_volume: int = 24000
+    #: B9a-key: wait budget (seconds) of the coordinator loop for
+    #: has_pending_work() before it re-checks; must be > 0.
+    summary_wait_idle_s: int = 20
 
     def validate(self) -> None:
         if self.focus_unknown_fallback not in ("copy", "type"):
@@ -265,6 +268,8 @@ class Config:
         for key in ("summary_press_max_s", "summary_gap_max_s"):
             if getattr(self, key) <= 0:
                 raise ConfigError(f"{key} must be greater than 0")
+        if self.summary_wait_idle_s <= 0:
+            raise ConfigError("summary_wait_idle_s must be greater than 0")
         if not 0 <= self.summary_error_sound_volume <= 65536:
             raise ConfigError(
                 "summary_error_sound_volume must be within 0..65536, "
