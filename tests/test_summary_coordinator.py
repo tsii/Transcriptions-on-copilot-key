@@ -8,6 +8,7 @@ import pytest
 
 from stt_button.summary import (
     ApplyResult,
+    Chunk,
     SummaryCoordinator,
     apply_summary,
 )
@@ -51,24 +52,69 @@ class FakeSleep:
 class FakeTyper:
     def __init__(self):
         self.calls = []
+        self.keys = []
 
     def backspace_and_type(self, n, text, trailing_key=None):
         self.calls.append((n, text, trailing_key))
 
+    def key(self, name):
+        self.keys.append(name)
+
 
 class FakePaster:
-    def __init__(self):
+    def __init__(self, result=False):
+        self.result = result
         self.calls = []
 
     def paste_combined(self, text, backspaces=0):
         self.calls.append((text, backspaces))
-        return False
+        return self.result
+
+
+class FakeFocus:
+    """Scripted focus classification."""
+
+    def __init__(self, state):
+        self.state = state
+        self.calls = 0
+
+    def __call__(self):
+        self.calls += 1
+        return self.state
+
+
+class FakeClipboard:
+    """Scripted wl-paste/wl-copy collaborator with a call log."""
+
+    def __init__(self, clipboard_texts=None, primary_texts=None):
+        self.clipboard_texts = list(clipboard_texts or [])
+        self.primary_texts = list(primary_texts or [])
+        self.reads = []  # "clipboard" | "primary"
+        self.writes = []  # ("clipboard"|"primary", text)
+
+    def read_clipboard(self):
+        self.reads.append("clipboard")
+        return self.clipboard_texts.pop(0) if self.clipboard_texts else ""
+
+    def read_primary(self):
+        self.reads.append("primary")
+        return self.primary_texts.pop(0) if self.primary_texts else ""
+
+    def copy_clipboard(self, text):
+        self.writes.append(("clipboard", text))
+
+    def copy_primary(self, text):
+        self.writes.append(("primary", text))
 
 
 class FakeCfg:
     summary_wait_idle_s = 20
     summary_error_sound = "you_lose"
     summary_error_sound_volume = 24000
+
+
+def chunk(text):
+    return Chunk(text, epoch=0, ts=0.0)
 
 
 def _make_op(typer, paster):
@@ -86,7 +132,8 @@ def _make_op(typer, paster):
     return op
 
 
-def _make_coord(controller, *, cfg=None):
+def _make_coord(controller, *, cfg=None, focus=None, clipboard=None,
+                 typer=None, paster=None):
     clock = FakeClock()
     sleeper = FakeSleep(clock)
     sounds = []
@@ -96,6 +143,10 @@ def _make_coord(controller, *, cfg=None):
         clock=clock,
         sleep=sleeper,
         play_error=lambda name, volume: sounds.append((name, volume)),
+        focus_state=focus,
+        clipboard=clipboard,
+        typer=typer,
+        paster=paster,
     )
     return coord, clock, sleeper, sounds
 
@@ -188,3 +239,109 @@ def test_submit_is_noop_when_shut_down():
     coord.shutdown()
     assert coord.wait_for_result(timeout=0.3) is None
     assert coord.submit(_make_op(FakeTyper(), FakePaster())) is False
+
+
+# -- B9b: focus gate, selection path, roundtrip cleanup ------------------
+
+@pytest.mark.parametrize("state", ["terminal", "unreachable", "no_window"])
+def test_focus_gate_blocks_all_emissions(state):
+    ctrl = FakeController([False])
+    typer, paster = FakeTyper(), FakePaster()
+    clip = FakeClipboard()
+    focus = FakeFocus(state)
+    coord, clock, sleeper, sounds = _make_coord(
+        ctrl, focus=focus, clipboard=clip, typer=typer, paster=paster)
+
+    assert coord.submit_apply("summary text", [chunk("anchor")]) is True
+    result = coord.wait_for_result(timeout=5)
+
+    assert result is not None
+    assert result.ok is False
+    assert result.status == "focus_not_editable"
+    assert typer.calls == [] and typer.keys == []
+    assert paster.calls == []
+    assert clip.reads == [] and clip.writes == []
+    assert len(sounds) == 1
+    assert coord.state == SummaryCoordinator.IDLE
+
+
+def test_primary_selection_paste_chord_without_roundtrip():
+    ctrl = FakeController([False])
+    typer = FakeTyper()
+    paster = FakePaster(result=True)
+    clip = FakeClipboard(clipboard_texts=["old clip"],
+                         primary_texts=["selected words"])
+    coord, clock, sleeper, sounds = _make_coord(
+        ctrl, focus=FakeFocus("other"), clipboard=clip,
+        typer=typer, paster=paster)
+
+    coord.submit_apply("new summary", [chunk("anchor")])
+    result = coord.wait_for_result(timeout=5)
+
+    assert result is not None and result.ok is True
+    assert result.status == "pasted"
+    assert result.removed_text == "selected words"
+    assert result.inserted_text == "new summary"
+    # selection path: NO locate roundtrip, NO ctrl+shift+Home, no keys
+    assert "ctrl+shift+Home" not in typer.keys
+    assert typer.keys == []
+    assert typer.calls == []
+    # exactly one clipboard read (the D4 backup), i.e. no roundtrip read
+    assert clip.reads.count("clipboard") == 1
+    assert paster.calls == [("new summary", 0)]
+    # D4: both selections are restored, clipboard first
+    assert clip.writes[0] == ("clipboard", "old clip")
+    assert clip.writes[1] == ("primary", "selected words")
+    assert sounds == []
+
+
+def test_d3_roundtrip_ends_with_key_right_when_aborted():
+    ctrl = FakeController([False])
+    typer, paster = FakeTyper(), FakePaster()
+    # read ends NOT with the anchor -> caret_not_at_end abort
+    clip = FakeClipboard(clipboard_texts=["old clip", "anchor typed-on"],
+                         primary_texts=[""])
+    coord, clock, sleeper, sounds = _make_coord(
+        ctrl, focus=FakeFocus("other"), clipboard=clip,
+        typer=typer, paster=paster)
+
+    coord.submit_apply("new summary", [chunk("anchor")])
+    result = coord.wait_for_result(timeout=5)
+
+    assert result is not None and result.ok is False
+    assert result.reason == "caret_not_at_end"
+    # roundtrip cleanup rule: the last emitted act is `key right`
+    assert typer.keys == ["ctrl+shift+Home", "right"]
+    assert typer.keys[-1] == "right"
+    assert typer.calls == []
+    assert paster.calls == []
+    # restore happened even on abort (D4, clipboard first)
+    assert clip.writes[0] == ("clipboard", "old clip")
+    assert sounds == []
+
+
+def test_d3_roundtrip_mutates_block_after_key_right():
+    ctrl = FakeController([False])
+    typer, paster = FakeTyper(), FakePaster()
+    read = "pre anchor one anchor two"  # ends with the last anchor
+    clip = FakeClipboard(clipboard_texts=["old clip", read],
+                         primary_texts=[""])
+    coord, clock, sleeper, sounds = _make_coord(
+        ctrl, focus=FakeFocus("other"), clipboard=clip,
+        typer=typer, paster=paster)
+
+    coord.submit_apply("new summary",
+                       [chunk("anchor one"), chunk("anchor two")])
+    result = coord.wait_for_result(timeout=5)
+
+    assert result is not None and result.ok is True
+    assert result.status == "typed"
+    assert result.removed_text == "anchor one anchor two"
+    # roundtrip: ctrl+shift+Home -> read -> key right, THEN mutation
+    assert typer.keys == ["ctrl+shift+Home", "right"]
+    assert len(typer.calls) == 1
+    n, text, trailing = typer.calls[0]
+    assert n == len("anchor one anchor two")
+    assert text == "new summary"
+    assert clip.writes[0] == ("clipboard", "old clip")
+    assert sounds == []

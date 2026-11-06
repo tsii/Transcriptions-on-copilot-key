@@ -447,8 +447,73 @@ def play_error_sound(name: str, volume: int, *,
 #: Coordinator status when the controller never went idle (B9a).
 BUSY = "busy"
 
+#: Abort status when the focused window is not an editable field (B9b).
+FOCUS_NOT_EDITABLE = "focus_not_editable"
+
+#: Abort reason when neither selection nor field read yields work (D4).
+NOTHING_TO_DO = "nothing_to_do"
+
+#: Focus classifications that block every emission (plan lines 66-72):
+#: in a terminal ctrl+shift+Home is a terminal keybinding, and without a
+#: reachable window there is nothing editable to act on at all.
+FOCUS_BLOCKING_STATES = frozenset({"terminal", "unreachable", "no_window"})
+
 #: Idle-wait poll interval (seconds) before keystroke output (B9a).
 IDLE_POLL_S = 0.1
+
+
+def _default_focus_state() -> str:
+    """Production focus classifier (lazy import, never raises)."""
+    try:
+        from stt_button import focus
+        return focus.focus_state()
+    except Exception:  # noqa: BLE001 - classify as unreachable
+        return "unreachable"
+
+
+class WlClipboard:
+    """Production clipboard collaborator: wl-paste / wl-copy (D4).
+
+    Reads return ``""`` on any failure instead of raising, so a dead
+    Wayland clipboard degrades to the abort paths instead of crashing
+    the coordinator thread.
+    """
+
+    _TIMEOUT_S = 2.0
+
+    def _paste(self, primary: bool) -> str:
+        cmd = ["wl-paste"]
+        if primary:
+            cmd.append("-p")
+        cmd += ["-t", "text/plain"]
+        try:
+            out = subprocess.run(cmd, capture_output=True, check=True,
+                                 timeout=self._TIMEOUT_S)
+            return out.stdout.decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def read_clipboard(self) -> str:
+        return self._paste(primary=False)
+
+    def read_primary(self) -> str:
+        return self._paste(primary=True)
+
+    def _copy(self, text: str, primary: bool) -> None:
+        cmd = ["wl-copy"]
+        if primary:
+            cmd.append("-p")
+        try:
+            subprocess.run(cmd, input=text.encode("utf-8"), check=True,
+                           timeout=self._TIMEOUT_S)
+        except Exception:  # noqa: BLE001 - restore is best effort
+            log.debug("wl-copy restore failed", exc_info=True)
+
+    def copy_clipboard(self, text: str) -> None:
+        self._copy(text, primary=False)
+
+    def copy_primary(self, text: str) -> None:
+        self._copy(text, primary=True)
 
 
 class SummaryCoordinator:
@@ -472,12 +537,19 @@ class SummaryCoordinator:
     ACTIVE_UNDO = "active_undo"
 
     def __init__(self, controller, cfg, *, clock=None, sleep=None,
-                 play_error=None):
+                 play_error=None, focus_state=None, clipboard=None,
+                 typer=None, paster=None):
         self._controller = controller
         self._cfg = cfg
         self._clock = clock or time.monotonic
         self._sleep = sleep or time.sleep
         self._play_error = play_error or play_error_sound
+        # B9b collaborators (D8): injected in tests, production defaults
+        # are additive keyword arguments.
+        self._classify_focus = focus_state or _default_focus_state
+        self._clipboard = clipboard or WlClipboard()
+        self._typer = typer
+        self._paster = paster
         self._lock = threading.Lock()
         self._job = None  # (op, undo) - exactly one slot (queue = B9c)
         self._wake = threading.Event()
@@ -517,6 +589,21 @@ class SummaryCoordinator:
             self._done.clear()
         self._wake.set()
         return True
+
+    def submit_apply(self, replacement_text: str, chunks) -> bool:
+        """Submit the gated apply flow (B9b).
+
+        Runs the full decision chain on the worker thread: focus gate,
+        primary-selection check (D4), then either the paste-chord
+        selection path or the D3 block roundtrip. ``chunks`` are the
+        anchor chunks (D2) for :func:`locate_block`.
+        """
+        anchor_chunks = list(chunks)
+
+        def op() -> ApplyResult:
+            return self._apply_flow(replacement_text, anchor_chunks)
+
+        return self.submit(op)
 
     def wait_for_result(self, timeout: Optional[float] = None) -> Optional[ApplyResult]:
         """Block the caller until the worker produced a result.
@@ -615,3 +702,107 @@ class SummaryCoordinator:
             return ApplyResult(ok=False, status=FAILED, mode="",
                               removed_text="", inserted_text="",
                               reason="coordinator_error")
+
+    # -- B9b apply flow -------------------------------------------------
+
+    def _apply_flow(self, replacement_text: str, chunks) -> ApplyResult:
+        """Gated decision chain; never raises, emits nothing on gate."""
+        try:
+            return self._apply_flow_inner(replacement_text, chunks)
+        except Exception:  # noqa: BLE001 - contract: never raise outward
+            log.exception("summary apply flow crashed")
+            return ApplyResult(ok=False, status=FAILED, mode="",
+                               removed_text="", inserted_text="",
+                               reason="coordinator_error")
+
+    def _apply_flow_inner(self, replacement_text: str, chunks) -> ApplyResult:
+        focus = self._classify_focus_safe()
+        if focus in FOCUS_BLOCKING_STATES:
+            # Gate BEFORE any emission: no key, no read, no paste (D7).
+            self._play_busy_sound()
+            return ApplyResult(ok=False, status=FOCUS_NOT_EDITABLE,
+                               mode="", removed_text="", inserted_text="",
+                               reason=FOCUS_NOT_EDITABLE)
+        if self._typer is None or self._paster is None:
+            return ApplyResult(ok=False, status=FAILED, mode="",
+                               removed_text="", inserted_text="",
+                               reason="no_collaborators")
+        clip = self._clipboard
+        primary = clip.read_primary()
+        if primary:
+            # D4: a non-empty primary selection means a live selection -
+            # its content is the job; replace it with the paste chord.
+            # No roundtrip, no ctrl+shift+Home (second read forbidden).
+            return self._selection_path(replacement_text, primary)
+        return self._block_path(replacement_text, chunks)
+
+    def _classify_focus_safe(self) -> str:
+        try:
+            return self._classify_focus()
+        except Exception:  # noqa: BLE001 - classify as unreachable
+            return "unreachable"
+
+    def _selection_path(self, replacement_text: str,
+                        selection_text: str) -> ApplyResult:
+        clip = self._clipboard
+        saved_clipboard = clip.read_clipboard()
+        try:
+            combined = self._paster.paste_combined(replacement_text,
+                                                  backspaces=0)
+        finally:
+            # D4: both selections restored in every branch, clipboard first.
+            clip.copy_clipboard(saved_clipboard)
+            clip.copy_primary(selection_text)
+        if not combined:
+            return ApplyResult(ok=False, status=FAILED, mode="",
+                              removed_text="", inserted_text="",
+                              reason="paster_error")
+        return ApplyResult(ok=True, status=APPLY_PASTED, mode="pasted",
+                           removed_text=selection_text,
+                           inserted_text=replacement_text, reason=None)
+
+    def _block_path(self, replacement_text: str, chunks) -> ApplyResult:
+        clip, typer = self._clipboard, self._typer
+        saved_clipboard = clip.read_clipboard()
+
+        def restore() -> None:
+            clip.copy_clipboard(saved_clipboard)
+            clip.copy_primary("")
+
+        # D3 roundtrip: select to field start, read, then clean up with
+        # `key right` so no selection state remains in the field.
+        typer.key("ctrl+shift+Home")
+        read = clip.read_clipboard()
+        typer.key("right")
+        if not read:
+            restore()
+            return ApplyResult(ok=False, status=ABORTED, mode="",
+                               removed_text="", inserted_text="",
+                               reason=NOTHING_TO_DO)
+        location = locate_block(
+            chunks, read,
+            summary_max_gap_chars=int(getattr(
+                self._cfg, "summary_max_gap_chars",
+                DEFAULT_MAX_GAP_CHARS)),
+            summary_max_read_chars=int(getattr(
+                self._cfg, "summary_max_read_chars",
+                DEFAULT_MAX_READ_CHARS)),
+        )
+        if location.status != CARET_AT_BLOCK_END:
+            restore()
+            return ApplyResult(ok=False, status=ABORTED, mode="",
+                               removed_text="", inserted_text="",
+                               reason=location.status)
+        n = location.end - location.start
+        return apply_summary(
+            replacement_text,
+            original_text=read[location.start:location.end],
+            n=n,
+            typer=typer,
+            paster=self._paster,
+            restore_clipboard=lambda: clip.copy_clipboard(saved_clipboard),
+            restore_primary=lambda: clip.copy_primary(""),
+            paste_min_chars=int(getattr(
+                self._cfg, "summary_paste_min_chars",
+                DEFAULT_PASTE_MIN_CHARS)),
+        )
