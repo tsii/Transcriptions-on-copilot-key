@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import shutil
+import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Hashable, Optional
 
 import requests
@@ -416,3 +419,25 @@ def undo_summary(
     return ApplyResult(ok=True, status=UNDO_DONE, mode=mode,
                         removed_text=result.inserted_text,
                         inserted_text=result.removed_text, reason=None)
+
+
+def play_error_sound(name: str, volume: int, *,
+                      asset_dir: Path | None = None,
+                      popen=subprocess.Popen) -> bool:
+    """Fire-and-forget playback of an error sound asset via paplay.
+
+    Returns True if the process was started, False otherwise (paplay
+    missing, asset missing, or any error). Never raises.
+    """
+    try:
+        if shutil.which("paplay") is None:
+            return False
+        directory = asset_dir or Path(__file__).resolve().parent / "sounds"
+        path = (directory / f"{name}.wav").resolve()
+        if not path.is_file():
+            return False
+        popen(["paplay", "--volume", str(volume), str(path)],
+              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
