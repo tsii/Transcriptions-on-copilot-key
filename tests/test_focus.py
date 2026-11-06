@@ -211,3 +211,22 @@ class TestFocusState:
     def test_terminal_focused_mapping(self, monkeypatch, state, expected) -> None:
         monkeypatch.setattr(focus, "focus_state", lambda: state)
         assert focus.terminal_focused() is expected
+
+
+class TestWindowIdentity:
+    """B10a: window_identity() is a thin public wrapper over _call_focus()."""
+
+    def test_passthrough_tuple(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            focus, "_call_focus", lambda: ("org.kde.dolphin", "Notiz"))
+        assert focus.window_identity() == ("org.kde.dolphin", "Notiz")
+
+    def test_passthrough_none(self, monkeypatch) -> None:
+        monkeypatch.setattr(focus, "_call_focus", lambda: None)
+        assert focus.window_identity() is None
+
+    def test_exception_returns_none(self, monkeypatch) -> None:
+        def boom():
+            raise RuntimeError("bus dead")
+        monkeypatch.setattr(focus, "_call_focus", boom)
+        assert focus.window_identity() is None

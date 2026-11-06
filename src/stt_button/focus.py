@@ -76,6 +76,19 @@ def _call_focus() -> tuple[str, str] | None:
         return None
 
 
+def window_identity() -> tuple[str, str] | None:
+    """Public thin wrapper over _call_focus(): (app_id, title) or None.
+
+    Exists so callers (session-reset on window change, B10b) never need
+    to touch the private subprocess plumbing. Internal errors -> None.
+    """
+    try:
+        return _call_focus()
+    except Exception as exc:  # noqa: BLE001 - convenience, never raises
+        log.debug("window_identity failed (%s)", exc)
+        return None
+
+
 FocusState = Literal["terminal", "other", "no_window", "unreachable"]
 
 
