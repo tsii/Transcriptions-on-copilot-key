@@ -12,3 +12,6 @@ models/
 
 # lokale Modell-Snapshots (ONNX-Benchmark), nicht versionieren
 .models/
+
+# orchestrator runtime state (model availability probe)
+.pi/state/

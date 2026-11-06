@@ -1,0 +1,34 @@
+{
+  "_comment": "Model fallback map (operator order 2026-11-05). Delegation uses the primary; if the probe marks it DOWN, use the fallback and say so; when a probe sees the primary UP again, switch BACK. Rule text: AGENTS.md, section 'Model fallback (R9)'). Keys are never stored here - tools/model_fallback_probe.py reads them from ~/.pi/agent/auth.json at runtime.",
+  "endpoints": {
+    "my": { "baseUrl": "http://172.28.8.10:9000/v1", "api": "chat" },
+    "cortecs": { "baseUrl": "https://api.cortecs.ai/v1", "api": "responses" },
+    "openrouter": { "baseUrl": "https://openrouter.ai/api/v1", "api": "chat" }
+  },
+  "map": [
+    {
+      "primary": "my/work-zai-org-glm-5.3-verda",
+      "fallback": "cortecs/glm-5.3",
+      "role": "implementation / bug search (project workflow: TDD chains)",
+      "status": "confirmed"
+    },
+    {
+      "primary": "my/work-sipgate-coding-ultra",
+      "fallback": "cortecs/kimi-k3",
+      "role": "general delegation; fallback is Kimi K3 via Cortecs",
+      "status": "confirmed"
+    },
+    {
+      "primary": "openrouter/kimi-k3.1-pro",
+      "fallback": "cortecs/kimi-k3",
+      "role": "planning & debugging (project workflow: Kimi). 2026-11-05: openrouter returned empty turns + 'Request timed out.'",
+      "status": "confirmed"
+    },
+    {
+      "primary": "cortecs/deepseek-v4.1-flash-1017",
+      "fallback": "cortecs/deepseek-v4.1-flash",
+      "role": "deepseek flash: newer build primary, older build as fallback (operator choice 2026-11-05)",
+      "status": "confirmed"
+    }
+  ]
+}

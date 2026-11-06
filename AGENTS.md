@@ -9,10 +9,49 @@ Applies only to this repo (git@github.com:tsii/Parakeet-on-copilot-key.git, bran
 - Verify expert plans instead of trusting them: two Kimi analyses (CapsLock) were
   wrong; a ground-truth experiment settled the question.
 
+## Planning ownership (operator order 2026-11-05 21:19)
+P9 The orchestrator does NOT design or plan. Every planning task goes to a planner
+   subagent; the orchestrator then IMPLEMENTS the planner's plan as written. Problems
+   found along the chain (design gaps, blockers, contradictions, failing assumptions)
+   are escalated BACK TO THE PLANNER (steer / re-brief), not decided by the
+   orchestrator. Only genuine operator decisions may be raised to the operator, and
+   only those the planner explicitly flagged. Existing orchestrator-authored drafts
+   (e.g. `.pi/plans/plan_summary_mode.md`) are non-binding inputs for the planner.
+
 ## Workflow / Models
-- Planning & debugging: openrouter/moonshotai/kimi-k3.1-pro
+- Planning & debugging: openrouter/kimi-k3.1-pro
 - Implementation: TDD chains with cortecs/glm-5.3
 - Review: cortecs/deepseek-v4-pro-0813
+
+P8 Model Fallback (operator order 2026-11-05). The map lives in
+   `.pi/model-fallback.json`; probe it with
+   `.venv/bin/python tools/model_fallback_probe.py` (state file
+   `.pi/state/model-availability.json`, exit code 10 = a state flipped).
+   Active pairs:
+   `my/work-zai-org-glm-5.3-verda` -> `cortecs/glm-5.3`,
+   `my/work-sipgate-coding-ultra` -> `cortecs/kimi-k3`,
+   `openrouter/kimi-k3.1-pro` -> `cortecs/kimi-k3`,
+   `cortecs/deepseek-v4.1-flash` -> `cortecs/deepseek-v4-pro-0813`.
+   Before delegating to a primary that the probe marks DOWN, delegate to the
+   fallback instead and state in the report which model actually ran (global
+   R2: never present a fallback result as the ordered model). When a later
+   probe shows the primary UP again, switch BACK to the primary without being
+   asked. Check every 15 minutes while delegations are open.
+   Ground truth 2026-11-05: a delegation to `openrouter/moonshotai/kimi-k3.1-pro`
+   produced three empty assistant turns and one `Request timed out.` while the
+   plain chat/completions endpoint answers in 2-5 s (HTTP 200, also for a
+   19 kB prompt) - so "endpoint UP" does NOT mean "usable for delegation".
+   Treat an agentic probe (one real tool call) as the deciding signal.
+   Brief size matters: a 19 kB prompt works on the plain endpoint, and a short
+   delegation prompt plus a one-tool task succeeded on the same model, while a
+   delegation whose prompt carried an ~11.5 kB inline brief produced only empty
+   turns. So for Kimi: keep the delegation prompt short and put the details in a
+   file the subagent reads itself (`.pi/briefs/*.md`).
+   Long single writes are the other failure mode: on 2026-11-05 a planning run
+   hung 45+ minutes inside one `write` of a ~10 kB plan and never produced the
+   file (ground truth: transcript shows the started `write`, no file on disk).
+   When delegating a document write, instruct the subagent to write it in
+   sections (several small write/patch calls) instead of one large write.
 
 ## Rules
 
