@@ -1907,3 +1907,28 @@ class TestM1FinalPasteMinChars:
         d.finalize("^[[200~Hallo~")
         assert p.pasted == []
         assert t.calls == [("bs_type", "0", "Hallo", "space")]
+
+
+class TestFinalizeDocumentingG6:
+    """Documenting G6 tests (plan block B3): finalize() guarantees for the
+    summary-mode short-press path. These tests only pin existing behavior."""
+
+    def test_finalize_unchanged_text_only_space_key(self) -> None:
+        """Unchanged state + append_space=True: exactly one key('space'),
+        no type, no backspace (nothing to correct)."""
+        t = FakeTyper()
+        d = DeltaTyper(t, append_space=True)
+        d.update("bereits getippter Text")
+        t.calls.clear()
+        d.finalize("bereits getippter Text")
+        assert t.calls == [("key", "space")], t.calls
+
+    def test_finalize_whitespace_only_no_typer_calls(self) -> None:
+        """Whitespace-only final output: guard (typing.py:897) returns early,
+        no typer call at all."""
+        t = FakeTyper()
+        d = DeltaTyper(t, append_space=True)
+        d.update("Vorher")
+        t.calls.clear()
+        d.finalize("   ")
+        assert t.calls == [], t.calls

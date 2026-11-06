@@ -5,7 +5,7 @@ edges are fed in from outside with explicit timestamps (fake clock).
 """
 from __future__ import annotations
 
-from stt_button.gestures import DoublePressDetector
+from stt_button.gestures import DoublePressDetector, PressRouter
 
 
 class EdgeRecorder:
@@ -97,3 +97,102 @@ class TestDoublePressDetector:
         d.press(600.22)
         d.release(600.32)
         assert rec.gestures == 1
+
+
+class FakeController:
+    """Records controller calls; the only interface PressRouter knows."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def start_recording(self) -> None:
+        self.calls.append("start")
+
+    def stop_recording(self) -> None:
+        self.calls.append("stop")
+
+    def abort(self) -> None:
+        self.calls.append("abort")
+
+
+
+
+class FakeClock:
+    """Monotonic fake clock: only advances when told."""
+
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def __call__(self) -> float:
+        return self.t
+
+    def advance(self, dt: float) -> None:
+        self.t += dt
+
+
+class TestPressRouterShortHoldAborts:
+    def test_short_hold_aborts_never_stops(self) -> None:
+        c = FakeController()
+        clock = FakeClock()
+        r = PressRouter(c, press_max_s=0.35, summary_enabled=True, now=clock)
+        r.on_press()
+        clock.advance(0.20)
+        r.on_release()
+        assert c.calls == ["start", "abort"]
+        assert "stop" not in c.calls
+
+    def test_hold_exactly_at_limit_stops(self) -> None:
+        c = FakeController()
+        clock = FakeClock()
+        r = PressRouter(c, press_max_s=0.35, summary_enabled=True, now=clock)
+        r.on_press()
+        clock.advance(0.35)
+        r.on_release()
+        assert c.calls == ["start", "stop"]
+        assert "abort" not in c.calls
+
+    def test_long_hold_stops_never_aborts(self) -> None:
+        c = FakeController()
+        clock = FakeClock()
+        r = PressRouter(c, press_max_s=0.35, summary_enabled=True, now=clock)
+        r.on_press()
+        clock.advance(2.0)
+        r.on_release()
+        assert c.calls == ["start", "stop"]
+        assert "abort" not in c.calls
+
+
+class TestPressRouterDetectorEdges:
+    def test_detector_receives_both_edges_with_times(self) -> None:
+        c = FakeController()
+        clock = FakeClock()
+        rec = EdgeRecorder()
+        d = DoublePressDetector(on_edge=rec.on_edge, on_double_press=rec.on_double_press)
+        r = PressRouter(c, press_max_s=0.35, summary_enabled=True, now=clock, detector=d)
+        r.on_press()
+        clock.advance(0.10)
+        r.on_release()
+        kinds = [e[0] for e in rec.edges]
+        assert kinds == ["press", "release"]
+        assert abs((rec.edges[1][1] - rec.edges[0][1]) - 0.10) < 1e-9
+
+
+class TestPressRouterSummaryDisabled:
+    def test_disabled_is_exact_passthrough(self) -> None:
+        c = FakeController()
+        clock = FakeClock()
+        r = PressRouter(c, press_max_s=0.35, summary_enabled=False, now=clock)
+        r.on_press()
+        clock.advance(0.10)  # short hold: today still stop_recording()
+        r.on_release()
+        assert c.calls == ["start", "stop"]
+        assert "abort" not in c.calls
+
+    def test_disabled_long_hold_passthrough(self) -> None:
+        c = FakeController()
+        clock = FakeClock()
+        r = PressRouter(c, press_max_s=0.35, summary_enabled=False, now=clock)
+        r.on_press()
+        clock.advance(2.0)
+        r.on_release()
+        assert c.calls == ["start", "stop"]

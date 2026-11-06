@@ -6,11 +6,67 @@ classes stay testable with a fake clock.
 
 B2 ``DoublePressDetector``: recognizes a double press (two short holds with
 a small gap) and forwards every edge exactly once to a callback.
+
+B3 ``PressRouter``: routes a press/release pair to the controller. With
+``summary_enabled`` a hold shorter than ``press_max_s`` aborts the
+recording instead of stopping it; every edge is reported to the optional
+``DoublePressDetector``. The router knows only the controller interface
+(``start_recording`` / ``stop_recording`` / ``abort``).
 """
 from __future__ import annotations
 
 import time
 from typing import Callable
+
+
+class PressRouter:
+    """Route press/release edges to the controller (plan block B3).
+
+    With ``summary_enabled=True`` a hold shorter than ``press_max_s``
+    calls ``controller.abort()`` (no finalizer job, no typing, no sound);
+    a hold of ``press_max_s`` or longer calls ``controller.stop_recording()``
+    and never ``abort()``. With ``summary_enabled=False`` the behavior is
+    exactly today's: press -> start, release -> stop.
+
+    If a ``detector`` (``DoublePressDetector``) is given, every edge is
+    forwarded to it with its timestamp.
+    """
+
+    def __init__(
+        self,
+        controller,
+        press_max_s: float = 0.35,
+        summary_enabled: bool = False,
+        now: Callable[[], float] | None = None,
+        detector: DoublePressDetector | None = None,
+    ) -> None:
+        self._controller = controller
+        self.press_max_s = press_max_s
+        self.summary_enabled = summary_enabled
+        self._now = now if now is not None else time.monotonic
+        self._detector = detector
+        self._press_t: float | None = None
+
+    def on_press(self) -> None:
+        """Handle a press edge: start recording, report the edge."""
+        t = self._now()
+        self._press_t = t
+        self._controller.start_recording()
+        if self._detector is not None:
+            self._detector.press(t)
+
+    def on_release(self) -> None:
+        """Handle a release edge: abort (short hold, summary) or stop."""
+        t = self._now()
+        press_t = self._press_t
+        self._press_t = None
+        hold = None if press_t is None else t - press_t
+        if self._detector is not None:
+            self._detector.release(t)
+        if self.summary_enabled and hold is not None and hold < self.press_max_s:
+            self._controller.abort()
+        else:
+            self._controller.stop_recording()
 
 
 class DoublePressDetector:
