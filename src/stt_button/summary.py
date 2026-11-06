@@ -10,6 +10,7 @@ import hashlib
 import logging
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -441,3 +442,176 @@ def play_error_sound(name: str, volume: int, *,
         return True
     except Exception:
         return False
+
+
+#: Coordinator status when the controller never went idle (B9a).
+BUSY = "busy"
+
+#: Idle-wait poll interval (seconds) before keystroke output (B9a).
+IDLE_POLL_S = 0.1
+
+
+class SummaryCoordinator:
+    """State machine + idle wait for summary apply/undo (B9a).
+
+    Owns exactly ONE worker thread. Before every keystroke-producing
+    operation it polls ``controller.has_pending_work()`` every
+    ``IDLE_POLL_S`` seconds until it returns ``False``; the deadline is
+    ``cfg.summary_wait_idle_s``. On timeout the job is aborted with
+    status :data:`BUSY`, the error sound is played, and not a single
+    key is emitted. Decisions and undo bookkeeping come solely from the
+    :class:`ApplyResult` returned by the submitted operation.
+
+    Queueing multiple jobs, focus gating and the enabled switch are
+    later blocks (B9b/B9c) and intentionally absent here: one job at a
+    time, second submissions are rejected with ``False``.
+    """
+
+    IDLE = "idle"
+    WORKING = "working"
+    ACTIVE_UNDO = "active_undo"
+
+    def __init__(self, controller, cfg, *, clock=None, sleep=None,
+                 play_error=None):
+        self._controller = controller
+        self._cfg = cfg
+        self._clock = clock or time.monotonic
+        self._sleep = sleep or time.sleep
+        self._play_error = play_error or play_error_sound
+        self._lock = threading.Lock()
+        self._job = None  # (op, undo) - exactly one slot (queue = B9c)
+        self._wake = threading.Event()
+        self._done = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="summary-coordinator")
+        self._state = self.IDLE
+        self._result = None
+        self._submitted = 0
+        self._completed = 0
+        self._shutdown = False
+        self._thread.start()
+
+    # -- public API --------------------------------------------------
+
+    @property
+    def state(self) -> str:
+        with self._lock:
+            return self._state
+
+    @property
+    def result(self) -> Optional[ApplyResult]:
+        with self._lock:
+            return self._result
+
+    def submit(self, op, *, undo: bool = False) -> bool:
+        """Submit one operation (callable -> ApplyResult).
+
+        Returns ``False`` if a job is running or the coordinator is
+        shut down; the job is never queued (B9c).
+        """
+        with self._lock:
+            if self._shutdown or self._job is not None:
+                return False
+            self._job = (op, bool(undo))
+            self._submitted += 1
+            self._done.clear()
+        self._wake.set()
+        return True
+
+    def wait_for_result(self, timeout: Optional[float] = None) -> Optional[ApplyResult]:
+        """Block the caller until the worker produced a result.
+
+        Returns the :class:`ApplyResult` of the most recently submitted
+        job, or ``None`` if ``timeout`` elapses (or no job was ever
+        submitted). Never runs work inline. Must not be called from the
+        worker thread.
+        """
+        if threading.current_thread() is self._thread:
+            raise RuntimeError(
+                "wait_for_result() must not be called from the worker thread")
+        with self._lock:
+            target = self._submitted
+            if self._completed >= target:
+                return self._result
+        deadline = (None if timeout is None
+                    else time.monotonic() + float(timeout))
+        while True:
+            with self._lock:
+                if self._completed >= target:
+                    return self._result
+            if deadline is not None and time.monotonic() >= deadline:
+                return None
+            self._done.wait(0.05)
+
+    def shutdown(self) -> None:
+        """Stop the worker thread; rejects further submissions."""
+        with self._lock:
+            self._shutdown = True
+        self._wake.set()
+        self._thread.join(timeout=5)
+
+    # -- internals ---------------------------------------------------
+
+    def _run(self) -> None:
+        while True:
+            self._wake.wait()
+            self._wake.clear()
+            with self._lock:
+                if self._shutdown:
+                    return
+                job = self._job
+                if job is None:
+                    continue
+            op, undo = job
+            if undo:
+                with self._lock:
+                    self._state = self.ACTIVE_UNDO
+            else:
+                with self._lock:
+                    self._state = self.WORKING
+            try:
+                if self._wait_idle():
+                    result = self._safe_call(op)
+                else:
+                    self._play_busy_sound()
+                    result = ApplyResult(
+                        ok=False, status=BUSY, mode="",
+                        removed_text="", inserted_text="",
+                        reason="controller_busy")
+            finally:
+                with self._lock:
+                    self._result = result
+                    self._state = self.IDLE
+                    self._job = None
+                    self._completed += 1
+                self._done.set()
+
+    def _wait_idle(self) -> bool:
+        """Poll has_pending_work() until False or the deadline passes."""
+        timeout = float(getattr(self._cfg, "summary_wait_idle_s", 20))
+        deadline = self._clock() + timeout
+        while self._controller.has_pending_work() is not False:
+            if self._clock() >= deadline:
+                return False
+            self._sleep(IDLE_POLL_S)
+        return True
+
+    def _play_busy_sound(self) -> None:
+        name = getattr(self._cfg, "summary_error_sound", "")
+        volume = int(getattr(self._cfg, "summary_error_sound_volume", 0))
+        if not name:
+            return
+        try:
+            self._play_error(name, volume)
+        except Exception:  # noqa: BLE001 - sound must never break the FSM
+            log.debug("summary error sound failed", exc_info=True)
+
+    @staticmethod
+    def _safe_call(op) -> ApplyResult:
+        try:
+            return op()
+        except Exception:  # noqa: BLE001 - contract: never raise outward
+            log.exception("summary operation crashed")
+            return ApplyResult(ok=False, status=FAILED, mode="",
+                              removed_text="", inserted_text="",
+                              reason="coordinator_error")
