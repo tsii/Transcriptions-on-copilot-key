@@ -16,8 +16,10 @@ from .asr import ParakeetEngine, QwenEngine, StreamTranscriber, WhisperEngine
 from .buffered import BufferedTranscriber
 from .config import Config
 from .controller import PushToTalkController
+from .gestures import DoublePressDetector, PressRouter
 from . import focus
 from .keys import KeyListener, resolve_device
+from .summary import SummaryBuffer, SummaryClient, SummaryCoordinator
 from .typing import (
     ClipboardPaster,
     ClipboardTyper,
@@ -88,6 +90,12 @@ class Application:
         self._controller: PushToTalkController | None = None
         self._listener_thread: threading.Thread | None = None
         self._engine = self._build_engine()
+        # Summary mode (B10): all None unless summary_enabled=True.
+        self._router: PressRouter | None = None
+        self._summary_buffer: SummaryBuffer | None = None
+        self._summary_client: SummaryClient | None = None
+        self._coordinator: SummaryCoordinator | None = None
+        self._typer = None
 
     def _build_engine(self):
         """Builds the ASR engine based on the configuration."""
@@ -120,6 +128,7 @@ class Application:
 
     def _build_controller(self) -> PushToTalkController:
         typer = self._build_typer()
+        self._typer = typer
         cfg = self.config
 
         # Final-delta paste only with an explicit flag: then the final
@@ -216,6 +225,51 @@ class Application:
             asr_interval_s=cfg.asr_interval_s,
             max_record_s=cfg.max_record_s,
             transcriber_factory=make_transcriber,
+            # B10/D2: output hook for the summary session buffer.
+            # None (feature off) keeps today's behavior exactly.
+            on_output=(self._on_summary_output
+                       if cfg.summary_enabled else None),
+        )
+
+    def _build_router(self) -> PressRouter:
+        """Build the gesture router between listener and controller (B10)."""
+        controller = self._controller
+        assert controller is not None
+        cfg = self.config
+        detector = None
+        if cfg.summary_enabled:
+            self._summary_buffer = SummaryBuffer(
+                idle_s=cfg.summary_session_idle_s)
+            self._summary_client = SummaryClient(
+                base_url=cfg.summary_base_url,
+                token=cfg.summary_token,
+                model=cfg.summary_model,
+                timeout_s=cfg.summary_timeout_s,
+                max_chars=cfg.summary_max_read_chars,
+            )
+            detector = DoublePressDetector(
+                press_max_s=cfg.summary_press_max_s,
+                gap_max_s=cfg.summary_gap_max_s,
+                on_double_press=self._on_double_press,
+            )
+        return PressRouter(
+            controller,
+            press_max_s=cfg.summary_press_max_s,
+            summary_enabled=cfg.summary_enabled,
+            detector=detector,
+        )
+
+    def _build_coordinator(self) -> SummaryCoordinator:
+        """Build the summary coordinator (B10) - only when enabled."""
+        cfg = self.config
+        paster = ClipboardPaster(
+            self._typer,
+            copy_binary=cfg.paste_binary,
+            paste_key=cfg.paste_key,
+        )
+        return SummaryCoordinator(
+            self._controller, cfg,
+            typer=self._typer, paster=paster,
         )
 
     def start(self) -> None:
@@ -225,6 +279,10 @@ class Application:
                  device.path, device.name, self.config.key_codes)
 
         self._controller = self._build_controller()
+
+        self._router = self._build_router()
+        if self.config.summary_enabled:
+            self._coordinator = self._build_coordinator()
 
         self._listener = KeyListener(
             [device],
@@ -251,13 +309,45 @@ class Application:
         self._engine.load()
         log.info("Ready. Hold the Copilot key and speak.")
 
+    def _on_summary_output(self, text: str, epoch: int) -> None:
+        """D2: append one dictation chunk to the summary session buffer."""
+        buf = self._summary_buffer
+        if buf is None:
+            return
+        try:
+            identity = focus.window_identity()
+        except Exception:  # noqa: BLE001 - unknown window never resets
+            identity = None
+        buf.append(text, epoch=epoch, window_identity=identity)
+
+    def _on_double_press(self) -> None:
+        """B10: route a detected double press to the coordinator."""
+        coord = self._coordinator
+        buf = self._summary_buffer
+        client = self._summary_client
+        if coord is None or buf is None or client is None:
+            return
+        chunks = list(buf.chunks)
+        if not chunks:
+            return
+        text = "".join(c.text for c in chunks)
+
+        def op():
+            # Worker thread: the gateway call and the gated apply chain
+            # must stay off the key-listener edge.
+            replacement = client.chat(text)
+            return coord._apply_flow(replacement, chunks)  # noqa: SLF001
+
+        if coord.submit(op):
+            buf.reset()
+
     def _on_press(self, _event) -> None:
-        assert self._controller is not None
-        self._controller.start_recording()
+        assert self._router is not None
+        self._router.on_press()
 
     def _on_release(self, _event) -> None:
-        assert self._controller is not None
-        self._controller.stop_recording()
+        assert self._router is not None
+        self._router.on_release()
 
     def run_forever(self) -> None:
         """Main loop: read audio and transcribe.
@@ -283,6 +373,9 @@ class Application:
         if self._controller is not None:
             self._controller.shutdown()
             self._controller = None
+        if self._coordinator is not None:
+            self._coordinator.shutdown()
+            self._coordinator = None
 
 
 def run(config: Config) -> int:
