@@ -270,6 +270,7 @@ class Application:
         return SummaryCoordinator(
             self._controller, cfg,
             typer=self._typer, paster=paster,
+            client=self._summary_client,
         )
 
     def start(self) -> None:
@@ -324,21 +325,14 @@ class Application:
         """B10: route a detected double press to the coordinator."""
         coord = self._coordinator
         buf = self._summary_buffer
-        client = self._summary_client
-        if coord is None or buf is None or client is None:
+        if coord is None or buf is None:
             return
         chunks = list(buf.chunks)
         if not chunks:
             return
         text = "".join(c.text for c in chunks)
 
-        def op():
-            # Worker thread: the gateway call and the gated apply chain
-            # must stay off the key-listener edge.
-            replacement = client.chat(text)
-            return coord._apply_flow(replacement, chunks)  # noqa: SLF001
-
-        if coord.submit(op):
+        if coord.submit_summary(text, chunks):
             buf.reset()
 
     def _on_press(self, _event) -> None:

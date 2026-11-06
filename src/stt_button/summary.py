@@ -548,7 +548,7 @@ class SummaryCoordinator:
 
     def __init__(self, controller, cfg, *, clock=None, sleep=None,
                  play_error=None, focus_state=None, clipboard=None,
-                 typer=None, paster=None):
+                 typer=None, paster=None, client=None):
         self._controller = controller
         self._cfg = cfg
         self._clock = clock or time.monotonic
@@ -560,6 +560,7 @@ class SummaryCoordinator:
         self._clipboard = clipboard or WlClipboard()
         self._typer = typer
         self._paster = paster
+        self._client = client
         self._lock = threading.Lock()
         self._job = None  # (op, undo) - exactly one slot (queue = B9c)
         self._wake = threading.Event()
@@ -622,6 +623,25 @@ class SummaryCoordinator:
 
         def op() -> ApplyResult:
             return self._apply_flow(replacement_text, anchor_chunks)
+
+        return self.submit(op)
+
+    def submit_summary(self, text: str, chunks) -> bool:
+        """Submit the chat+apply flow as ONE queued job (B10r).
+
+        Runs the gateway call ``client.chat(text)`` and then the gated
+        apply chain (same chain as :meth:`submit_apply`) together on
+        the worker thread, off the key-listener edge. The op runs
+        through :meth:`submit`, so queue, enabled-gate, busy tone and
+        the ``ModelUnavailable`` mapping of ``_safe_call`` (exactly one
+        tone + ``reason="model_unavailable"``) apply unchanged.
+        """
+        anchor_chunks = list(chunks)
+        client = self._client
+
+        def op() -> ApplyResult:
+            replacement = client.chat(text)
+            return self._apply_flow(replacement, anchor_chunks)
 
         return self.submit(op)
 

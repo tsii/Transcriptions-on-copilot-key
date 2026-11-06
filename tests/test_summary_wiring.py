@@ -10,6 +10,8 @@ events: every collaborator is a fake or a pure state machine.
 """
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from stt_button.app import Application
@@ -98,11 +100,16 @@ class CoordinatorStub:
         self.cfg = cfg
         self.kwargs = kwargs
         self.submits: list = []
+        self.submit_summaries: list = []
         self.shutdown_calls = 0
         CoordinatorStub.instances.append(self)
 
     def submit(self, op, undo: bool = False) -> bool:
         self.submits.append(op)
+        return True
+
+    def submit_summary(self, text, chunks) -> bool:
+        self.submit_summaries.append((text, list(chunks)))
         return True
 
     def shutdown(self) -> None:
@@ -210,6 +217,8 @@ class TestOnStateWiring:
         # Typer and paster collaborators were passed.
         assert isinstance(coord.kwargs["typer"], TyperStub)
         assert isinstance(coord.kwargs["paster"], PasterStub)
+        # B10r: the coordinator owns the client.
+        assert coord.kwargs["client"] is app._summary_client
         app.shutdown()
         assert coord.shutdown_calls == 1
 
@@ -252,8 +261,13 @@ class TestOnStateWiring:
         listener.on_release(None)
 
         coord = CoordinatorStub.instances[-1]
-        # The gesture reached the coordinator exactly once ...
-        assert len(coord.submits) == 1
+        # The gesture reached the coordinator exactly once, via the
+        # PUBLIC route (B10r): chat+apply as one queued job.
+        assert len(coord.submit_summaries) == 1
+        assert coord.submits == []
+        text, chunks = coord.submit_summaries[0]
+        assert text == "diktat text"
+        assert [c.text for c in chunks] == ["diktat text"]
         # ... and both presses still reached the controller (loss rule).
         assert controller.starts == 2
         # No phantom recording: short releases aborted, never stopped.
@@ -270,5 +284,60 @@ class TestOnStateWiring:
         listener.on_press(None)
         listener.on_release(None)
         coord = CoordinatorStub.instances[-1]
+        assert coord.submit_summaries == []
         assert coord.submits == []
         app.shutdown()
+
+
+class TestPublicRoute:
+    """B10r: public submit_summary, no private cross-module calls."""
+
+    def test_app_never_calls_private_coordinator_methods(self):
+        # Planner condition: `grep -c "coord\\._" app.py` == 0.
+        import stt_button.app as app_mod
+        src = inspect.getsource(app_mod)
+        private_calls = [
+            ln for ln in src.splitlines() if "coord._" in ln]
+        assert private_calls == []
+
+    def test_submit_summary_runs_chat_and_apply_as_one_job(self):
+        from stt_button.summary import (
+            ApplyResult, SummaryCoordinator,
+        )
+
+        class CfgStub:
+            summary_enabled = True
+            summary_wait_idle_s = 0
+            summary_error_sound = ""
+
+        class ControllerStub2:
+            def has_pending_work(self):
+                return False
+
+        class ClientStub:
+            def __init__(self):
+                self.calls: list[str] = []
+
+            def chat(self, text):
+                self.calls.append(text)
+                return "antwort"
+
+        client = ClientStub()
+        coord = SummaryCoordinator(
+            ControllerStub2(), CfgStub(), client=client)
+        applied: list = []
+        expected = ApplyResult(
+            ok=True, status="ok", mode="", removed_text="",
+            inserted_text="antwort", reason=None)
+
+        def fake_apply(replacement, chunks):
+            applied.append((replacement, chunks))
+            return expected
+
+        coord._apply_flow = fake_apply  # instance-level override
+        assert coord.submit_summary("hallo", ["c1"]) is True
+        result = coord.wait_for_result(timeout=2)
+        coord.shutdown()
+        assert result is expected
+        assert client.calls == ["hallo"]
+        assert applied == [("antwort", ["c1"])]
