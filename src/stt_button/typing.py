@@ -908,6 +908,14 @@ class DeltaTyper:
         # is omitted (no second space, one less key press). With an empty
         # to_add there is no paste, so the separate space key remains. Without
         # a paster and with append_space=False, nothing changes.
+        # T1: if the final text ends with sentence-final punctuation, do
+        # NOT embed the trailing space in the paste; deliver it as a real
+        # key("space") keystroke instead. Many target fields trim
+        # trailing whitespace on paste, which would swallow an embedded
+        # space and glue the next dictation to the punctuation.
+        append_space_in_paste = self._append_space and not final_text.endswith(
+            (".", "!", "?", ":", ";")
+        )
         space_in_paste = False
         mode = self._final_mode()
         log.debug("final output mode: %s", mode)
@@ -943,7 +951,7 @@ class DeltaTyper:
                 )
                 if paste_combined is not None:
                     combined_text = (
-                        to_add + " " if self._append_space else to_add
+                        to_add + " " if append_space_in_paste else to_add
                     )
                     t0 = time.monotonic()
                     try:
@@ -955,7 +963,7 @@ class DeltaTyper:
                         # do not follow up; leave the text state unchanged.
                         combined_pasted = True
                     if combined_pasted:
-                        space_in_paste = self._append_space
+                        space_in_paste = append_space_in_paste
                         to_remove = 0
                         to_add = ""
                         self._trace(
@@ -977,7 +985,7 @@ class DeltaTyper:
                     self._trace(f"backspace {time.monotonic() - t0:.3f}s")
                     to_remove = 0
                 t0 = time.monotonic()
-                space_in_paste = self._append_space
+                space_in_paste = append_space_in_paste
                 self._final_paster.paste(
                     to_add + " " if space_in_paste else to_add
                 )
@@ -992,9 +1000,9 @@ class DeltaTyper:
                 merged(
                     to_remove,
                     to_add,
-                    trailing_key="space" if self._append_space else None,
+                    trailing_key="space" if append_space_in_paste else None,
                 )
-                space_in_paste = self._append_space
+                space_in_paste = append_space_in_paste
                 self._trace("type")
                 self._trace(f"output {time.monotonic() - t0:.3f}s")
                 if space_in_paste:
@@ -1010,7 +1018,7 @@ class DeltaTyper:
                 if mode == "legacy":
                     # Appended space instead of a separate space key
                     # (no duplicate space; see above).
-                    space_in_paste = self._append_space
+                    space_in_paste = append_space_in_paste
                     self._final_paster.paste(
                         to_add + " " if space_in_paste else to_add
                     )
@@ -1022,9 +1030,9 @@ class DeltaTyper:
                     # rides along in the clipboard (manual paste). On copy
                     # failure the fallback already typed text + space.
                     copied = self._final_paster.copy(
-                        to_add + " " if self._append_space else to_add
+                        to_add + " " if append_space_in_paste else to_add
                     )
-                    space_in_paste = self._append_space
+                    space_in_paste = append_space_in_paste
                     self._trace(f"copy (no chord) ok={copied}")
                 else:
                     # Browser focus or no paster: typer path, clipboard
