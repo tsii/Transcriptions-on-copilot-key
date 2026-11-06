@@ -17,6 +17,81 @@ log = logging.getLogger(__name__)
 #: Fallback idle window (seconds) when no idle value is given.
 DEFAULT_IDLE_S = 300.0
 
+#: Default maximum interior gap between two anchors (B5).
+DEFAULT_MAX_GAP_CHARS = 2000
+
+#: Default maximum read-text length (B5).
+DEFAULT_MAX_READ_CHARS = 20000
+
+#: Statuses returned by :func:`locate_block`.
+CARET_AT_BLOCK_END = "caret_at_block_end"
+CARET_NOT_AT_END = "caret_not_at_end"
+AMBIGUOUS = "ambiguous"
+NO_MATCH = "no_match"
+GAP_TOO_LARGE = "gap_too_large"
+TOO_LONG = "too_long"
+EMPTY_READ = "empty_read"
+
+
+@dataclass
+class BlockLocation:
+    """Result of locating the anchor block inside the read text.
+
+    ``start``/``end`` are character offsets into the read text and are
+    only set when mutation is allowed (``caret_at_block_end``). The
+    conservative rule applies: without proof, nothing is deletable, so
+    every abort status carries ``start=None``.
+    """
+
+    status: str
+    start: Optional[int] = None
+    end: Optional[int] = None
+
+
+def locate_block(
+    chunks: list[Chunk],
+    read_text: str,
+    *,
+    summary_max_gap_chars: int = DEFAULT_MAX_GAP_CHARS,
+    summary_max_read_chars: int = DEFAULT_MAX_READ_CHARS,
+) -> BlockLocation:
+    """Locate the anchor block (chunk texts) inside the read text.
+
+    Pure function, no I/O. The read text is what a roundtrip reads from
+    field start up to the caret; the chunk texts serve as anchors that
+    must appear in order. The block spans from the first anchor's start
+    to the end of the read text - typed text between anchors is part of
+    the block (M3a). Mutation is only allowed when the read text ends
+    with the last anchor (``caret_at_block_end``); every other situation
+    aborts without a deletable span (conservative rule, plan line 124ff).
+    """
+    if len(read_text) > summary_max_read_chars:
+        return BlockLocation(status=TOO_LONG)
+    if not read_text:
+        return BlockLocation(status=EMPTY_READ)
+    anchors = [c.text for c in chunks if c.text]
+    if not anchors:
+        return BlockLocation(status=NO_MATCH)
+    if any(read_text.count(a) > 1 for a in anchors):
+        return BlockLocation(status=AMBIGUOUS)
+    pos = 0
+    start: Optional[int] = None
+    gap_chars = 0
+    for anchor in anchors:
+        idx = read_text.find(anchor, pos)
+        if idx < 0:
+            return BlockLocation(status=NO_MATCH)
+        if start is None:
+            start = idx
+        else:
+            gap_chars += idx - pos
+        pos = idx + len(anchor)
+    if gap_chars > summary_max_gap_chars:
+        return BlockLocation(status=GAP_TOO_LARGE)
+    if pos != len(read_text):
+        return BlockLocation(status=CARET_NOT_AT_END)
+    return BlockLocation(status=CARET_AT_BLOCK_END, start=start, end=pos)
+
 
 @dataclass
 class Chunk:

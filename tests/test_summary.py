@@ -8,7 +8,64 @@ from __future__ import annotations
 
 import logging
 
-from stt_button.summary import SummaryBuffer
+from stt_button.summary import Chunk, SummaryBuffer, locate_block
+
+
+class TestLocateBlock:
+    """Seven cases for locate_block() (B5) - pure function, no I/O."""
+
+    @staticmethod
+    def _chunks(*texts: str):
+        return [Chunk(text=t, epoch=1, ts=1.0) for t in texts]
+
+    def test_a_match_at_text_end(self) -> None:
+        """(a) read text ends with the block -> span + caret_at_block_end."""
+        res = locate_block(self._chunks("diktat"), "vorne diktat")
+        assert res.status == "caret_at_block_end"
+        assert res.start == 6
+        assert res.end == 12
+
+    def test_b_caret_not_at_end(self) -> None:
+        """(b) user typed after the block -> caret_not_at_end, no span."""
+        res = locate_block(self._chunks("diktat"), "vorne diktat mehr")
+        assert res.status == "caret_not_at_end"
+        assert res.start is None
+        assert res.end is None
+
+    def test_c_ambiguous_anchor(self) -> None:
+        """(c) anchor occurs twice in the read text -> ambiguous."""
+        res = locate_block(self._chunks("diktat"), "diktat diktat")
+        assert res.status == "ambiguous"
+        assert res.start is None
+
+    def test_d_no_match(self) -> None:
+        """(d) anchor missing from the read text -> no_match."""
+        res = locate_block(self._chunks("diktat"), "ganz anderer text")
+        assert res.status == "no_match"
+        assert res.start is None
+
+    def test_e_gap_too_large(self) -> None:
+        """(e) interior between anchors exceeds max gap -> gap_too_large."""
+        res = locate_block(self._chunks("eins", "zwei"),
+                           "eins " + "x" * 11 + " zwei",
+                           summary_max_gap_chars=10)
+        assert res.status == "gap_too_large"
+        assert res.start is None
+
+    def test_f_block_includes_typed_text(self) -> None:
+        """(f) two anchors with typed text between -> block spans it (M3a)."""
+        res = locate_block(self._chunks("eins", "zwei"), "eins getipptes zwei")
+        assert res.status == "caret_at_block_end"
+        assert res.start == 0
+        assert res.end == 19
+
+    def test_g_read_too_long(self) -> None:
+        """(g) read text longer than summary_max_read_chars -> too_long."""
+        res = locate_block(self._chunks("diktat"),
+                           "a" * 21 + " diktat",
+                           summary_max_read_chars=20)
+        assert res.status == "too_long"
+        assert res.start is None
 
 
 class FakeClock:
