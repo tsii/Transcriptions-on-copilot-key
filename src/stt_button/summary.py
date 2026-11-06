@@ -447,6 +447,12 @@ def play_error_sound(name: str, volume: int, *,
 #: Coordinator status when the controller never went idle (B9a).
 BUSY = "busy"
 
+#: Abort reason when the coordinator's enabled switch is off (B9c):
+#: the coordinator is the ONLY switch holder - with
+#: ``cfg.summary_enabled == False`` nothing leaves the machine, no
+#: client call, no tone.
+SUMMARY_DISABLED = "summary_disabled"
+
 #: Abort status when the focused window is not an editable field (B9b).
 FOCUS_NOT_EDITABLE = "focus_not_editable"
 
@@ -531,9 +537,9 @@ class SummaryCoordinator:
     key is emitted. Decisions and undo bookkeeping come solely from the
     :class:`ApplyResult` returned by the submitted operation.
 
-    Queueing multiple jobs, focus gating and the enabled switch are
-    later blocks (B9b/B9c) and intentionally absent here: one job at a
-    time, second submissions are rejected with ``False``.
+    Queueing is intentionally single-slot (B9c): a second job while
+    one is running is discarded with exactly one error tone. The
+    coordinator is the sole holder of the ``summary_enabled`` switch.
     """
 
     IDLE = "idle"
@@ -583,14 +589,24 @@ class SummaryCoordinator:
         """Submit one operation (callable -> ApplyResult).
 
         Returns ``False`` if a job is running or the coordinator is
-        shut down; the job is never queued (B9c).
+        shut down; the job is never queued (queue = B9c). A job
+        discarded because one is already running plays exactly ONE
+        error tone - the tone reports the DISCARD of the second job,
+        not the outcome of the running one.
         """
         with self._lock:
-            if self._shutdown or self._job is not None:
+            if self._shutdown:
                 return False
-            self._job = (op, bool(undo))
-            self._submitted += 1
-            self._done.clear()
+            if self._job is not None:
+                discard = True
+            else:
+                discard = False
+                self._job = (op, bool(undo))
+                self._submitted += 1
+                self._done.clear()
+        if discard:
+            self._play_busy_sound()
+            return False
         self._wake.set()
         return True
 
@@ -661,7 +677,14 @@ class SummaryCoordinator:
                 with self._lock:
                     self._state = self.WORKING
             try:
-                if self._wait_idle():
+                if not self._summary_enabled():
+                    # Sole switch holder (B9c): disabled means the job
+                    # never runs - no client call, no tone, no keys.
+                    result = ApplyResult(
+                        ok=False, status=ABORTED, mode="",
+                        removed_text="", inserted_text="",
+                        reason=SUMMARY_DISABLED)
+                elif self._wait_idle():
                     result = self._safe_call(op)
                 else:
                     self._play_busy_sound()
@@ -697,10 +720,20 @@ class SummaryCoordinator:
         except Exception:  # noqa: BLE001 - sound must never break the FSM
             log.debug("summary error sound failed", exc_info=True)
 
-    @staticmethod
-    def _safe_call(op) -> ApplyResult:
+    def _summary_enabled(self) -> bool:
+        """Enabled switch (B9c); default off like ``Config``."""
+        return bool(getattr(self._cfg, "summary_enabled", False))
+
+    def _safe_call(self, op) -> ApplyResult:
         try:
             return op()
+        except ModelUnavailable as exc:
+            # D7: every ModelUnavailable case plays the error tone.
+            log.info("summary model unavailable: %s", exc)
+            self._play_busy_sound()
+            return ApplyResult(ok=False, status=FAILED, mode="",
+                              removed_text="", inserted_text="",
+                              reason="model_unavailable")
         except Exception:  # noqa: BLE001 - contract: never raise outward
             log.exception("summary operation crashed")
             return ApplyResult(ok=False, status=FAILED, mode="",

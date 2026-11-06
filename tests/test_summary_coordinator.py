@@ -9,8 +9,10 @@ import pytest
 from stt_button.summary import (
     ApplyResult,
     Chunk,
+    ModelUnavailable,
     SummaryCoordinator,
     apply_summary,
+    play_error_sound,
 )
 
 
@@ -111,6 +113,11 @@ class FakeCfg:
     summary_wait_idle_s = 20
     summary_error_sound = "you_lose"
     summary_error_sound_volume = 24000
+    summary_enabled = True
+
+
+class FakeCfgDisabled(FakeCfg):
+    summary_enabled = False
 
 
 def chunk(text):
@@ -388,3 +395,87 @@ def test_d3_roundtrip_empty_read_aborts_with_empty_read_and_tone():
     # not silent: exactly one error tone
     assert len(sounds) == 1
     assert sounds[0] == ("you_lose", 24000)
+
+
+# -- B9c: single-slot queue discard tone + enabled gate ------------------
+
+def test_second_job_discarded_with_single_tone():
+    ctrl = FakeController([False])
+    typer2, paster2 = FakeTyper(), FakePaster()
+    coord, clock, sleeper, sounds = _make_coord(ctrl)
+    started, release = threading.Event(), threading.Event()
+
+    def op():
+        started.set()
+        release.wait(5)
+        return ApplyResult(ok=True, status="applied_typed", mode="typed",
+                           removed_text="a", inserted_text="b", reason=None)
+
+    assert coord.submit(op) is True
+    assert started.wait(5)
+    # second job while one is running: discarded, never queued
+    assert coord.submit(_make_op(typer2, paster2)) is False
+    assert typer2.calls == []  # no parallel typing from the second job
+    assert len(sounds) == 1  # exactly ONE tone for the discarded job
+    assert sounds[0] == ("you_lose", 24000)
+
+    release.set()
+    result = coord.wait_for_result(timeout=5)
+    assert result is not None and result.ok is True
+    # the later success of the first job adds NO further tone
+    assert len(sounds) == 1
+    assert coord.state == SummaryCoordinator.IDLE
+
+
+def _coord_with_popen(controller, cfg, popens):
+    clock = FakeClock()
+    sleeper = FakeSleep(clock)
+
+    def fake_popen(cmd, **kwargs):
+        popens.append(cmd)
+        return object()
+
+    coord = SummaryCoordinator(
+        controller, cfg, clock=clock, sleep=sleeper,
+        play_error=lambda name, volume:
+            play_error_sound(name, volume, popen=fake_popen))
+    return coord
+
+
+def test_disabled_gate_zero_popen_no_client_call():
+    ctrl = FakeController([False])
+    popens, client_calls = [], []
+    coord = _coord_with_popen(ctrl, FakeCfgDisabled(), popens)
+
+    def op():
+        client_calls.append(1)
+        raise ModelUnavailable("http 500")  # forced client failure
+
+    assert coord.submit(op) is True
+    result = coord.wait_for_result(timeout=5)
+
+    assert result is not None and result.ok is False
+    assert result.reason == "summary_disabled"
+    # the coordinator is the ONLY switch holder: the op (and thus the
+    # client) never runs, play_error_sound is never reached
+    assert client_calls == []
+    assert popens == []  # zero Popen calls
+    assert coord.state == SummaryCoordinator.IDLE
+
+
+def test_enabled_model_unavailable_exactly_one_popen():
+    ctrl = FakeController([False])
+    popens = []
+    coord = _coord_with_popen(ctrl, FakeCfg(), popens)
+
+    def op():
+        raise ModelUnavailable("http 500")  # forced client failure
+
+    assert coord.submit(op) is True
+    result = coord.wait_for_result(timeout=5)
+
+    assert result is not None and result.ok is False
+    assert result.status == "failed"
+    assert result.reason == "model_unavailable"
+    assert len(popens) == 1  # exactly one tone
+    assert coord.state == SummaryCoordinator.IDLE
