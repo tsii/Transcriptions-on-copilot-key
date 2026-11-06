@@ -326,6 +326,26 @@ class TestFinalPaste:
         assert events == [], events
         assert t.calls == [("key", "space")], t.calls
 
+    def test_finalize_sentence_final_space_not_suppressed_by_paste(self) -> None:
+        """(T1) Sentence-final punctuation: the trailing space must be a real
+        key('space') keystroke, not embedded in the paste (fields trim it)."""
+        t = FakeTyper()
+        events: list[tuple[str, str]] = []
+
+        class Recorder:
+            def paste(self, text: str) -> None:
+                events.append(("paste", text))
+
+        d = DeltaTyper(t, final_paster=Recorder(), append_space=True)
+        d.update("Hallo Welt")
+        t.calls.clear()
+        d.finalize("Hallo Welt.")
+        # Exactly ONE space, delivered as a real keystroke.
+        assert t.calls.count(("key", "space")) == 1, t.calls
+        # The paste must NOT carry the trailing space (many fields trim it);
+        # the delta here is just the appended '.'.
+        assert events == [("paste", ".")], events
+
     def test_finalize_append_space_without_paster_separate_space(self) -> None:
         """(BUG2/8) Without paster: keep the separate space (existing behavior)."""
         t = FakeTyper()
