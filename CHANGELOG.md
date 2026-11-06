@@ -14,6 +14,14 @@ locally (NVIDIA Parakeet TDT 0.6B, CPU-only, automatic DE+EN).
 ## [Unreleased]
 
 ### Added
+- **Zusammenfassen mit Doppelklick (opt-in, `summary_enabled = false` als
+  Default):** zweimal dieselbe Taste fasst den Sitzungs-Block (diktiert
+  oder getippt) über das Gateway-Modell `my-qwen38-flash-next` zusammen.
+  Hinweis: Text verlässt den Rechner. Grenzen: `caret_not_at_end`
+  (Abbruch ohne Löschen), `gap_too_large`, Undo per Rückgängig-Geste.
+  Das .deb liefert `src/stt_button/sounds/you_lose.wav` mit aus.
+
+### Added
 - Qwen backend on the Intel Arc iGPU: new config key `qwen_device`
   (`auto` default | `xpu` | `cpu`). It falls back to the CPU with a log
   line and never crashes. The separate `.venv-xpu` is built by

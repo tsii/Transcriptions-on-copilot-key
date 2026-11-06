@@ -113,6 +113,38 @@ Until that is done, `.venv-xpu` also reports `resolved=cpu`.
 
 Back to the default: `backend = "parakeet"` and `compute_type = "float32"`.
 
+## Zusammenfassen mit Doppelklick
+
+Optional (opt-in): **zweimal dieselbe Taste** (Doppelklick auf den Copilot-
+key) am Ende einer Sitzung schickt den Sitzungs-Block an ein LLM und ersetzt
+ihn durch eine Zusammenfassung. Der Sitzungs-Block ist die kleinste Spanne,
+die alle Diktate enthält — **diktiert oder getippt** (manuell getippter Text
+zwischen den Diktaten wird mitgefasst; nur getippte Passagen vor dem ersten
+Diktat bleiben unangetastet). Danach kann mit der Geste **Rückgängig**
+gemacht werden (Undo stellt den Originaltext wieder her).
+
+Aktivieren in `~/.config/stt-button/config.toml`:
+
+```toml
+summary_enabled = true    # default: false (aus)
+```
+
+Das Zusammenfassungsmodell läuft auf einem entfernten Gateway und ist
+dort als `my-qwen38-flash-next` konfiguriert.
+
+> **Achtung:** Bei aktivierter Funktion **Text verlässt den Rechner** —
+> der zusammenzufassende Text wird an das Gateway gesendet. Wer das nicht
+> will, lässt `summary_enabled = false` (Default).
+
+Grenzen der Geste: steht der Cursor **nicht am Ende** des Feldes
+(`caret_not_at_end`), erfolgt ein **Abbruch ohne Löschen** — nichts
+gelöscht. Ebenso bricht die Geste mit Ton ab, wenn das Zielfeld ein Terminal oder nicht
+editierbar ist (`focus_not_editable`) oder ein zu großer fremder Block
+zwischen den Diktaten liegt (`gap_too_large`, Schranke
+`summary_max_gap_chars`, Default 2000). Prüfen ohne Service-Berührung:
+`stt-button summary-models` / `summary-test "..."` bzw.
+`tools/summary_check.py`.
+
 ## Development
 
 ```bash

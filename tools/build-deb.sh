@@ -41,6 +41,11 @@ echo "==> Staging: $BUILD_DIR"
 # .models, no tests/, no results/ - the package stays slim.
 mkdir -p "$BUILD_DIR/opt/stt-button"
 cp -r  "$ROOT/src"                 "$BUILD_DIR/opt/stt-button/"
+# Ship the error sounds explicitly: play_error_sound() needs
+# src/stt_button/sounds/you_lose.wav at runtime.
+mkdir -p "$BUILD_DIR/opt/stt-button/src/stt_button/sounds"
+cp    "$ROOT/src/stt_button/sounds/you_lose.wav" \
+      "$BUILD_DIR/opt/stt-button/src/stt_button/sounds/"
 cp    "$ROOT/pyproject.toml"       "$BUILD_DIR/opt/stt-button/"
 cp    "$ROOT/README.md"            "$BUILD_DIR/opt/stt-button/"
 cp    "$ROOT/config.example.toml"  "$BUILD_DIR/opt/stt-button/"

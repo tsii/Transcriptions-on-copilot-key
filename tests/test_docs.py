@@ -69,3 +69,46 @@ class TestModelSwitchDocs:
     def test_konzept_has_qwen_bf16_measurement(self) -> None:
         body = text()
         assert "Qwen3-ASR 1.7B (BF16)" in body
+
+
+CHANGELOG = KONZEPT.parent.parent / "CHANGELOG.md"
+BUILD_DEB = KONZEPT.parent.parent / "tools" / "build-deb.sh"
+
+
+class TestSummaryDocs:
+    """B12: README documents the opt-in double-press summary mode."""
+
+    def test_readme_has_summary_section(self) -> None:
+        assert "## Zusammenfassen mit Doppelklick" in README.read_text(encoding="utf-8")
+
+    def test_readme_documents_summary_enabled(self) -> None:
+        assert "summary_enabled" in README.read_text(encoding="utf-8")
+
+    def test_readme_documents_summary_model(self) -> None:
+        assert "my-qwen38-flash-next" in README.read_text(encoding="utf-8")
+
+    def test_readme_warns_text_leaves_machine(self) -> None:
+        assert "Text verlässt den Rechner" in README.read_text(encoding="utf-8")
+
+    def test_readme_documents_caret_not_at_end(self) -> None:
+        body = README.read_text(encoding="utf-8")
+        assert "caret_not_at_end" in body
+        assert "Abbruch" in body  # abort without deleting
+
+    def test_readme_documents_dictated_or_typed_scope(self) -> None:
+        """Rest scope §2: dictated OR typed text is summarized; undo restores."""
+        body = README.read_text(encoding="utf-8")
+        assert "diktiert oder getippt" in body
+        assert "Rückgängig" in body
+        assert "zweimal dieselbe Taste" in body
+
+    def test_changelog_mentions_summary_mode(self) -> None:
+        body = CHANGELOG.read_text(encoding="utf-8")
+        assert "Zusammenfassen mit Doppelklick" in body
+        assert "summary_enabled" in body
+
+    def test_build_deb_ships_sounds(self) -> None:
+        """B12: the .deb must ship sounds/you_lose.wav."""
+        body = BUILD_DEB.read_text(encoding="utf-8")
+        assert "sounds/" in body
+        assert "you_lose.wav" in body
