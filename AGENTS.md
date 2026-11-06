@@ -52,6 +52,15 @@ P8 Model Fallback (operator order 2026-11-05). The map lives in
    file (ground truth: transcript shows the started `write`, no file on disk).
    When delegating a document write, instruct the subagent to write it in
    sections (several small write/patch calls) instead of one large write.
+   Ground truth 2026-11-06: `my/work-zai-org-glm-5.3-verda` ended SILENTLY THREE
+   times (`sa-b15943d6`, `sa-4471f5bf`, `sa-2f4e0e49`) - run reports `done`,
+   final message empty or just an announcement, ZERO file writes, work tree
+   unchanged - while the same model answered the one-tool probe ("PROBE-B9c
+   ok") and the probe marked it UP. So: an UP probe and a correct probe answer
+   are NOT delegation-fitness proof; the deciding signal is a completed
+   multi-step run. After the second silent death run the chain on
+   `cortecs/glm-5.3` (carried B9b, B9c, B10a, B10b, B10r, B12, B11a attempt) and
+   say in every report which model actually ran (global R2).
 
 ## Rules
 
