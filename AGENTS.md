@@ -1,6 +1,6 @@
 # AGENTS.md — STT-Button Project Rules
 
-Applies only to this repo (git@github.com:tsii/Parakeet-on-copilot-key.git, branch
+Applies only to this repo (git@github.com:tsii/Transcriptions-on-copilot-key.git, branch
 `master`). The global AGENTS.md applies additionally.
 
 ## Lessons from This Session (Context)
@@ -85,5 +85,6 @@ P6 Service. Start, stop, or enable the service only with explicit operator
    approval. Currently: started manually; autostart intentionally not configured yet.
 
 P7 Git. When committing/pushing, push ONLY to
-   git@github.com:tsii/Parakeet-on-copilot-key.git (remote `origin`, branch
-   `master`). Never push to other remotes.
+   git@github.com:tsii/Transcriptions-on-copilot-key.git (remote `origin`, branch
+   `master`). Never push to other remotes. Operator confirmed on 2026-11-10 that this
+   is the correct URL (the repo was renamed from `Parakeet-on-copilot-key`).
