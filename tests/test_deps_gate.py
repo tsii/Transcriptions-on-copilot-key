@@ -116,6 +116,60 @@ def test_missing_module_deps_missing_exit_1(tmp_path):
     assert "deps_missing" in res.stdout
 
 
+# --- V4a: gate lives in the package, tools/ is a thin shell ---
+
+def _run_module_main(fake_py, tmp_path, requirements):
+    """Call stt_button.deps_gate.main() in-process with patched argv."""
+    import stt_button.deps_gate as dg
+    argv = ["deps_gate", "--python", str(fake_py), "--src", str(REPO / "src"),
+            "--requirements", str(requirements),
+            "--report", str(tmp_path / "module-report.md")]
+    old = sys.argv
+    sys.argv = argv
+    try:
+        return dg.main()
+    finally:
+        sys.argv = old
+
+
+def test_package_module_import_and_call(tmp_path):
+    fake = _make_fake_python(tmp_path)
+    req = tmp_path / "runtime-requirements.txt"
+    req.write_text("numpy==1.0.0\n")
+    assert _run_module_main(fake, tmp_path, req) == 0
+    assert (tmp_path / "module-report.md").read_text().find("all_good") >= 0
+
+
+def test_module_requirements_missing_exit_2(tmp_path):
+    fake = _make_fake_python(tmp_path)
+    assert _run_module_main(fake, tmp_path, "/nonexistent") == 2
+
+
+def test_shell_matches_module_exit_levels(tmp_path):
+    fake = _make_fake_python(tmp_path, pip_rc=1)
+    req = tmp_path / "runtime-requirements.txt"
+    req.write_text("numpy==1.0.0\n")
+    # pip_missing -> 1 via both paths
+    res = _run_gate("--python", fake, "--src", REPO / "src",
+                    "--requirements", req, "--report", tmp_path / "r.md")
+    assert res.returncode == 1
+    assert _run_module_main(fake, tmp_path, req) == 1
+    # requirements_missing -> 2 via both paths
+    res = _run_gate("--python", fake, "--src", REPO / "src",
+                    "--requirements", "/nonexistent",
+                    "--report", tmp_path / "r.md")
+    assert res.returncode == 2
+    assert _run_module_main(fake, tmp_path, "/nonexistent") == 2
+
+
+def test_tools_path_contains_no_measurement_logic():
+    text = TOOL.read_text()
+    for marker in ("subprocess", "_parse_requirements", "argparse",
+                   "IMPORT_PROBE", "SHADOW_MODULES", "_run_probe"):
+        assert marker not in text, f"tools/deps_gate.py still contains {marker}"
+    assert "from stt_button.deps_gate import main" in text
+
+
 def test_version_mismatch_deps_missing_exit_1(tmp_path):
     fake = _make_fake_python(tmp_path, version="0.9.0")
     req = tmp_path / "runtime-requirements.txt"
