@@ -90,18 +90,18 @@ cp "$ROOT/packaging/debian/control" "$BUILD_DIR/DEBIAN/control"
 SIZE_KB="$(du -sk "$BUILD_DIR/opt" "$BUILD_DIR/usr" 2>/dev/null | awk '{s+=$1} END{print s+1}')"  # approx. installed size in KB
 sed -i "s|^Installed-Size:.*|Installed-Size: ${SIZE_KB}|" "$BUILD_DIR/DEBIAN/control"
 
-# postinst: hints only. The venv is NOT built here (per user, ~5-15 min on
-# the very first run - too long for a dpkg transaction). The launcher
-# /usr/bin/stt-button does it on first invocation; the user unit has
-# TimeoutStartSec=1800 for exactly that one-time case.
+# postinst: hints only. The Python runtime is NOT installed by dpkg
+# (per user, ML stack too heavy for a dpkg transaction). The user
+# installs into the user site via pip --break-system-packages (Weg B)
+# and then runs `stt-button setup`.
 cat > "$BUILD_DIR/DEBIAN/postinst" <<'POSTINST'
 #!/bin/sh
 set -e
 echo ""
 echo "stt-button: Installation abgeschlossen."
-echo "  1) stt-button setup      (build venv + config + user unit)"
-echo "     (the very first run takes ~5-15 min: torch[cpu] + ML stack)"
-echo "  2) Config: ~/.config/stt-button/config.toml  (key, audio source)"
+echo "  1) pip install --user --break-system-packages \\\n     -r /opt/stt-button/packaging/runtime-requirements.txt"
+echo "     plus torch vom CPU-Index (siehe README / runtime-requirements.txt)"
+echo "  2) stt-button setup      (config + user unit)"
 echo "  3) systemctl --user start stt-button"
 echo "     journalctl --user -u stt-button -f"
 exit 0
