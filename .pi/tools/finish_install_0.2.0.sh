@@ -19,14 +19,27 @@ exec > >(tee -a "$LOG") 2>&1
 
 say() { printf '\n=== %s ===\n' "$*"; }
 
-say "0) guard: is the package installed?"
+say "0) guard: is the package fully configured, and can a venv be built?"
 HAVE="$(dpkg-query -W -f='${Version}' stt-button 2>/dev/null || true)"
-if [ "$HAVE" != "$WANT" ]; then
-  echo "stt-button not installed (found: '${HAVE:-none}', want $WANT)."
-  echo "Run:  sudo dpkg -i $REPO/dist/stt-button_${WANT}_amd64.deb"
+STATE="$(dpkg-query -W -f='${db:Status-Status}' stt-button 2>/dev/null || true)"
+if [ "$HAVE" != "$WANT" ] || [ "$STATE" != "installed" ]; then
+  echo "stt-button is NOT ready (version: '${HAVE:-none}', dpkg state: '${STATE:-absent}')."
+  echo "'unpacked' means dpkg could not configure it - usually missing dependencies."
+  echo "Operator must run (root, P5):"
+  echo "  sudo apt install -y python3-venv python3-pip && sudo dpkg --configure -a"
   exit 20
 fi
-echo "installed version: $HAVE"
+echo "installed version: $HAVE (dpkg state: $STATE)"
+
+# The self-healing launcher builds a per-user venv; Ubuntu ships python3
+# WITHOUT venv/ensurepip unless python3-venv is installed. Without it the
+# bootstrap can only fail, so refuse early instead of half-building a venv.
+if ! python3 -c "import venv, ensurepip" >/dev/null 2>&1; then
+  echo "python3 cannot create venvs (venv/ensurepip missing)."
+  echo "Operator must run (root, P5):  sudo apt install -y python3-venv python3-pip"
+  exit 23
+fi
+echo "python3 venv support: ok ($(python3 -V))"
 
 say "1) backups (config + current user unit)"
 TS="$(date +%Y%m%d-%H%M%S)"
