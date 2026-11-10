@@ -11,7 +11,7 @@ locally (NVIDIA Parakeet TDT 0.6B, CPU-only, automatic DE+EN).
 
 ---
 
-## [Unreleased]
+## [0.2.0] - 2026-11-06
 
 ### Added
 - **Zusammenfassen mit Doppelklick (opt-in, `summary_enabled = false` als
