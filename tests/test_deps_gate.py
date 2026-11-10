@@ -170,6 +170,75 @@ def test_tools_path_contains_no_measurement_logic():
     assert "from stt_button.deps_gate import main" in text
 
 
+# --- V4a-fix: -m entry point must behave like the tools/ shell ---
+
+MOD = "stt_button.deps_gate"
+
+
+def _run_module_subprocess(*args):
+    """Run the gate via `python -m stt_button.deps_gate` in a subprocess."""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO / "src") + (":" + env.get("PYTHONPATH", "")
+                                               if env.get("PYTHONPATH") else "")
+    cmd = [sys.executable, "-m", MOD, *[str(a) for a in args]]
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=60,
+                          cwd=REPO, env=env)
+
+
+def test_dash_m_requirements_missing_exit_2(tmp_path):
+    fake = _make_fake_python(tmp_path)
+    report = tmp_path / "m-report.md"
+    res = _run_module_subprocess("--python", fake, "--src", REPO / "src",
+                                 "--requirements", "/nonexistent",
+                                 "--report", report)
+    assert res.returncode == 2
+    assert "requirements_missing" in res.stdout
+    assert report.is_file()
+
+
+def test_dash_m_pip_missing_exit_1_real_system_python(tmp_path):
+    """Today's stand on this machine: /usr/bin/python3 has no usable pip
+    (the expected level-1 case; no real pip/network needed)."""
+    req = tmp_path / "runtime-requirements.txt"
+    req.write_text("numpy==1.0.0\n")
+    report = tmp_path / "m-report.md"
+    res = _run_module_subprocess("--python", PY3, "--src", REPO / "src",
+                                 "--requirements", req, "--report", report)
+    assert res.returncode == 1
+    assert "pip_missing" in res.stdout
+    assert report.is_file()
+
+
+def test_dash_m_silence_rule_never_exit_0_without_report(tmp_path):
+    """Silence rule: a run that writes no report and prints nothing must
+    never exit 0 (would be a false green). Provoke it with a nonexistent
+    requirements file and a report path in a read-only-ish place is not
+    needed — the guard itself must not swallow the exit level."""
+    fake = _make_fake_python(tmp_path)
+    report = tmp_path / "silent-report.md"
+    res = _run_module_subprocess("--python", fake, "--src", REPO / "src",
+                                 "--requirements", "/nonexistent",
+                                 "--report", report)
+    assert res.returncode != 0 or report.is_file()
+    if res.returncode != 0:
+        assert res.stdout.strip() or report.is_file(), (
+            "silent non-zero exit without any report is acceptable only "
+            "with output")
+
+
+def test_dash_m_matches_tools_shell_levels(tmp_path):
+    fake = _make_fake_python(tmp_path, pip_rc=1)
+    req = tmp_path / "runtime-requirements.txt"
+    req.write_text("numpy==1.0.0\n")
+    res_mod = _run_module_subprocess(
+        "--python", fake, "--src", REPO / "src", "--requirements", req,
+        "--report", tmp_path / "m.md")
+    res_tool = _run_gate("--python", fake, "--src", REPO / "src",
+                         "--requirements", req,
+                         "--report", tmp_path / "t.md")
+    assert res_mod.returncode == res_tool.returncode == 1
+
+
 def test_version_mismatch_deps_missing_exit_1(tmp_path):
     fake = _make_fake_python(tmp_path, version="0.9.0")
     req = tmp_path / "runtime-requirements.txt"
