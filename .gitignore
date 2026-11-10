@@ -15,3 +15,7 @@ models/
 
 # orchestrator runtime state (model availability probe)
 .pi/state/
+
+# local install state and operator backups (never commit personal config copies)
+.pi/backups/
+.pi/logs/
