@@ -5,14 +5,10 @@ Wants=graphical-session.target
 
 [Service]
 Type=simple
-# @EXEC@ is set at install time:
-#   .deb:  /usr/bin/stt-button run   (launcher: secures the per-user venv
-#          idempotently and starts with the venv python)
-#   dev:   @ROOT@/.venv/bin/stt-button run   (venv python directly)
+# @EXEC@ is set at install time (Weg B: system python3 + user site):
+#   .deb:  /usr/bin/stt-button run
+#   dev:   launched via the repo launcher script
 ExecStart=@EXEC@
-# The very first start still builds the venv (torch[cpu] + ML stack, ~5-15 min).
-# After that the start is fast. 1800s only for that one-time case.
-TimeoutStartSec=1800
 Restart=on-failure
 RestartSec=3
 Environment=HF_HOME=%h/.cache/huggingface
