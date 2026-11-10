@@ -42,6 +42,12 @@ P8 Model Fallback (operator order 2026-11-05). The map lives in
    plain chat/completions endpoint answers in 2-5 s (HTTP 200, also for a
    19 kB prompt) - so "endpoint UP" does NOT mean "usable for delegation".
    Treat an agentic probe (one real tool call) as the deciding signal.
+   Re-tested 2026-11-10 23:44: a one-tool agentic probe on the primary
+   `openrouter/kimi-k3.1-pro` completed correctly (it returned the real output of
+   `git log --oneline -1`), so by the rule above Kimi tasks go BACK to that primary.
+   Note what the probe does NOT prove: the 2026-11-05 failures appeared in multi-step
+   runs, so the first multi-step Kimi delegation after this probe must be watched and
+   its result verified, and the report must name the model that actually ran.
    Brief size matters: a 19 kB prompt works on the plain endpoint, and a short
    delegation prompt plus a one-tool task succeeded on the same model, while a
    delegation whose prompt carried an ~11.5 kB inline brief produced only empty
