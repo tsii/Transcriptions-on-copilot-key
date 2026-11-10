@@ -1,21 +1,8 @@
-"""Self-healing bootstrap for the slim .deb (operator, 31.10.).
+"""Dev-only bootstrap helper (no runtime path anymore, Weg B).
 
-The Debian package contains ONLY the Python code, the systemd user
-unit and metadata - no venv, no model, no ML dependencies. This module
-builds the Python runtime on *first start* by itself:
-
-    1. create the venv (``python3 -m venv``; ``python3-venv`` is a Depends)
-    2. torch + torchaudio from the PyTorch CPU index (not PyPI!)
-    2. the ML stack from ``packaging/runtime-requirements.txt`` (PyPI)
-    3. the STT-Button code itself (``--no-deps``)
-
-The ASR model is NOT fetched here - the engine loads it from the
-Hugging Face cache on the first dictation (float32 production path).
-
-Important: this module may import ONLY the standard library. It is
-called by ``app.run`` BEFORE the venv exists and the ML packages are
-installed - an ``import numpy`` here would drive the boot into an
-infinite loop.
+With the venv-free installation (Weg B) the runtime is installed directly
+into the user site; this module is no longer part of any runtime path and
+serves development/legacy setups only.
 """
 from __future__ import annotations
 

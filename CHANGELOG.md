@@ -11,6 +11,20 @@ locally (NVIDIA Parakeet TDT 0.6B, CPU-only, automatic DE+EN).
 
 ---
 
+## [0.2.1] - 2026-11-10
+
+### Changed
+- **Dokumentation: Installation ohne venv (Weg B):** README-Abschnitt mit den
+  Root-Zeilen (`sudo dpkg --purge stt-button`, `sudo apt install -y python3-pip`,
+  `sudo apt install ./dist/stt-button_<Version>_amd64.deb`) und
+  `pip install --user --break-system-packages -r /opt/stt-button/packaging/runtime-requirements.txt`
+  (Drittbibliotheken ins User-Site). Shadow-Isolations-Rezept über
+  `Environment=PYTHONUSERBASE=%h/.local/stt` (Unit + identische Variable bei
+  der Installation) für den Fall, dass ein User-Site-Paket die Systempakete
+  shadowed. `bootstrap.py` ist damit dev-only, kein Laufzeitpfad mehr;
+  `tools/build-deb.sh`-Kopfkommentar korrigiert (kein „first run“-venv-Build
+  mehr, „no .venv“ bleibt).
+
 ## [0.2.0] - 2026-11-10
 
 ### Added

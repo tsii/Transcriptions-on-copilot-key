@@ -3,10 +3,9 @@
 #
 # The package contains ONLY the Python code, the requirements, metadata,
 # a self-healing launcher (/usr/bin/stt-button) and the systemd user
-# unit. The Python runtime (venv + ML stack, per user) is built on the
-# FIRST invocation of /usr/bin/stt-button (~5-15 min, one-time); the
-# ASR model is loaded by the engine from Hugging Face on the first
-# dictation.
+# unit. The Python dependencies are installed per user (Weg B:
+# `pip install --user --break-system-packages`, see README); the ASR model
+# is loaded by the engine from Hugging Face on the first dictation.
 #
 # Result: dist/stt-button_<version>_amd64.deb
 #

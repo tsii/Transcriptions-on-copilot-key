@@ -112,3 +112,42 @@ class TestSummaryDocs:
         body = BUILD_DEB.read_text(encoding="utf-8")
         assert "sounds/" in body
         assert "you_lose.wav" in body
+
+
+BOOTSTRAP = KONZEPT.parent.parent / "src" / "stt_button" / "bootstrap.py"
+
+
+class TestVenvFreeWayBDocs:
+    """V7: README documents the venv-free installation (Weg B)."""
+
+    def test_readme_has_weg_b_section(self) -> None:
+        assert "## Installation ohne venv (Weg B)" in README.read_text(encoding="utf-8")
+
+    def test_readme_documents_break_system_packages(self) -> None:
+        body = README.read_text(encoding="utf-8")
+        assert "pip install --user --break-system-packages -r /opt/stt-button/packaging/runtime-requirements.txt" in body
+
+    def test_readme_documents_pythonuserbase_shadow_recipe(self) -> None:
+        body = README.read_text(encoding="utf-8")
+        assert "PYTHONUSERBASE" in body
+        assert "Environment=PYTHONUSERBASE=%h/.local/stt" in body
+
+    def test_changelog_has_021_entry(self) -> None:
+        body = CHANGELOG.read_text(encoding="utf-8")
+        assert "[0.2.1]" in body
+        assert "2026-11-10" in body
+
+    def test_build_deb_header_no_first_run_claim(self) -> None:
+        header = "\n".join(
+            BUILD_DEB.read_text(encoding="utf-8").splitlines()[:15]
+        )
+        assert "built on the" not in header
+        assert "no .venv" in header
+
+    def test_bootstrap_docstring_is_dev_only(self) -> None:
+        body = BOOTSTRAP.read_text(encoding="utf-8")
+        docstring = body.split('"""')[1]
+        assert "dev" in docstring
+        assert "first start" not in docstring
+        assert "builds the Python runtime" not in docstring
+        assert "called by ``app.run``" not in docstring

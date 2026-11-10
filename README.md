@@ -46,6 +46,39 @@ systemctl --user start stt-button
 journalctl --user -u stt-button -f
 ```
 
+## Installation ohne venv (Weg B)
+
+Der venv-freie Weg (Weg B) installiert die Drittbibliotheken direkt ins
+User-Site `~/.local/lib/python3.12/site-packages` — ohne das bootstrap-venv.
+Bootstrap (`stt-button setup` venv) ist ab Weg B nur noch dev-only und kein
+Laufzeitpfad mehr.
+
+Voraussetzungen und Installation als root:
+
+```bash
+sudo dpkg --purge stt-button            # alte Installation entfernen (falls vorhanden)
+sudo apt install -y python3-pip
+sudo apt install ./dist/stt-button_<Version>_amd64.deb
+```
+
+Dann die Drittbibliotheken ins User-Site installieren:
+
+```bash
+pip install --user --break-system-packages -r /opt/stt-button/packaging/runtime-requirements.txt
+```
+
+### Shadow-Isolation (`PYTHONUSERBASE`)
+
+Falls ein anderweitig installiertes numpy/scipy/soundfile/pyaudio im
+User-Site eine Shadow-Installation des Systempakets verdrängt, isoliert man
+den Dienst in einem eigenen User-Site:
+
+1. In der systemd-Unit `Environment=PYTHONUSERBASE=%h/.local/stt` setzen.
+2. Bei der Installation identische Variable setzen:
+   `PYTHONUSERBASE=$HOME/.local/stt pip install --user --break-system-packages -r /opt/stt-button/packaging/runtime-requirements.txt`
+
+So sieht der Dienst ausschließlich das eigene, isolierte User-Site.
+
 ## Usage
 
 ```bash
