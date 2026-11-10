@@ -42,20 +42,23 @@ Baseline 821 passed / 2 skipped). Auftrag `.pi/briefs/planner_task_no_venv_B.md`
   Eingriff in getesteten Code ohne Nutzen.
 * Raus damit aus: Launcher (V2), `_cmd_setup` (V4), Unit-Kommentar (V3), postinst-Hinweis (V6),
   `control`-Depends (V5). Ein Guard-Test (V4) hält dauerhaft fest, dass weder Launcher noch
-  `__main__.py` noch die Unit `bootstrap` referenzieren.
+  `_cmd_setup` noch die Unit `bootstrap` referenzieren. Der **Unterbefehl `stt-button bootstrap`
+  bleibt** als dev-Werkzeug bestehen (einziger Weg, die Repo-Rückfall-Reserve `.venv` wiederzubauen,
+  R7; eigene Tests in `tests/test_bootstrap.py`) — er ist Entwicklungspfad, nicht Laufzeitpfad.
 * `stt-button setup` darf künftig: prüfen (System-Python, pip, Pflichtmodule, Versionen gegen den
   Lock, PEP-668-Hinweis), Konfiguration anlegen, **und nur auf explizites `--install-unit`** eine
   Unit schreiben — mit Verweigerung, wenn die existente Unit auf ein anderes Ziel zeigt als die
   vorlagende Vorlage (N10 ist genau die Gefahr, die die Repo-Produktion beim nächsten Neustart
   getötet hätte). Ohne Flag bleibt es ein Dry-Run mit Klartext-Ausgabe des Zielziels.
 
-## 3. BLÖCKE V1..V8 (ROT→GRÜN, ein Commit je Block, Suite `nice -n 19 .venv/bin/python -m pytest -q -p no:randomly -o addopts=""`)
+## 3. BLÖCKE V1..V8 (inkl. V4a) — ROT→GRÜN, ein Commit je Block, Suite `nice -n 19 .venv/bin/python -m pytest -q -p no:randomly -o addopts=""`)
 
-Reihenfolge ist sicherheitsrelevant: **V1 zuerst**, dann R1/R2/R3 (§4), dann **V2..V8 im Repo
-committet**, erst danach **R4** (Gate + `tools/build-deb.sh`) — denn das gebaute 0.2.1-Paket enthält
-Launcher, Unit-Vorlage, `control` und postinst, also müssen V2/V3/V5/V6 schon committet sein, bevor
-R4 das Deb baut. Danach R5 (Paket root-seitig) und R6 (Unit-Tausch). V2..V8 fassen keinen laufenden
-Dienst an; die Repo-Produktion läuft während V1..V8 unverändert weiter.
+Reihenfolge ist sicherheitsrelevant, aber **nicht zeitlich an R1..R3 gekoppelt**: **V1 zuerst**, dann dürfen **alle Repo-Blöcke V2..V8 jederzeit** committet werden — auch **vor** R1/R2/R3 (§4). Begründung (Orchestrator gemessen, Planer bestätigt): der Launcher liegt in keinem aktiven Pfad (Produktion `ExecStart=…/.venv/bin/stt-button -v run`), das Paket ist `unpacked/unconfigured`, `/usr/bin/stt-button` nutzt keine geladene Unit, und V2..V8 brauchen kein pip.
+V2..V8 fassen keinen laufenden Dienst an; die Repo-Produktion läuft während V1..V8 unverändert weiter.
+**Zwingend nach V2..V8:** R4 (`tools/build-deb.sh`), weil das gebaute Deb Launcher, Unit-Vorlage,
+`control` und postinst enthält — V2/V3/V5/V6 müssen dann committet sein. **Zwingend nach R5:** nur
+was `/opt` voraussetzt — Gate-Lauf mit Default-Pfaden (§5.3/§5.4) und der Unit-Tausch R6.
+**V8 ist der letzte Commit der V-Serie** (er prüft alle sechs Stellen zusammen).
 
 | Block | Ziel | Dateien | Test (zuerst ROT) | Commit-Titel | Rückholweg |
 |---|---|---|---|---|---|
@@ -63,7 +66,8 @@ Dienst an; die Repo-Produktion läuft während V1..V8 unverändert weiter.
 | **V2** Launcher ohne Bootstrap | Bootstrap-Block (`:23-31`) und venv-Teil (`:32-38`) raus; stattdessen Import-Check der Kernmodule mit klarem pip-Hint, dann `exec /usr/bin/python3 -m stt_button "$@"`. `PYTHONPATH` **nur** `$ROOT/src` (enthält nur `stt_button`, kein Fremdmodul) | `systemd/stt-button-launcher.sh` | `tests/test_launcher.py` (neu): `sh -n` grün; enthält kein `run_bootstrap`/`venv`; enthält `exec /usr/bin/python3 -m stt_button`; `PYTHONPATH`-Zeile nennt ausschließlich `$ROOT/src`; Import-Check + Hint vorhanden | `refactor(deb): launcher runs system python without bootstrap` | `git revert` (eine Datei) |
 | **V3** Unit-Vorlage ohne Bootstrap-Timeout | `TimeoutStartSec=1800` + venv-Kommentar (`:13-15`) raus, `@EXEC@`-Kommentar auf Weg B; `HF_HOME` bleibt. **Reine Vorlagenänderung, die lebende Unit wird nicht angefasst** | `systemd/stt-button.service` | `tests/test_unit_template.py` (neu): kein `1800`, kein Wort `venv`, `Environment=HF_HOME` vorhanden, `ExecStart=@EXEC@` unverändert | `refactor(systemd): drop one-time venv build timeout` | `git revert`; geladene Unit ist davon unberührt |
 
-| **V4** `setup` ohne venv, mit Unit-Schutz | `_cmd_setup` (`__main__.py:330-405`) umbauen: kein `run_bootstrap`/`probe_venv`/`mark_ready`; stattdessen Gate-Prüfung (V1-Funktionen aus `tools/deps_gate.py` importierbar machen oder identische Prüfroutine in `bootstrap`-freier Helper), Konfig-Seeding wie bisher, Unit **nur** mit `--install-unit`; bei existenter Unit mit anderem `ExecStart` → Abbruch mit Grund; ohne Flag Dry-Run | `src/stt_button/__main__.py` | `tests/test_setup_cli.py` (neu): (a) `setup` ohne Flag schreibt **keine** Unit-Datei; (b) `setup --install-unit` mit abweichender existenter Unit → Exitlevel 1, Datei unverändert; (c) kein Aufruf von `bootstrap` aus `__main__.py` (Quelltext-Grep); (d) Seeding einer fehlenden Config funktioniert | `feat(cli): setup verifies runtime, no venv build, guarded unit install` | `git revert` (eine Datei); an der Nutzer-Unit wurde nichts geändert |
+| **V4a** Gate ins Paket | Messroutine wandert nach `src/stt_button/deps_gate.py` (Exitlevel-Vokabular aus V1 unverändert); `tools/deps_gate.py` wird zur dünnen Hülle (`from stt_button.deps_gate import main; sys.exit(main())`) — **keine** Logik im `tools/`-Pfad, weil `tools/` nicht ins Deb gehört und `setup` im installierten Paket sonst ins Leere greift | `src/stt_button/deps_gate.py` (neu), `tools/deps_gate.py` (Hülle) | `tests/test_deps_gate.py` (erweitern): Import + Aufruf über `stt_button.deps_gate` funktioniert; CLI-Hülle liefert dieselben Exitlevels (0/1/2/3) wie der Modulaufruf; `requirements_missing` bleibt Level 2 | `refactor(tools): move dependency gate into the package` | `git revert` (beide Dateien zurück auf V1-Stand) |
+| **V4** `setup` ohne venv, mit Unit-Schutz | `_cmd_setup` (`__main__.py:330-405`) umbauen: kein `run_bootstrap`/`probe_venv`/`mark_ready`; stattdessen Gate-Prüfung (V1-Funktionen aus `tools/deps_gate.py` importierbar machen oder identische Prüfroutine in `bootstrap`-freier Helper), Konfig-Seeding wie bisher, Unit **nur** mit `--install-unit`; bei existenter Unit mit anderem `ExecStart` → Abbruch mit Grund; ohne Flag Dry-Run | `src/stt_button/__main__.py` | `tests/test_setup_cli.py` (neu): (a) `setup` ohne Flag schreibt **keine** Unit-Datei; (b) `setup --install-unit` mit abweichender existenter Unit → Exitlevel 1, Datei unverändert; (c) **kein `bootstrap`-Aufruf im Rumpf von `_cmd_setup`** — geprüft wird `inspect.getsource(_cmd_setup)` (nicht die ganze Datei: der Unterbefehl `stt-button bootstrap` bleibt als dev-Werkzeug, D2); (d) Seeding einer fehlenden Config funktioniert | `feat(cli): setup verifies runtime, no venv build, guarded unit install` | `git revert` (eine Datei); an der Nutzer-Unit wurde nichts geändert |
 | **V5** `control`-Abhängigkeiten | `Depends: python3, python3-pip, pipewire-bin, pulseaudio-utils, wtype` (`python3-venv` raus); Beschreibungstext auf `pip install --user --break-system-packages` umformulieren | `packaging/debian/control` | `tests/test_deb_control.py` (neu): `python3-venv` nicht in `Depends`, `python3-pip` darin, Beschreibung enthält `--user`, kein Wort `venv` in der Laufzeitbeschreibung | `fix(packaging): drop python3-venv, require python3-pip` | `git revert` |
 | **V6** postinst-Hinweis auf Weg B | Text `tools/build-deb.sh:93-109`: Schritte 1) `pip install --user --break-system-packages -r /opt/stt-button/packaging/runtime-requirements.txt` (+ torch-Zeile), 2) `stt-button setup`, 3) Neustart; kein venv-Satz mehr | `tools/build-deb.sh` | in `tests/test_setup_script.py` (bestehend, erweitern): `bash -n` grün, postinst-Text enthält `--break-system-packages` und kein `venv` | `fix(packaging): postinst guides the user-site install` | `git revert` |
 
