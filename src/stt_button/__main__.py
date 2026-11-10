@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import urllib.request
+from pathlib import Path
 
 from .config import ConfigError, load_config
 from .typing import _capslock_leds, _capslock_state
@@ -327,82 +328,106 @@ def _cmd_compare_stream(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_setup(args: argparse.Namespace) -> int:
-    """Installs the runtime + configuration + user service unit.
+def _setup_install_root() -> Path:
+    """Package root holding config/unit templates (same rule as the launcher)."""
+    here = Path(__file__).resolve().parent
+    for base in (here.parent, here.parent.parent, Path("/opt/stt-button")):
+        if (base / "pyproject.toml").is_file():
+            return base
+    return here.parent
 
-    Is the first step on a system where the slim .deb was freshly
-    installed: builds the venv incl. ML stack (via bootstrap), seeds
-    ``~/.config/stt-button/config.toml`` (only if it is missing), and
-    installs the systemd user unit. Everything is idempotent - a rerun
-    is a no-op as long as the venv is ready.
+
+def _cmd_setup(args: argparse.Namespace) -> int:
+    """Verify the runtime (deps_gate, no venv build), seed config, guarded unit install.
+
+    First step on a system where the slim .deb was freshly installed.
+    The Python runtime is only VERIFIED (deps_gate exit levels 0/1/2/3),
+    never built here.  ``~/.config/stt-button/config.toml`` is seeded only
+    if missing.  The systemd user unit is written ONLY with an explicit
+    ``--install-unit``; an existing unit with a different ExecStart is
+    never overwritten (abort, exit 1) - protecting the running
+    production unit from being silently switched.
     """
     import os
-    import shutil
     import sys
 
     from pathlib import Path
 
-    from . import bootstrap
+    from . import deps_gate
 
-    # 1) Python runtime (venv + torch[cpu] + ML stack) - per-user venv,
-    #    same default as the .deb launcher (bootstrap.run_bootstrap).
-    venv_dir = Path(os.path.expanduser("~/.local/stt-button/venv"))
-    if bootstrap.probe_venv(venv_dir):
-        print(f"[1/3] Python runtime already ready ({venv_dir}) - skipped.")
-        bootstrap.mark_ready(venv_dir)
-    elif not bootstrap.run_bootstrap():
-        print(
-            "Bootstrap: Python runtime NOT completed."
-            "\n  Check the lines above, possibly missing python3-venv",
-            "  or network (torch from the PyTorch CPU index).",
-            file=sys.stderr,
-        )
-        return 1
-    else:
-        print("[1/3] Python runtime ready (venv + ML stack).")
+    home = Path(os.path.expanduser("~"))
+
+    # 1) Runtime gate (no venv build, no network) - deps_gate.main() parses
+    #    sys.argv itself, so it gets a clean minimal argv.
+    saved_argv = sys.argv
+    sys.argv = ["deps_gate"]
+    try:
+        level = deps_gate.main()
+    finally:
+        sys.argv = saved_argv
+    if level != 0:
+        print(f"[1/3] Runtime check FAILED (deps_gate exit {level})."
+              "\n  See the gate report above; setup aborted.", file=sys.stderr)
+        return level
+    print("[1/3] Runtime check passed (deps_gate exit 0).")
 
     # 2) Seed the configuration (only if not present)
-    cfg_dir = Path(os.path.expanduser("~/.config/stt-button"))
+    cfg_dir = home / ".config/stt-button"
     cfg_path = cfg_dir / "config.toml"
     if not cfg_path.exists():
+        import shutil
+
         cfg_dir.mkdir(parents=True, exist_ok=True)
         # Template from the installed package (if present), else default.
-        source = bootstrap._default_install_root() / "config.example.toml"
+        source = _setup_install_root() / "config.example.toml"
         if source.is_file():
             shutil.copyfile(source, cfg_path)
         else:
-            cfg_path.write_text("# STT-Button: defaults apply (see config.example.toml)\n")
-        seeded = True
+            cfg_path.write_text(
+                "# STT-Button: defaults apply (see config.example.toml)\n")
         print(f"[2/3] Configuration created: {cfg_path}")
     else:
         print(f"[2/3] Configuration present: {cfg_path} (unchanged)")
 
-    # 3) Install the user service unit (deployment: /opt/stt-button)
-    unit_src = bootstrap._default_install_root() / "systemd" / "stt-button.service"
-    unit_dir = Path(os.path.expanduser("~/.config/systemd/user"))
+    # 3) systemd user unit - guarded install, dry-run without the flag.
+    unit_src = _setup_install_root() / "systemd" / "stt-button.service"
+    unit_dir = home / ".config/systemd/user"
     unit_dst = unit_dir / "stt-button.service"
-    if unit_src.is_file():
-        unit_dir.mkdir(parents=True, exist_ok=True)
-        # Replace @EXEC@: in the .deb run the unit points at the launcher
-        # /usr/bin/stt-button; in the source tree at the project (dev venv).
-        if Path("/opt/stt-button").exists():
-            exec_target = "/usr/bin/stt-button run"
-        else:
-            root = bootstrap._default_install_root()
-            exec_target = f"{root}/.venv/bin/stt-button run"
-        text = unit_src.read_text().replace("@EXEC@", exec_target)
-        unit_dst.write_text(text)
-        print(f"[3/3] user unit written: {unit_dst} (ExecStart={exec_target})")
+    if not unit_src.is_file():
+        print("[3/3] no service unit template found (nothing to install).")
+        return 0
+    if Path("/opt/stt-button").exists():
+        exec_target = "/usr/bin/stt-button run"
     else:
-        print("[3/3] no service unit installed (no template).")
+        exec_target = f"{_setup_install_root()}/.venv/bin/stt-button run"
 
-    print("")
-    print("Done. Next steps:")
-    print(f"  1) Adjust config:      {cfg_path}")
-    print("  2) Load + start unit: systemctl --user daemon-reload")
-    print("     systemctl --user start stt-button")
-    print("     systemctl --user enable --now stt-button   (optional, autostart)")
-    print("  3) Log:                   journalctl --user -u stt-button -f")
+    if unit_dst.is_file():
+        cur_exec = None
+        for line in unit_dst.read_text().splitlines():
+            if line.strip().startswith("ExecStart="):
+                cur_exec = line.split("=", 1)[1].strip()
+                break
+        if cur_exec is not None and cur_exec != exec_target:
+            print(
+                f"[3/3] REFUSING to overwrite existing user unit: {unit_dst}"
+                f"\n  existing ExecStart={cur_exec}"
+                f"\n  intended  ExecStart={exec_target}"
+                "\n  (setup never switches an existing unit; edit it manually"
+                " if this is really intended)", file=sys.stderr)
+            return 1
+        print(f"[3/3] user unit already present"
+              f" (ExecStart={cur_exec}) - unchanged.")
+        return 0
+
+    if not getattr(args, "install_unit", False):
+        print("[3/3] DRY-RUN: unit NOT written (pass --install-unit to write it).")
+        print(f"  would write: {unit_dst} (ExecStart={exec_target})")
+        return 0
+
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    text = unit_src.read_text().replace("@EXEC@", exec_target)
+    unit_dst.write_text(text)
+    print(f"[3/3] user unit written: {unit_dst} (ExecStart={exec_target})")
     return 0
 
 
@@ -504,8 +529,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_setup = sub.add_parser(
         "setup",
-        help="install runtime (venv+ML), seed config, set user unit",
+        help="verify runtime (no venv build), seed config, guarded unit install",
     )
+    p_setup.add_argument("--install-unit", action="store_true",
+                          help="write the systemd user unit (never over an "
+                               "existing unit with a different ExecStart)")
     p_setup.set_defaults(func=_cmd_setup)
 
     p_boot = sub.add_parser(
