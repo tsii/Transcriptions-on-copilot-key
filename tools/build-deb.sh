@@ -2,7 +2,7 @@
 # Builds a slim .deb from the source tree (no .venv, no .models).
 #
 # The package contains ONLY the Python code, the requirements, metadata,
-# a self-healing launcher (/usr/bin/stt-button) and the systemd user
+# a slim launcher (/usr/bin/stt-button) and the systemd user
 # unit. The Python dependencies are installed per user (Weg B:
 # `pip install --user --break-system-packages`, see README); the ASR model
 # is loaded by the engine from Hugging Face on the first dictation.
@@ -72,7 +72,7 @@ s = re.sub(r'^typer\s*=\s*"dotool".*$',
 open(p, "w", encoding="utf-8").write(s)
 PY
 
-# --- /usr/bin/stt-button (self-healing launcher) -------------------------------
+# --- /usr/bin/stt-button (slim launcher) ---------------------------------------
 mkdir -p "$BUILD_DIR/usr/bin"
 cp "$ROOT/systemd/stt-button-launcher.sh" "$BUILD_DIR/usr/bin/stt-button"
 chmod 0755 "$BUILD_DIR/usr/bin/stt-button"

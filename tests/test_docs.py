@@ -151,3 +151,30 @@ class TestVenvFreeWayBDocs:
         assert "first start" not in docstring
         assert "builds the Python runtime" not in docstring
         assert "called by ``app.run``" not in docstring
+
+
+CONTROL = KONZEPT.parent.parent / "packaging" / "debian" / "control"
+
+
+class TestV7bLegacyVenvDocsRemoved:
+    """V7b: the venv-era installation text is rewritten (Weg B only)."""
+
+    def test_readme_no_local_venv_path(self) -> None:
+        assert "~/.local/stt-button/venv" not in README.read_text(encoding="utf-8")
+
+    def test_readme_no_python3_venv_dep(self) -> None:
+        assert "python3-venv" not in README.read_text(encoding="utf-8")
+
+    def test_readme_no_build_venv_claim(self) -> None:
+        assert "build venv" not in README.read_text(encoding="utf-8")
+
+    def test_no_self_healing_anywhere(self) -> None:
+        for p in (README, CONTROL, BUILD_DEB):
+            assert "self-healing" not in p.read_text(encoding="utf-8").lower()
+
+    def test_weg_b_section_still_present(self) -> None:
+        assert "## Installation ohne venv (Weg B)" in README.read_text(encoding="utf-8")
+
+    def test_build_deb_header_no_venv_claim_still_present(self) -> None:
+        header = "\n".join(BUILD_DEB.read_text(encoding="utf-8").splitlines()[:15])
+        assert "no .venv" in header

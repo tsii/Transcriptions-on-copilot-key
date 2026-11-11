@@ -27,20 +27,21 @@ sudo dpkg -i dist/stt-button_<version>_amd64.deb
 ```
 
 The package deliberately contains **no** Python venv and **no** ASR model:
-- The **venv + ML stack** (`torch[cpu]`, `transformers`, `onnxruntime`, …) are set up
-  per user under `~/.local/stt-button/venv` on the **first invocation** of
-  `/usr/bin/stt-button` (or `stt-button setup`) (~5–15 min, one time only).
+- The **ML stack** (`torch[cpu]`, `transformers`, `onnxruntime`, …) is installed
+  per user with the **system Python** into the user site-packages via
+  `pip install --user --break-system-packages` (see "Installation ohne venv
+  (Weg B)" below; one-time, ~5–15 min).
 - The engine downloads the **ASR model** from Hugging Face on the first dictation
   (~200 MB, then cached under `~/.cache/huggingface`).
 
 Installation requires (pulled in automatically): `python3`,
-`python3-venv`, `python3-pip`, `pipewire-bin`, `pulseaudio-utils`, `wtype`.
+`python3-pip`, `pipewire-bin`, `pulseaudio-utils`, `wtype`.
 Optional: `wl-clipboard`, `dotool` (the default typer is `wtype`), `gnome-shell`.
 
 After installation:
 
 ```bash
-stt-button setup            # build venv + config.seed + user unit
+stt-button setup            # check deps + config.seed + user unit
 # adjust ~/.config/stt-button/config.toml (key, audio source, typer)
 systemctl --user start stt-button
 journalctl --user -u stt-button -f

@@ -12,7 +12,7 @@ Description: Push-to-Talk dictation (Copilot key -> Parakeet ASR -> text)
  to the cursor position of the focused window.
  .
  Runtime design: the package contains the Python code, a
- self-healing launcher (/usr/bin/stt-button), the systemd user unit and
+ slim launcher (/usr/bin/stt-button), the systemd user unit and
  a requirements profile. Third-party dependencies (torch[cpu],
  transformers, onnxruntime, ...) are installed into the user's Python
  site-packages on first setup via 'pip install --user
