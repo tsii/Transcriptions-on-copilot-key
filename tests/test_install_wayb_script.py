@@ -133,3 +133,12 @@ def test_r4_and_r5_both_recheck_the_gate():
     r6 = text.index("step_r6()")
     assert "run_gate" in text[r4:r5]
     assert "run_gate" in text[r5:r6]
+
+def test_deb_version_is_overridable_not_baked_only():
+    """R5 must not be pinned to one version string: the 0.2.1 build got a
+    follow-up fix (0.2.2) and a hardcoded path would silently install the
+    launcher with the broken import check again."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "STT_DEB" in text
+    assert re.search(r'DEB="\$\{STT_DEB:-[^"]+\}"', text), \
+        "DEB must be ${STT_DEB:-<default>} so the operator can pick the artifact"

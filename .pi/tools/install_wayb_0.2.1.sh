@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install_wayb_0.2.1.sh — venv-free switch for release 0.2.1 (Way B).
+# install_wayb_0.2.1.sh — venv-free switch for way B (default package: 0.2.2).
 # Dry-run by default; root steps and the unit switch run only with --apply.
 # The operator runs this (sudo needs a password); production never dies.
 # Usage:
@@ -13,7 +13,7 @@ cd "$REPO"
 PY=/usr/bin/python3
 SRC="$REPO/src"
 REQ="$REPO/packaging/runtime-requirements.txt"
-DEB="$REPO/dist/stt-button_0.2.1_amd64.deb"
+DEB="${STT_DEB:-$REPO/dist/stt-button_0.2.2_amd64.deb}"
 GATE_TOOL="$REPO/.venv/bin/python"
 GATE_SCRIPT="$REPO/tools/deps_gate.py"
 GATE_REPORT="$REPO/.pi/reports/deps_gate_wayb.md"
@@ -185,7 +185,7 @@ step_r4() {
 }
 
 step_r5() {
-  log "== R5: install the 0.2.1 deb (root) =="
+  log "== R5: install the deb (root): $(basename "$DEB") =="
   log "  gate Level re-check before install:"
   run_gate
   if [ "$MODE" = "apply" ]; then
