@@ -67,6 +67,26 @@ P8 Model Fallback (operator order 2026-11-05). The map lives in
    multi-step run. After the second silent death run the chain on
    `cortecs/glm-5.3` (carried B9b, B9c, B10a, B10b, B10r, B12, B11a attempt) and
    say in every report which model actually ran (global R2).
+   Ground truth 2026-11-11 (three separate findings, all measured):
+   (a) `my/work-sipgate-coding-ultra` is NOT delegation-fit as delivered: the
+   first run read all four input documents and reported `done` with ZERO output
+   file and `(no result)` (`conv-2a5ba4cc`); it only completed after the brief
+   was cut to "facts inline, first call is the write, six tiny patches".
+   Brief shape, not model, was the binding constraint - apply that shape to
+   every document-write delegation.
+   (b) `subagent(action=steer)` on a STOPPED child is not processed: the
+   injected message just sits there (message count and last tool unchanged over
+   two pulses). Recovery is a fresh spawn, never a steer on a dead run.
+   (c) Session files ARE the ground truth for the model, but only persistent
+   children write them (measured 2026-11-11: `conv-25f42aa9` -> file with
+   `deepseek-v4-pro-0813`, `conv-2a5ba4cc` and `conv-556d08e3` -> files with
+   `work-sipgate-coding-ultra`; the ephemeral `sa-71779dcf` left no file). Both
+   sipgate children self-reported `cortecs/glm-5.3` - FALSE, the files say
+   sipgate ran. Fourth measured case of a wrong self-report: trust the spawn
+   message, and use `find <session dir> -mmin -N` + the per-turn `model` field
+   as the tiebreaker (note the doubled-dash dir name
+   `--home-salmon-pi-web-ui-STT-Button--`; a single-dash path silently finds
+   nothing and reads as "no file").
 
 ## Rules
 
