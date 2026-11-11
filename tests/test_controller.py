@@ -6,6 +6,7 @@ Wayland tool.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -18,6 +19,28 @@ from stt_button.controller import ControllerState, PushToTalkController
 from stt_button.typing import DeltaTyper
 
 
+# FH1 timing lever: artificially slow down source.read() to reproduce the
+# capture-thread starvation flakes (FL1-FL4). With a brake, the capture
+# thread delivers chunks slowly, so tests that blindly assume "N run_once
+# ticks = N chunks" fail deterministically. Set via env so the same test
+# code runs braked and unbraked.
+READ_DELAY_S = float(os.environ.get("STT_TEST_READ_DELAY", "0") or 0)
+
+
+def _wait_delivered(source, n: int, timeout: float = 5.0, what: str = "") -> None:
+    """Wait (with deadline) until the capture thread has actually handed over
+    n chunks from the source — the honest signal for the audio queue fill
+    level. An expired deadline is an explicit error, not silence.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and source.delivered < n:
+        time.sleep(0.005)
+    assert source.delivered >= n, (
+        f"Capture-Thread lieferte nur {source.delivered}/{n} Chunks {what} "
+        f"innerhalb der {timeout}s-Deadline (Queue-Fuellung nie erreicht)"
+    )
+
+
 class FakeAudioSource:
     """Schiebt vordefinierte Chunks."""
 
@@ -25,6 +48,7 @@ class FakeAudioSource:
         self.chunks = list(chunks)
         self.started = 0
         self.stopped = 0
+        self.delivered = 0
 
     def start(self) -> None:
         self.started += 1
@@ -36,7 +60,10 @@ class FakeAudioSource:
         return out
 
     def read(self, block: bool = True) -> bytes:
+        if READ_DELAY_S:
+            time.sleep(READ_DELAY_S)
         if self.chunks:
+            self.delivered += 1
             return self.chunks.pop(0)
         return b""
 
@@ -329,18 +356,27 @@ class TestStateLifecycle:
 class TestStreaming:
     def test_run_once_feeds_and_transcribes(self) -> None:
         ctrl, ctx = make_controller()
+        source = ctx["source"]
         ctrl.start_recording()
-        # Two run_once calls = 2 chunks of 0.5s = 1.0s >= min_audio_s (0.8s)
+        # Wait for the ACTUAL queue fill (2 chunks = 1.0s >= min_audio_s 0.8s)
+        # instead of assuming a tick count == delivered chunk count. The
+        # capture thread delivers asynchronously; a fixed number of run_once()
+        # calls starves under a slow source.read() (FL4 family).
+        _wait_delivered(source, 2, what="(FL4-Nachbar: feeds_and_transcribes)")
         ctrl.run_once()
-        ctrl.run_once()
-        assert ctx["engine"].calls >= 1
+        assert ctx["engine"].calls >= 1, (
+            f"engine.calls={ctx['engine'].calls} trotz 2 gelieferter Chunks"
+        )
 
     def test_text_reaches_typer(self) -> None:
         ctrl, ctx = make_controller()
+        source = ctx["source"]
         ctrl.start_recording()
-        for _ in range(3):
-            ctrl.run_once()
-        assert any(c[0] == "type" for c in ctx["typer"].calls)
+        # FL4: same starvation root — wait for the real buffer fill, then a
+        # single tick is enough for >= min_audio_s and a type() call.
+        _wait_delivered(source, 2, what="(FL4: text_reaches_typer)")
+        ctrl.run_once()
+        assert any(c[0] == "type" for c in ctx["typer"].calls), ctx["typer"].calls
 
     def test_release_finalizes_and_appends_space(self) -> None:
         ctrl, ctx = make_controller()
@@ -409,6 +445,10 @@ class TestErrors:
             delta_typer=DeltaTyper(typer, append_space=True),
         )
         ctrl.start_recording()
+        # FL3: same starvation root — the abort only fires once enough audio
+        # has actually arrived (2 chunks = 1.0s >= min_audio_s 0.8s). Wait for
+        # the real fill instead of a blind tick count.
+        _wait_delivered(source, 2, what="(FL3: engine_error_aborts)")
         ctrl.run_once()
         ctrl.run_once()  # enough audio for a transcription
         assert ctrl.state == ControllerState.IDLE
@@ -539,6 +579,7 @@ class RestAudioSource:
         self.rest = rest
         self.started = 0
         self.stopped = 0
+        self.delivered = 0
 
     def start(self) -> None:
         self.started += 1
@@ -549,7 +590,10 @@ class RestAudioSource:
         return out + self.rest
 
     def read(self, block: bool = True) -> bytes:
+        if READ_DELAY_S:
+            time.sleep(READ_DELAY_S)
         if self.chunks:
+            self.delivered += 1
             return self.chunks.pop(0)
         return b""
 
@@ -801,20 +845,35 @@ class TestLiveAsrUntilController:
                 )
 
         engine = GrowingEngine()
+        source = FakeAudioSource([b"\x00" * 16000] * 12)
         ctrl = PushToTalkController(
             config=Config(),
-            source_factory=lambda: FakeAudioSource([b"\x00" * 16000] * 12),
+            source_factory=lambda: source,
             engine=engine,
             delta_typer=DeltaTyper(typer, append_space=True),
             min_audio_s=0.1,
             asr_interval_s=0.1,
         )
-        # Limit 1.5s: live ticks stop after 3 chunks (1.5s).
         ctrl.start_recording()
+        # Phase 1 (below the limit, limit still disabled): wait for the REAL
+        # buffer fill — 2 chunks = 1.0s >= min_audio_s — instead of assuming
+        # a tick count == chunk count. Guarantees a live engine call, so the
+        # later "no more calls" assertion is NOT vacuous.
+        _wait_delivered(source, 2, what="(FL1: unter dem Limit)")
+        ctrl.run_once()
+        assert engine.calls >= 1, (
+            f"Live-Tick rief die Engine nicht auf (calls={engine.calls})"
+        )
+        # Limit 1.5s: live ticks stop after 3 chunks (1.5s).
         ctrl._transcriber.live_asr_until_s = 1.5  # tighten it afterward
-        # Drain queue + force a live tick: 6 chunks = 3s buffered.
-        for _ in range(6):
-            ctrl.run_once()
+        # Phase 2 (at/above the limit): wait until ALL 12 chunks (6s) have
+        # actually been delivered, then tick. Deadline-wait on the real
+        # queue fill — never a blind tick count.
+        _wait_delivered(source, 12, what="(FL1: am Limit)")
+        # asr_interval_s=0.1: let the interval elapse so the interval gate
+        # cannot mask the limit check (the ONLY allowed reason for no engine
+        # call below is the live limit).
+        time.sleep(0.12)
         calls_before = engine.calls
         # Further ticks with a larger buffer -> NO engine call.
         for _ in range(3):
@@ -826,8 +885,13 @@ class TestLiveAsrUntilController:
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and ctrl.state != ControllerState.IDLE:
             time.sleep(0.005)
+        assert ctrl.state == ControllerState.IDLE, f"IDLE nicht erreicht"
 
-        typed = "".join(c[1] for c in typer.calls if c[0] == "type")
+        # typed_text_final applies backspaces (the pause indicator '...' is
+        # typed above the limit and removed by finalize via backspace);
+        # a naive concatenation of type-calls would leave the indicator in
+        # and flake (G26 signature: ('type','...') + ('backspace','3')).
+        typed = typer.typed_text_final
         # The final text includes ALL 12 chunks (6s, w0..w11); feed() kept collecting
         # regardless of the live limit, and finalize() saw everything.
         assert typed.endswith("w0 w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11"), (
