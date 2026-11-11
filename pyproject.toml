@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stt-button"
-version = "0.2.1"
+version = "0.2.2"
 description = "Push-to-Talk auf der ThinkPad-Copilot-Taste: Whisper large-v3-turbo streamt Text an die Cursor-Position"
 readme = "README.md"
 requires-python = ">=3.11"

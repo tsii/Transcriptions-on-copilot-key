@@ -11,6 +11,40 @@ locally (NVIDIA Parakeet TDT 0.6B, CPU-only, automatic DE+EN).
 
 ---
 
+## [0.2.2] - 2026-11-11
+
+### Fixed
+- **Abhängigkeits-Gate:** `pyaudio` aus `REQUIRED_MODULES` und `SHADOW_MODULES`
+  gestrichen. Kein Modul in `src/` importiert es — die Aufnahme läuft über das
+  externe Programm `pw-record` (`src/stt_button/audio.py`) —, es steht nicht in
+  `packaging/runtime-requirements.txt` und war nie im Produktions-`.venv`.
+  Damit war Level 0 auf einem korrekten System unerreichbar und blockierte den
+  Installationsschritt R4 samt der Gate-Nachprüfung in R5.
+- **Launcher-Importprüfung:** statt `import sounddevice, numpy, stt_button`
+  jetzt `import numpy, stt_button`. `sounddevice` wird nirgends importiert und
+  war nirgends installiert; nach dem Unit-Tausch wäre der verpackte Dienst mit
+  `ModuleNotFoundError` (Exit 1) gestorben.
+- **Pip-Hint im Launcher:** verwies auf `'/opt/stt-button[stt]'` und
+  `$ROOT/requirements-stt.txt` — beides ist nicht im Paket enthalten. Jetzt
+  `pip install --user --break-system-packages -r $ROOT/packaging/runtime-requirements.txt`.
+
+### Added
+- **Installationsskript:** opt-in `--permissive` (toleriert exakt `- not
+  importable: pyaudio`, Level genau 1, keine Versionskonflikte) — Nothilfe bis
+  dieser Gate-Fix vorliegt, danach überflüssig.
+- **Ausführende Launcher-Tests:** Das geprüfte Modul-Set wird aus dem Skript
+  gelesen, exakt `{numpy, stt_button}` verlangt und die Prüfung gegen eine
+  temporäre `PYTHONPATH` mit Stub-Modulen **ausgeführt** — damit entscheidet
+  nicht mehr der Rechnerzustand über Grün.
+
+### Tests
+- Zwei V1-Tests prüften „pip fehlt" auf dem echten `/usr/bin/python3`; seit
+  `python3-pip` installiert ist, war die Voraussetzung dauerhaft falsch. Beide
+  fahren jetzt den deterministischen Fake-Interpreter (`pip_rc=1`).
+- Vollsuite: 894 passed, 2 skipped, 0 failed.
+
+---
+
 ## [0.2.1] - 2026-11-10
 
 ### Changed
