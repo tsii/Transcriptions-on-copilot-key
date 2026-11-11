@@ -3,7 +3,7 @@
 # Dry-run by default; root steps and the unit switch run only with --apply.
 # The operator runs this (sudo needs a password); production never dies.
 # Usage:
-#   bash .pi/tools/install_wayb_0.2.1.sh [--dry-run|--apply] [--only=STEP] [--switch-unit] [--rollback]
+#   bash .pi/tools/install_wayb_0.2.1.sh [--dry-run|--apply] [--only=STEP] [--switch-unit] [--rollback] [--permissive]
 #   STEP is one of R1..R6. --rollback restores the latest unit backup only.
 set -euo pipefail
 
@@ -28,6 +28,7 @@ mkdir -p "$LOGDIR" "$REPO/.pi/reports"
 MODE="dry"
 DO_SWITCH=0
 DO_ROLLBACK=0
+PERMISSIVE=0
 ONLY=""
 LAST_BAK=""
 
@@ -37,6 +38,7 @@ for arg in "$@"; do
     --apply) MODE="apply" ;;
     --switch-unit) DO_SWITCH=1 ;;
     --rollback) DO_ROLLBACK=1 ;;
+    --permissive) PERMISSIVE=1 ;;
     --only=*) ONLY="${arg#*=}" ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
@@ -140,6 +142,24 @@ run_gate() {
   GATE_LEVEL=$rc
 }
 
+# accept_permissive: return 0 only when --permissive is given AND the gate
+# failed with exit 1 (deps_missing) AND the ONLY finding is that pyaudio is
+# missing. pyaudio is provably unused (audio capture runs the external
+# pw-record binary), so its absence alone must not block the chain. Any
+# version mismatch, any other missing module, or shadow_risk (level 3) and
+# requirements_missing (level 2) still abort.
+accept_permissive() {
+  [ "$PERMISSIVE" -eq 1 ] || return 1
+  [ "$GATE_LEVEL" -eq 1 ] || return 1
+  [ -f "$GATE_REPORT" ] || return 1
+  local n_imp n_ver
+  n_imp="$(grep -c -- "not importable:" "$GATE_REPORT" 2>/dev/null || true)"
+  n_ver="$(grep -c -- "version mismatch:" "$GATE_REPORT" 2>/dev/null || true)"
+  [ "$n_ver" = "0" ] || return 1
+  [ "$n_imp" = "1" ] || return 1
+  grep -qx -e "- not importable: pyaudio" "$GATE_REPORT" 2>/dev/null
+}
+
 step_r4() {
   log "== R4: dependency gate (must be Level 0) =="
   run_gate
@@ -151,9 +171,14 @@ step_r4() {
         log "  shadow_risk hint: unit needs Environment=PYTHONUSERBASE=%h/.local/stt"
         log "  (and use the same PYTHONUSERBASE when installing)"
       fi
-      die "gate not Level 0 (exit $GATE_LEVEL) — abort before install"
+      if accept_permissive; then
+        log "  PERMISSIVE ACCEPT: only pyaudio missing (code uses pw-record, not pyaudio); continuing"
+      else
+        die "gate not Level 0 (exit $GATE_LEVEL) — abort before install"
+      fi
+    else
+      log "  gate OK (Level 0)"
     fi
-    log "  gate OK (Level 0)"
   else
     log "  (dry-run: gate probe runs only on --apply)"
   fi
@@ -165,7 +190,11 @@ step_r5() {
   run_gate
   if [ "$MODE" = "apply" ]; then
     if [ "$GATE_LEVEL" -ne 0 ]; then
-      die "gate not Level 0 (exit $GATE_LEVEL) — abort before install"
+      if accept_permissive; then
+        log "  PERMISSIVE ACCEPT: only pyaudio missing (code uses pw-record, not pyaudio); continuing"
+      else
+        die "gate not Level 0 (exit $GATE_LEVEL) — abort before install"
+      fi
     fi
   fi
   run sudo apt-get install -y "$DEB"
