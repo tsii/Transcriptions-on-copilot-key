@@ -38,3 +38,33 @@ echtes numpy); Weg (i) bliebe vom numpy-Vorhandensein der Testumgebung
 abhaengig, Weg (iii) prueft nur Text statt Verhalten. Nur (ii) bleibt auf
 frischer Maschine und im CI stabil gruen, weil der Launcher-Interpreter
 in der tmp-Kopie neutralisiert wird und alle Importe aus Stubs stammen.
+## E1b Rechnerabhaengige pip-Tests
+
+**Entscheidung: Variante (a)** — beide Tests (`test_real_system_pip_missing_exit_1`,
+`test_dash_m_pip_missing_exit_1_real_system_python`) werden auf den bestehenden
+Fake-Interpreter-Helfer `_make_fake_python(tmp_path, pip_rc=1, ...)` umgestellt.
+
+Begruendung: Die Tests pruefen das Gate-Verhalten bei "pip fehlt" (Exit 1 mit
+Begruendung), nicht den Zustand des Hosts. Ein echter `/usr/bin/python3` macht die
+Test-Voraussetzung von der Host-Installation abhaengig (nach R2 ist pip vorhanden →
+dauerhaft rot, auf frischer Maschine ohne pip zufaellig gruen) — exakt die in E2b
+Weg (ii) verworfene Klasse: keine echte Abhaengigkeit zur Testumgebung, sondern
+Host-Zufall. Der Fake-Interpreter bildet "pip fehlt" deterministisch ab und ist
+fuer diese Verhaltenspruefung das korrekte Werkzeug.
+
+Verworfen:
+- (b) Skip bei vorhandenem pip: verdeckt permanent ein rot auf R2-Maschinen und
+  verkleinert die Abdeckung still, ohne den Mangel (Hostabhaengigkeit) zu beheben.
+- (c) Echter Interpreter + Installation als Testvorbedingung: verlangt
+  Host-Mutationen aus dem Test heraus (widerspricht P5), und auf frischer
+  Maschine bleibt der Ausgang von der Installationshistorie abhaengig.
+
+**Stabilitaet**: Variante (a) ist die EINZIGE, die auf frischer Maschine UND nach R2
+stabil gruen bleibt — der Fake-Interpreter erzwingt `pip fehlt` reproduzierbar,
+unabhaengig davon, ob python3-pip installiert ist. (b) bleibt nur "gruen", indem es
+die Pruefung auf R2-Maschinen ueberspringt; (c) faellt auf frischen Maschinen
+um und mutiert den Host.
+
+Umsetzung: rein mechanisch — die bestehenden Zwei-Tests wechseln von
+`/usr/bin/python3` auf `_make_fake_python(...)`; keine Gate-Logik-Aenderung,
+RED/GREEN-Kette nach P3 nicht betroffen (Verhalten unverfaelscht, nur Test-Doubles).

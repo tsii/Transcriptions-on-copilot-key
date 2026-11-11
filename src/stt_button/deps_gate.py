@@ -8,7 +8,7 @@ Probes a target interpreter (default /usr/bin/python3) for:
   * pip availability,
   * importability of the required modules (with --src on PYTHONPATH),
   * version satisfaction against a requirements file,
-  * shadow risk from apt-installed numpy/scipy/soundfile/pyaudio
+  * shadow risk from apt-installed numpy/scipy/soundfile
     in dist-packages.
 
 Closed exit-level set (do not extend):
@@ -29,8 +29,8 @@ DEFAULT_SRC = "/opt/stt-button/src"
 DEFAULT_REQ = "/opt/stt-button/packaging/runtime-requirements.txt"
 DEFAULT_REPORT = ".pi/reports/deps_gate.md"
 
-REQUIRED_MODULES = ["numpy", "scipy", "soundfile", "pyaudio", "requests"]
-SHADOW_MODULES = ["numpy", "scipy", "soundfile", "pyaudio"]
+REQUIRED_MODULES = ["numpy", "scipy", "soundfile", "requests"]
+SHADOW_MODULES = ["numpy", "scipy", "soundfile"]
 
 IMPORT_PROBE = "import importlib,sys\nimportlib.import_module(sys.argv[1])"
 VERSION_PROBE = (

@@ -57,11 +57,19 @@ def _run_gate(*args):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
 
-def test_real_system_pip_missing_exit_1(tmp_path):
+def test_pip_missing_exit_1(tmp_path):
+    """E1b (a): "pip is missing" is simulated by the fake interpreter.
+
+    The old version probed the host's /usr/bin/python3, which asserted a host
+    condition: after the operator installed python3-pip (installer step R2) the
+    precondition stopped being true and the test failed permanently. Same class
+    as E2b - no real dependency on the test environment.
+    """
+    fake = _make_fake_python(tmp_path, pip_rc=1)
     req = tmp_path / "runtime-requirements.txt"
     req.write_text("numpy==1.0.0\n")
     report = tmp_path / "report.md"
-    res = _run_gate("--python", PY3, "--src", REPO / "src",
+    res = _run_gate("--python", fake, "--src", REPO / "src",
                     "--requirements", req, "--report", report)
     assert res.returncode == 1
     assert "pip_missing" in res.stdout
@@ -196,13 +204,14 @@ def test_dash_m_requirements_missing_exit_2(tmp_path):
     assert report.is_file()
 
 
-def test_dash_m_pip_missing_exit_1_real_system_python(tmp_path):
-    """Today's stand on this machine: /usr/bin/python3 has no usable pip
-    (the expected level-1 case; no real pip/network needed)."""
+def test_dash_m_pip_missing_exit_1_with_fake_python(tmp_path):
+    """E1b (a): the -m entry point must reach the same level as the tools/
+    shell, driven by the fake interpreter (pip_rc=1), not by the host."""
+    fake = _make_fake_python(tmp_path, pip_rc=1)
     req = tmp_path / "runtime-requirements.txt"
     req.write_text("numpy==1.0.0\n")
     report = tmp_path / "m-report.md"
-    res = _run_module_subprocess("--python", PY3, "--src", REPO / "src",
+    res = _run_module_subprocess("--python", str(fake), "--src", REPO / "src",
                                  "--requirements", req, "--report", report)
     assert res.returncode == 1
     assert "pip_missing" in res.stdout
@@ -248,3 +257,41 @@ def test_version_mismatch_deps_missing_exit_1(tmp_path):
                     "--requirements", req, "--report", report)
     assert res.returncode == 1
     assert "deps_missing" in res.stdout
+
+
+# --- E1 (plan_review_sipgate_20261111): pyaudio is not a dependency at all ---
+# Audio capture runs via the external `pw-record` binary (src/stt_button/audio.py);
+# no module in the package ever imports pyaudio. Requiring it made gate Level 0 -
+# and the hard pre-install check of the installer - unreachable on a correct
+# system. These tests pin the corrected contract.
+
+def test_pyaudio_missing_is_not_a_gate_failure(tmp_path):
+    fake = _make_fake_python(tmp_path, missing="pyaudio")
+    req = tmp_path / "runtime-requirements.txt"
+    req.write_text("numpy==1.0.0\n")
+    report = tmp_path / "report.md"
+    res = _run_gate("--python", fake, "--src", REPO / "src",
+                    "--requirements", req, "--report", report)
+    assert res.returncode == 0, res.stdout
+    assert "all_good" in res.stdout
+
+
+def test_pyaudio_in_dist_packages_is_not_shadow_risk(tmp_path):
+    """An apt-provided pyaudio shadows nothing we import: no Level 3."""
+    dist = tmp_path / "dist-packages"
+    (dist / "pyaudio").mkdir(parents=True)
+    fake = _make_fake_python(tmp_path, dist_packages=dist)
+    req = tmp_path / "runtime-requirements.txt"
+    req.write_text("numpy==1.0.0\n")
+    report = tmp_path / "report.md"
+    res = _run_gate("--python", fake, "--src", REPO / "src",
+                    "--requirements", req, "--report", report)
+    assert res.returncode == 0, res.stdout
+
+
+def test_gate_module_lists_contain_no_pyaudio():
+    src = (REPO / "src" / "stt_button" / "deps_gate.py").read_text()
+    rows = [line for line in src.splitlines()
+            if line.startswith(("REQUIRED_MODULES", "SHADOW_MODULES"))]
+    assert rows, "module lists not found in deps_gate.py"
+    assert not any("pyaudio" in line for line in rows), rows
