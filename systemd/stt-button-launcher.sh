@@ -17,11 +17,11 @@ ROOT="${STT_BUTTON_ROOT:-/opt/stt-button}"
 export PYTHONPATH="$ROOT/src"
 
 # Import check of the core modules; on failure print a pip hint
-if ! /usr/bin/python3 -c 'import sounddevice, numpy, stt_button'; then
+if ! /usr/bin/python3 -c 'import numpy, stt_button'; then
     echo "stt-button: core modules are not importable with /usr/bin/python3." >&2
     echo "  Tip: install the dependencies into your user site, e.g.:" >&2
-    echo "    /usr/bin/python3 -m pip install --user '/opt/stt-button[stt]'" >&2
-    echo "  (see the requirements in $ROOT/requirements-stt.txt)" >&2
+    echo "    /usr/bin/python3 -m pip install --user --break-system-packages -r '$ROOT/packaging/runtime-requirements.txt'" >&2
+    echo "  (see the requirements in $ROOT/packaging/runtime-requirements.txt)" >&2
     exit 1
 fi
 
