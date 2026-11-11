@@ -82,11 +82,14 @@ P8 Model Fallback (operator order 2026-11-05). The map lives in
    `deepseek-v4-pro-0813`, `conv-2a5ba4cc` and `conv-556d08e3` -> files with
    `work-sipgate-coding-ultra`; the ephemeral `sa-71779dcf` left no file). Both
    sipgate children self-reported `cortecs/glm-5.3` - FALSE, the files say
-   sipgate ran. Fourth measured case of a wrong self-report: trust the spawn
-   message, and use `find <session dir> -mmin -N` + the per-turn `model` field
-   as the tiebreaker (note the doubled-dash dir name
-   `--home-salmon-pi-web-ui-STT-Button--`; a single-dash path silently finds
-   nothing and reads as "no file").
+   sipgate ran; a third claimed `openrouter/kimi-k3.1-pro` - also FALSE (`conv-f09af4ae` -> file `work-sipgate-coding-ultra`). FIVE measured cases now,
+   naming glm, kimi and "main agent": a child's self-report is NEVER evidence of
+   its model. Trust the spawn message; where it matters, read the per-turn
+   `model` field of the child's session file - and exclude the orchestrator's own
+   session (`*01a1a9da*`), which is always the newest file and silently swallows
+   `find -newermt` (measured twice). Note the doubled-dash dir name
+   `--home-salmon-pi-web-ui-STT-Button--`; a single-dash path finds nothing and
+   reads as "no file".
 
 ## Rules
 
